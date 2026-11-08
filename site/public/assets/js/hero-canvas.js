@@ -1,4 +1,4 @@
-/* StockFW — 2077 Cyberpunk Firewall Defense Matrix & Packet Interceptor */
+/* StockFW — Full-Width 2077 Cyberpunk Firewall Defense Matrix */
 
 (function () {
 	const canvas = document.getElementById('hero-canvas');
@@ -14,7 +14,7 @@
 		height = canvas.height = canvas.parentElement.offsetHeight;
 	});
 
-	let mouse = { x: width * 0.7, y: height * 0.5, fired: false };
+	let mouse = { x: width * 0.5, y: height * 0.5, fired: false };
 	let interceptedCount = 0;
 
 	canvas.addEventListener('mousemove', (e) => {
@@ -31,43 +31,43 @@
 	const packets = [];
 	const sparks = [];
 	const beams = [];
-	const numPackets = 50;
+	const numPackets = 65;
 
 	for (let i = 0; i < numPackets; i++) {
 		packets.push({
-			x: Math.random() * (width * 0.4),
+			x: Math.random() * width,
 			y: Math.random() * height,
-			vx: Math.random() * 2.5 + 1.5,
-			vy: (Math.random() - 0.5) * 1.0,
+			vx: (Math.random() - 0.5) * 4,
+			vy: (Math.random() - 0.5) * 2,
 			color: Math.random() > 0.35 ? '#ff0033' : '#00f0ff',
-			label: ['TCP 22', 'HTTPS 443', 'DNS 53', 'ATTACK', 'PROBE'][Math.floor(Math.random() * 5)],
+			label: ['TCP 22', 'HTTPS 443', 'DNS 53', 'ATTACK', 'PROBE', 'SYSCALL'][Math.floor(Math.random() * 6)],
 			size: Math.random() * 2.5 + 1.5
 		});
 	}
 
 	function createExplosion(x, y, color) {
 		interceptedCount++;
-		for (let i = 0; i < 15; i++) {
+		for (let i = 0; i < 12; i++) {
 			sparks.push({
 				x: x,
 				y: y,
-				vx: (Math.random() - 0.5) * 10,
-				vy: (Math.random() - 0.5) * 10,
+				vx: (Math.random() - 0.5) * 8,
+				vy: (Math.random() - 0.5) * 8,
 				color: color,
 				life: 1.0,
-				decay: Math.random() * 0.03 + 0.015
+				decay: Math.random() * 0.04 + 0.02
 			});
 		}
 	}
 
 	function animate() {
-		ctx.fillStyle = 'rgba(13, 17, 23, 0.3)';
+		ctx.fillStyle = 'rgba(13, 17, 23, 0.25)';
 		ctx.fillRect(0, 0, width, height);
 
-		// 1. Perspective Cyber Grid
+		// 1. Full-Width Cyber Grid
 		ctx.strokeStyle = 'rgba(255, 0, 51, 0.12)';
 		ctx.lineWidth = 1;
-		const gridSize = 60;
+		const gridSize = 50;
 		for (let x = 0; x < width; x += gridSize) {
 			ctx.beginPath();
 			ctx.moveTo(x, 0);
@@ -82,36 +82,35 @@
 		}
 
 		// 2. Central Firewall Barrier Wall
-		const wallX = width * 0.65;
-		ctx.shadowBlur = 25;
+		const wallX = width * 0.5;
+		ctx.shadowBlur = 20;
 		ctx.shadowColor = '#ff0033';
 		ctx.strokeStyle = '#ff0033';
-		ctx.lineWidth = 4;
+		ctx.lineWidth = 3;
 		ctx.beginPath();
 		ctx.moveTo(wallX, 0);
 		ctx.lineTo(wallX, height);
 		ctx.stroke();
 		ctx.shadowBlur = 0;
 
-		// Wall holographic HUD text
+		// HUD telemetry top right
 		ctx.fillStyle = 'rgba(255, 0, 51, 0.85)';
 		ctx.font = '11px monospace';
-		ctx.fillText('// WFP_FIREWALL_CORE_ACTIVE', wallX + 10, 30);
-		ctx.fillText(`// INTERCEPTED: ${interceptedCount}`, wallX + 10, 50);
+		ctx.fillText('// WFP_FIREWALL_CORE_ACTIVE', width - 240, 30);
+		ctx.fillText(`// INTERCEPTED: ${interceptedCount}`, width - 240, 50);
 
 		// 3. Defense Turret / Crosshair at Mouse
 		ctx.strokeStyle = mouse.fired ? '#00f0ff' : 'rgba(0, 240, 255, 0.5)';
 		ctx.lineWidth = 2;
 		ctx.beginPath();
-		ctx.arc(mouse.x, mouse.y, mouse.fired ? 25 : 18, 0, Math.PI * 2);
+		ctx.arc(mouse.x, mouse.y, mouse.fired ? 22 : 16, 0, Math.PI * 2);
 		ctx.stroke();
 		ctx.beginPath();
-		ctx.moveTo(mouse.x - 8, mouse.y); ctx.lineTo(mouse.x + 8, mouse.y);
-		ctx.moveTo(mouse.x, mouse.y - 8); ctx.lineTo(mouse.x, mouse.y + 8);
+		ctx.moveTo(mouse.x - 6, mouse.y); ctx.lineTo(mouse.x + 6, mouse.y);
+		ctx.moveTo(mouse.x, mouse.y - 6); ctx.lineTo(mouse.x, mouse.y + 6);
 		ctx.stroke();
 
 		if (mouse.fired) {
-			// Shoot laser beam to nearest packet or wall
 			beams.push({
 				x1: wallX,
 				y1: height / 2,
@@ -122,26 +121,26 @@
 			createExplosion(mouse.x, mouse.y, '#00f0ff');
 		}
 
-		// 4. Packet Flow & Deflection
+		// 4. Packet Flow across entire width
 		for (let p of packets) {
 			p.x += p.vx;
 			p.y += p.vy;
 
-			// Wall collision
-			if (p.x >= wallX && p.x <= wallX + p.vx) {
-				p.vx *= -1.8;
-				createExplosion(wallX, p.y, p.color);
+			// Wall bounce / filter check
+			if (p.x >= wallX - 2 && p.x <= wallX + 2) {
+				if (p.color === '#ff0033') {
+					p.vx *= -1.5;
+					createExplosion(wallX, p.y, '#ff0033');
+				}
 			}
 
-			// Screen wrap
-			if (p.x > width + 50 || p.x < -50 || p.y > height + 50 || p.y < -50) {
-				p.x = 20;
-				p.y = Math.random() * height;
-				p.vx = Math.random() * 2.5 + 1.5;
-			}
+			if (p.x > width + 20) p.x = -20;
+			if (p.x < -20) p.x = width + 20;
+			if (p.y > height + 20) p.y = -20;
+			if (p.y < -20) p.y = height + 20;
 
 			ctx.fillStyle = p.color;
-			ctx.shadowBlur = 10;
+			ctx.shadowBlur = 8;
 			ctx.shadowColor = p.color;
 			ctx.beginPath();
 			ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
