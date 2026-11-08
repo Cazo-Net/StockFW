@@ -58,9 +58,14 @@ gboolean fs_tray_active (void);
 /* TRUE when closing/minimizing the window must hide it to the tray
  * rather than quit.  Fails closed: see the contract above. */
 gboolean fs_tray_hide_on_close (void);
-
 /* Show, un-minimize and raise the window (tray menu, icon click). */
 void fs_tray_show_window (void);
+
+/* The same, when nobody asked for it: the background app noticed its
+ * icon is gone and comes back rather than stay unreachable.  `reason'
+ * says why and is logged; a window that appears on its own has to be
+ * explainable. */
+void fs_tray_window_back (const gchar *reason);
 
 /* The firewall's state and the kind of network the computer is on
  * ("Private network"; NULL when unknown), from fs-statusview.c.  Kept

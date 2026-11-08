@@ -58,6 +58,19 @@ gboolean fs_hitview_refilter_now (void);
 gboolean fs_hitview_export_csv (const gchar *path, guint *written,
                                 GError **error);
 
+/* The smoke test's stand-in for the file chooser: while a responder is
+ * set, the Export button asks it which file to write instead of opening
+ * a modal dialog.  It receives the chooser the app builds, so the test
+ * exercises the real button.  Pass NULL to restore the dialog. */
+typedef gint (*FsHitviewResponder) (GtkDialog *dialog, gpointer data);
+void fs_hitview_set_dialog_responder (FsHitviewResponder responder,
+                                      gpointer data);
+
+/* Everything Export does once the user has chosen a file: write the
+ * rows shown and report the outcome.  The smoke test calls this with the
+ * path its responder chose. */
+void fs_hitview_export_to (const gchar *path);
+
 /* The store behind the list (the smoke test reads it). */
 FsEventStore *fs_hitview_store (void);
 

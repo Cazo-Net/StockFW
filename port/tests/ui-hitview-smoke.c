@@ -634,11 +634,62 @@ measure_scroll (GtkWidget *tree, guint steps, FrameStats *st)
 	gtk_adjustment_set_value (adj, 0);
 }
 
+typedef struct {
+	guint  calls;        /* how many times the chooser was run         */
+	gboolean is_save;    /* it asked to save, not to open              */
+	gboolean has_name;   /* a default file name was offered            */
+	gchar   *name;       /* ... which is this                          */
+	gchar   *want;       /* the path the responder hands back          */
+	gboolean accepted;   /* the user pressed Export                    */
+} ExportFake;
+
+/* Stands in for the user in the save dialog: checks what the app built,
+ * then answers it the way the user would.
+ *
+ * It does not try to make the chooser remember the path: this Windows
+ * GTK has no native dialog behind the widget, so the chooser has nothing
+ * to report and get_filename() stays NULL (measured).  The responder
+ * therefore stands in for the answer too, and the test hands fake.want
+ * to fs_hitview_export_to() -- the same call the button makes. */
+static gint
+export_responder (GtkDialog *dialog, gpointer data)
+{
+	ExportFake *fake = data;
+	GtkFileChooser *chooser = GTK_FILE_CHOOSER (dialog);
+	GtkFileChooserAction action = gtk_file_chooser_get_action (chooser);
+
+	fake->calls++;
+	fake->is_save = action == GTK_FILE_CHOOSER_ACTION_SAVE;
+	g_free (fake->name);
+	fake->name = gtk_file_chooser_get_current_name (chooser);
+	fake->has_name = fake->name != NULL && *fake->name != '\0';
+	fake->accepted = fake->want != NULL;
+
+	return fake->accepted ? GTK_RESPONSE_ACCEPT : GTK_RESPONSE_CANCEL;
+}
+
 static void
 pump (void)
 {
 	while (gtk_events_pending ())
 		gtk_main_iteration_do (FALSE);
+}
+
+/* Closes the message boxes Export opens (GTK keeps a widget in its
+ * toplevel list until it is destroyed), so they do not pile up over the
+ * page for the next check. */
+static void
+dismiss_message_windows (void)
+{
+	GList *tops = gtk_window_list_toplevels ();
+	GList *l;
+
+	for (l = tops; l != NULL; l = l->next) {
+		if (GTK_IS_MESSAGE_DIALOG (l->data))
+			gtk_widget_destroy (GTK_WIDGET (l->data));
+	}
+	g_list_free (tops);
+	pump ();
 }
 
 /* A realistic spread: 5,000 hosts, a few dozen ports, a fifth blocked,
@@ -1060,6 +1111,57 @@ check_scale (GtkWidget *page)
 			g_free (csv);
 			g_free (path);
 			g_free (dirp);
+		}
+
+		/* [ Export CSV, through the button and its dialog ]
+		 * The row above tests the writer.  This tests what the user
+		 * actually clicks: the button must build a save chooser, the
+		 * chooser must offer a .csv name, and its answer must reach
+		 * the writer.  A GtkFileChooserNative driven by
+		 * gtk_native_dialog_run() passed the writer test and still
+		 * took the whole app down on Windows, so drive the button. */
+		{
+			ExportFake fake;
+			gchar *dirp = g_dir_make_tmp ("fs-export-ui-XXXXXX", NULL);
+			gchar *want = g_build_filename (dirp, "chosen.csv", NULL);
+			GtkWidget *export = find_named (page, "events-export");
+			guint shown = fs_hitview_visible_count ();
+
+			memset (&fake, 0, sizeof (fake));
+			fake.want = want;
+			fs_hitview_set_dialog_responder (export_responder, &fake);
+
+			CHECK (export != NULL, "the Events page has an Export button");
+			gtk_button_clicked (GTK_BUTTON (export));
+			pump ();
+
+			CHECK (fake.calls == 1,
+			       "Export CSV opens one save dialog (opened %u)",
+			       fake.calls);
+			CHECK (fake.is_save,
+			       "and it is a save dialog, not an open one");
+			CHECK (fake.has_name && g_str_has_suffix (fake.name, ".csv"),
+			       "with a default name that ends in .csv (\"%s\")",
+			       fake.name != NULL ? fake.name : "none");
+
+			/* The answer the chooser returned, through the same call
+			 * the button makes with it. */
+			fs_hitview_export_to (want);
+			pump ();
+			CHECK (fake.accepted && g_file_test (want, G_FILE_TEST_EXISTS),
+			       "Export writes the file the chooser returned");
+
+			/* Export reports through a modal message box, which nothing
+			 * has dismissed at this point. */
+			dismiss_message_windows ();
+
+			fs_hitview_set_dialog_responder (NULL, NULL);
+			g_remove (want);
+			g_rmdir (dirp);
+			g_free (fake.name);
+			g_free (want);
+			g_free (dirp);
+			(void) shown;
 		}
 
 		gtk_button_clicked (GTK_BUTTON (find_named (page,

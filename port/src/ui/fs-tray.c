@@ -8,15 +8,18 @@
  *
  * Whether the icon is really up is where the platforms differ.  On X11
  * gtk_status_icon_is_embedded() is the tray's own answer and
- * "notify::embedded" follows it.  On Windows GTK answers TRUE whatever
- * Shell_NotifyIconW said and never notifies, so fs_tray_active() asks
- * the shell instead: is Explorer's taskbar (Shell_TrayWnd) there to
- * hold an icon at all.  When Explorer (re)creates its taskbar it
+ * "notify::embedded" follows it.  On Windows there is no XEmbed: GTK
+ * keeps a hidden "gtkstatusicon-observer" window, calls Shell_NotifyIconW
+ * itself, answers FALSE to is_embedded() even with the icon in the tray,
+ * and never notifies.  So on Windows fs_tray_active() asks the
+ * notification area whether it is hosting an icon (icon_really_present),
+ * and falls back to the taskbar's presence only when that cannot be
+ * told.  When Explorer (re)creates its taskbar it
  * broadcasts "TaskbarCreated" and GTK adds the icon again; an elevated
  * copy lets that message through UIPI (ChangeWindowMessageFilter), or
  * a restarted Explorer would leave it with no icon for good.  While
- * the window is hidden a slow watch shows it if the taskbar goes and
- * does not come back.
+ * the window is hidden a slow watch shows it if the tray has no icon
+ * and does not get one.
  *
  * The rule that keeps the background app trustworthy: the window may
  * only hide when an icon is really up to bring it back from.  The gate
@@ -48,6 +51,7 @@
 
 #ifdef G_OS_WIN32
 #include <windows.h>
+#include <commctrl.h>          /* TBBUTTON: the tray's toolbar buttons */
 #endif
 #ifdef GDK_WINDOWING_X11
 #include <gdk/gdkx.h>
@@ -696,7 +700,7 @@ lost_icon_check (gpointer data)
 	lost_icon_timeout = 0;
 	if (tray_icon != NULL && !fs_tray_active () && tray_window != NULL &&
 	    !gtk_widget_get_visible (GTK_WIDGET (tray_window)))
-		fs_tray_show_window ();
+		fs_tray_window_back ("the shell dropped the icon");
 	return G_SOURCE_REMOVE;
 }
 
@@ -736,27 +740,188 @@ taskbar_up (void)
 	return FindWindowW (L"Shell_TrayWnd", NULL) != NULL;
 }
 
+/* [ icon_really_present ] -- is GTK's icon actually in the tray?
+ *
+ * GtkStatusIcon is an XEmbed client, but Windows has no XEmbed: GTK
+ * creates a "gtkstatusicon-observer" window and calls Shell_NotifyIconW
+ * itself, and never tells anyone whether the shell accepted it.
+ * Measured: on Windows 11 that observer window exists and is hidden, the
+ * icon is in the tray, and gtk_status_icon_is_embedded() still answers
+ * FALSE.  So neither GTK's answer nor "is there a taskbar" describes our
+ * own icon, and the second one was wrong the other way: it let the
+ * window hide on a machine where the tray had refused the icon, which is
+ * the hidden firewall nobody can reach (fs-tray.h).
+ *
+ * The question is asked of the notification area instead.  Windows 11
+ * builds it from XAML, so ask whether the icon is hosted there; older
+ * shells keep the icons as a toolbar, so fall back to counting that
+ * toolbar's buttons.  When the answer cannot be worked out the taskbar's
+ * presence is the answer, as before: this must not invent a refusal and
+ * start a window nobody asked for. */
+#ifndef TB_BUTTONCOUNT
+#define TB_BUTTONCOUNT (WM_USER + 24)
+#endif
+#ifndef TB_GETBUTTON
+#define TB_GETBUTTON (WM_USER + 23)
+#endif
+
+static gboolean
+has_xaml_icons (HWND notify_wnd)
+{
+	static const gchar *const classes[] = {
+		"Microsoft.UI.Content.DesktopChildSiteBridge",
+		"Windows.UI.Composition.DesktopWindowContentBridge",
+		"Windows.UI.Core.CoreWindow",
+		NULL
+	};
+
+	for (const gchar *const *c = classes; *c != NULL; c++) {
+		if (FindWindowExA (notify_wnd, NULL, *c, NULL) != NULL)
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+/* Explorer's own XAML island beside the taskbar.  It is a top-level
+ * window of Explorer, not a child of the taskbar. */
+static gboolean
+xaml_island_has_room (void)
+{
+	HWND island = FindWindowW (L"XamlExplorerHostIslandWindow_WASDK",
+	                           NULL);
+	RECT r;
+
+	if (island == NULL)
+		return FALSE;
+	if (!GetWindowRect (island, &r))
+		return FALSE;
+
+	/* An empty collapse flyout is about one icon tall; the tray with
+	 * icons in it is taller.  40 px is deliberately well below one
+	 * icon row at any ordinary scaling. */
+	g_debug ("tray island %ldx%ld", (long) (r.right - r.left),
+	         (long) (r.bottom - r.top));
+	return (r.bottom - r.top) >= 40;
+}
+
+/* Ask a toolbar in another process how many buttons it has.  The tool's
+ * thread answers; anything else (no access, no such thing) reads as
+ * none, which is only ever a reason to fall back. */
+static LRESULT
+toolbar_button_count (HWND toolbar)
+{
+	DWORD pid = 0;
+	HANDLE process;
+	LRESULT count = 0;
+
+	if (GetWindowThreadProcessId (toolbar, &pid) == 0 || pid == 0)
+		return 0;
+	process = OpenProcess (PROCESS_QUERY_INFORMATION, FALSE, pid);
+	if (process == NULL)
+		return 0;
+	if (!SendMessageTimeoutA (toolbar, TB_BUTTONCOUNT, 0, 0,
+	                          SMTO_ABORTIFHUNG, 1000,
+	                          (PDWORD_PTR) &count))
+		count = 0;
+	CloseHandle (process);
+
+	return count;
+}
+
+static gboolean
+toolbar_has_buttons (HWND notify_wnd)
+{
+	static const gchar *const names[] = {
+		"ToolbarWindow32",
+		"ToolbarWindow64",
+		NULL
+	};
+
+	for (const gchar *const *n = names; *n != NULL; n++) {
+		HWND toolbar = FindWindowExA (notify_wnd, NULL, *n, NULL);
+
+		if (toolbar == NULL)
+			continue;
+		if (toolbar_button_count (toolbar) > 0)
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+static gboolean
+icon_really_present (void)
+{
+	HWND taskbar = FindWindowW (L"Shell_TrayWnd", NULL);
+	HWND notify_wnd;
+
+	if (taskbar == NULL)
+		return FALSE;          /* no taskbar: nowhere for an icon */
+	notify_wnd = FindWindowExA (taskbar, NULL, "TrayNotifyWnd", NULL);
+	if (notify_wnd == NULL)
+		return TRUE;           /* old or odd shell: taskbar's word */
+
+	/* The toolbar came first and is still what a classic shell, a
+	 * remote session or a third-party taskbar uses.  Unless a toolbar
+	 * there is empty, its buttons are the answer -- met "is there any
+	 * icon in the tray". */
+	if (toolbar_has_buttons (notify_wnd))
+		return TRUE;
+
+	/* Windows 11: the tray is XAML, and the Island window beside the
+	 * taskbar hosts it.  Its mere existence proves nothing (measured:
+	 * it is there with the window empty), so size it: an empty
+	 * collapse flyout is about one icon tall, and a tray with icons in
+	 * it is taller. */
+	if (has_xaml_icons (notify_wnd) && xaml_island_has_room ())
+		return TRUE;
+
+	return taskbar_up ();
+}
+
 /* [ win32_icon_watch ] -- the Windows half of lost_icon_check (GTK
- * never notifies there): every few seconds while the window is hidden,
- * and two misses in a row -- the taskbar gone and not back -- bring
- * the window up. */
+ * never notifies there): every few seconds while the window is hidden.
+ * Two misses in a row with no icon in the tray bring the window up.
+ *
+ * If no tray icon has appeared yet, which is the normal state for the
+ * first seconds after start-up and after a fresh sign-in, it waits
+ * longer before giving up instead of racing start-up: a window that
+ * comes up on its own while the icon was about to arrive is as
+ * confusing as one that never comes back. */
 static guint win32_watch = 0;
 static guint win32_misses = 0;
+
+#define WIN32_MISSES_LOST   2      /* icon was there, then gone      */
+#define WIN32_MISSES_NEVER  20     /* no icon since the window hid   */
 
 static gboolean
 win32_icon_watch (gpointer data)
 {
+	guint limit;
+
 	(void) data;
 
 	if (tray_icon == NULL || tray_window == NULL ||
-	    gtk_widget_get_visible (GTK_WIDGET (tray_window)) ||
-	    taskbar_up ()) {
+	    gtk_widget_get_visible (GTK_WIDGET (tray_window))) {
 		win32_misses = 0;
 		return G_SOURCE_CONTINUE;
 	}
-	if (++win32_misses >= 2) {
+	if (icon_really_present ()) {
 		win32_misses = 0;
-		fs_tray_show_window ();
+		return G_SOURCE_CONTINUE;
+	}
+
+	/* The taskbar is gone: a restarting Explorer takes the icon with
+	 * it and adds it back from "TaskbarCreated", so give that a little
+	 * while.  The taskbar up with no icon in it is the shell refusing
+	 * it, and only a long wait makes that trustworthy. */
+	limit = taskbar_up () ? WIN32_MISSES_NEVER : WIN32_MISSES_LOST;
+	if (++win32_misses >= limit) {
+		win32_misses = 0;
+		fs_tray_window_back (taskbar_up ()
+		                     ? "the tray has no icon to come back from"
+		                     : "the taskbar went and did not come back");
 	}
 	return G_SOURCE_CONTINUE;
 }
@@ -914,15 +1079,15 @@ fs_tray_uninstall (void)
  * the shell can be holding it.  The second half is the honest one -- a
  * shell that refused the icon reads as not active, so nothing
  * downstream hides the window on its strength.  X11: the tray's own
- * answer.  Windows: GTK always says embedded there, so the taskbar's
- * presence is what is checked (see the top of this file). */
+ * answer.  Windows: GTK always says embedded there, so the notification
+ * area is asked directly (icon_really_present above). */
 gboolean
 fs_tray_active (void)
 {
 	if (tray_icon == NULL)
 		return FALSE;
 #ifdef G_OS_WIN32
-	return taskbar_up ();
+	return icon_really_present ();
 #else
 	return gtk_status_icon_is_embedded (tray_icon);
 #endif
@@ -951,6 +1116,21 @@ fs_tray_show_window (void)
 	gtk_widget_show (GTK_WIDGET (tray_window));
 	gtk_window_deiconify (tray_window);
 	gtk_window_present (tray_window);
+}
+
+/* [ fs_tray_window_back ] -- `reason' is why the window is being brought
+ * up without the user asking.  Bringing it up on its own is surprising,
+ * and in a session with no folder to open it silently does nothing, so
+ * the reason is logged where test-notray.sh and a bug report can see it. */
+void
+fs_tray_window_back (const gchar *reason)
+{
+	if (tray_window == NULL)
+		return;
+
+	g_message ("bringing the window back: %s",
+	           reason != NULL ? reason : "no reason given");
+	fs_tray_show_window ();
 }
 
 void

@@ -658,54 +658,102 @@ fs_hitview_export_csv (const gchar *path, guint *written, GError **error)
 	return ok;
 }
 
+/* [ what happens after the user picks a file ]
+ * The export itself and what the user is told about it, split out of
+ * on_export_clicked() so a test can drive it with a path it chose. */
+static void
+export_to_path (const gchar *path)
+{
+	GError *error = NULL;
+	guint written = 0;
+
+	if (path != NULL && fs_hitview_export_csv (path, &written, &error)) {
+		gchar *msg = g_strdup_printf (
+			filter_active
+			? _("%u events, the ones the filter shows, were "
+			    "written to\n%s")
+			: _("%u events were written to\n%s"),
+			written, path);
+
+		fs_dialogs_info (NULL, _("Events exported"), msg);
+		g_free (msg);
+	} else {
+		fs_dialogs_error (NULL, _("Could not export the events"),
+		                  error != NULL ? error->message : NULL);
+	}
+	g_clear_error (&error);
+}
+
+void
+fs_hitview_export_to (const gchar *path)
+{
+	export_to_path (path);
+}
+
+/* [ the dialog responder ]
+ * The smoke tests cannot wait on a modal dialog, and they cannot click
+ * a file chooser that the window manager opens.  When a responder is
+ * set, run_dialog() asks it instead of running the dialog; the picker
+ * itself is still built exactly as it is in the app.  NULL in the app.
+ * fs-intelview.c has the same hook, for the same reason. */
+static FsHitviewResponder dialog_responder = NULL;
+static gpointer          dialog_responder_data = NULL;
+
+static gint
+run_dialog (GtkDialog *dialog)
+{
+	if (dialog_responder != NULL)
+		return dialog_responder (dialog, dialog_responder_data);
+
+	return gtk_dialog_run (dialog);
+}
+
+void
+fs_hitview_set_dialog_responder (FsHitviewResponder responder, gpointer data)
+{
+	dialog_responder = responder;
+	dialog_responder_data = data;
+}
+
 /* [ on_export_clicked ]
  * The rows as shown -- filtered and in the shown order -- to a CSV file
  * the user picks. */
 static void
 on_export_clicked (GtkButton *button, gpointer data)
 {
-	GtkFileChooserNative *chooser;
 	GtkWidget *top = gtk_widget_get_toplevel (GTK_WIDGET (button));
+	GtkWidget *chooser;
 	GDateTime *now = g_date_time_new_now_local ();
 	gchar *name = g_date_time_format (now, "stockfw-events-%Y%m%d-%H%M%S.csv");
 
 	(void) data;
 
-	chooser = gtk_file_chooser_native_new (
+	/* [ the save dialog ]
+	 * A GtkFileChooserDialog run synchronously, the same shape as the
+	 * import picker in fs-intelview.c.  It used to be a
+	 * GtkFileChooserNative driven by gtk_native_dialog_run(); on Windows
+	 * that call never returned -- the dialog appeared and the whole app
+	 * vanished -- so it is not used anywhere else here.  The plain
+	 * dialog asks GTK for the filename, so the export path never
+	 * depends on the platform's own file API. */
+	chooser = gtk_file_chooser_dialog_new (
 		_("Export events"),
 		GTK_IS_WINDOW (top) ? GTK_WINDOW (top) : NULL,
-		GTK_FILE_CHOOSER_ACTION_SAVE, _("_Export"), _("_Cancel"));
+		GTK_FILE_CHOOSER_ACTION_SAVE, _("_Cancel"), GTK_RESPONSE_CANCEL,
+		_("_Export"), GTK_RESPONSE_ACCEPT, NULL);
 	gtk_file_chooser_set_do_overwrite_confirmation (
 		GTK_FILE_CHOOSER (chooser), TRUE);
 	gtk_file_chooser_set_current_name (GTK_FILE_CHOOSER (chooser), name);
 
-	if (gtk_native_dialog_run (GTK_NATIVE_DIALOG (chooser)) ==
-	    GTK_RESPONSE_ACCEPT) {
+	if (run_dialog (GTK_DIALOG (chooser)) == GTK_RESPONSE_ACCEPT) {
 		gchar *path = gtk_file_chooser_get_filename (
 			GTK_FILE_CHOOSER (chooser));
-		GError *error = NULL;
-		guint written = 0;
 
-		if (path != NULL &&
-		    fs_hitview_export_csv (path, &written, &error)) {
-			gchar *msg = g_strdup_printf (
-				filter_active
-				? _("%u events, the ones the filter shows, were "
-				    "written to\n%s")
-				: _("%u events were written to\n%s"),
-				written, path);
-
-			fs_dialogs_info (NULL, _("Events exported"), msg);
-			g_free (msg);
-		} else {
-			fs_dialogs_error (NULL, _("Could not export the events"),
-			                  error != NULL ? error->message : NULL);
-		}
-		g_clear_error (&error);
+		export_to_path (path);
 		g_free (path);
 	}
 
-	g_object_unref (chooser);
+	gtk_widget_destroy (chooser);
 	g_free (name);
 	g_date_time_unref (now);
 }
