@@ -38,10 +38,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  linux-unit:
-    name: Linux core and smoke tests
+  linux-tests:
+    name: Linux core and CLI tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -97,6 +97,30 @@ jobs:
           ninja -C build-linux fs-geodb-test
           ./build-linux/fs-geodb-test tests/geodb
           STOCKFW_GEODB_REQUIRE=1 FUZZ_SECONDS=15 bash tests/test-geodb.sh
+
+  linux-smokes:
+    name: Linux UI smoke tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config libgtk-3-dev \
+            librsvg2-common shared-mime-info fonts-dejavu-core \
+            iptables nftables xvfb xauth \
+            xdotool stalonetray desktop-file-utils \
+            liblzma-dev libssl-dev xz-utils \
+            python3-location location libloc-database clang libclang-rt-dev \
+            nsis gcc-mingw-w64-x86-64 libgtk-3-bin strace
+
+      - name: Build
+        run: |
+          cmake -S port -B port/build-linux -G Ninja
+          ninja -C port/build-linux
 
       - name: UI smoke tests on a virtual display
         working-directory: port
@@ -317,7 +341,7 @@ jobs:
 
   release:
     name: Draft the GitHub release
-    needs: [linux-unit, linux-live, windows]
+    needs: [linux-tests, linux-smokes, linux-live, windows]
     if: >-
       startsWith(github.ref, 'refs/tags/v') ||
       (github.event_name == 'workflow_dispatch' && inputs.draft_release &&
