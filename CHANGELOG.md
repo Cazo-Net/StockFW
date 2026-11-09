@@ -455,6 +455,14 @@ It is still read-only and still listens on 127.0.0.1 only.
   (Ubuntu's default includes it; Fedora, RHEL and some Kali systems
   leave it out).
 
+## [1.0.8] - 2026-11-09
+
+### Added
+
+- **Transactional Windows apply engine.** Replaced the legacy clear-then-add policy application with a robust transactional engine backed by COM rule snapshotting (`INetFwRules`), verified clearing, sequential application, explicit failure handling, and automated rollback with post-restore verification.
+- **Per-Application Firewall Rules (Windows).** Added application executable path selection via native file chooser, path validation, full path preservation in Events (`FsHit.program`), and propagation into `FsRule.program` and Windows `program=` rules.
+- **Compatibility Audit.** Extended CSV and CLI parsing (`rule_from_fields`, `fs_rule_columns`) to support optional program paths while fully preserving legacy 3-field and 4-field rule round-trips.
+
 ## [1.0.7] - 2026-11-03
 
 ### Added
