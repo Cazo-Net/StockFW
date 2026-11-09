@@ -101,7 +101,7 @@ jobs:
   linux-smokes-1:
     name: Linux UI smokes group 1
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -128,8 +128,7 @@ jobs:
           NO_AT_BRIDGE: "1"
         run: |
           smokes="fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke
-                  fs-simviz-smoke fs-theme-smoke fs-trustview-smoke
-                  fs-copilot-smoke fs-statusview-smoke fs-activity-smoke"
+                  fs-simviz-smoke fs-theme-smoke fs-trustview-smoke"
           ninja -C build-linux $smokes
           for t in $smokes; do
             echo "== $t"
@@ -147,7 +146,7 @@ jobs:
   linux-smokes-2:
     name: Linux UI smokes group 2
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -173,10 +172,8 @@ jobs:
         env:
           NO_AT_BRIDGE: "1"
         run: |
-          smokes="fs-overview-place-smoke fs-verdict-smoke
-                  fs-startup-smoke fs-traymenu-smoke fs-session-smoke
-                  fs-help-smoke fs-intelview-smoke fs-whatif-start-smoke
-                  fs-sentinel-test"
+          smokes="fs-copilot-smoke fs-statusview-smoke fs-activity-smoke
+                  fs-overview-place-smoke fs-verdict-smoke fs-startup-smoke"
           ninja -C build-linux $smokes
           for t in $smokes; do
             echo "== $t"
@@ -196,6 +193,44 @@ jobs:
         working-directory: port
         run: |
           bash tests/test-autostart.sh
+
+  linux-smokes-3:
+    name: Linux UI smokes group 3
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config libgtk-3-dev \
+            librsvg2-common shared-mime-info fonts-dejavu-core \
+            iptables nftables xvfb xauth \
+            xdotool stalonetray desktop-file-utils \
+            liblzma-dev libssl-dev xz-utils \
+            python3-location location libloc-database clang libclang-rt-dev \
+            nsis gcc-mingw-w64-x86-64 libgtk-3-bin strace
+
+      - name: Build
+        run: |
+          cmake -S port -B port/build-linux -G Ninja
+          ninja -C port/build-linux
+
+      - name: UI smoke tests group 3
+        working-directory: port
+        env:
+          NO_AT_BRIDGE: "1"
+        run: |
+          smokes="fs-traymenu-smoke fs-session-smoke
+                  fs-help-smoke fs-intelview-smoke fs-whatif-start-smoke
+                  fs-sentinel-test"
+          ninja -C build-linux $smokes
+          for t in $smokes; do
+            echo "== $t"
+            xvfb-run -a "./build-linux/$t"
+          done
 
   linux-live:
     name: Linux live firewall and tarball tests
@@ -335,7 +370,7 @@ jobs:
   windows-smokes-1:
     name: Windows UI smokes group 1
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     defaults:
       run:
         shell: msys2 {0}
@@ -362,15 +397,14 @@ jobs:
         run: |
           cd port
           cmake -S . -B build -G Ninja
-          cmake --build build --target fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke
+          cmake --build build --target fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke
 
       - name: Run UI smokes group 1
         run: |
           cd port
           export STOCKFW_TRAY_SMOKE=1
           smokes="fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke
-                  fs-simviz-smoke fs-theme-smoke fs-trustview-smoke
-                  fs-copilot-smoke fs-statusview-smoke fs-activity-smoke"
+                  fs-simviz-smoke fs-theme-smoke fs-trustview-smoke"
           for t in $smokes; do
             echo "== $t"
             ./build/$t.exe
@@ -406,14 +440,56 @@ jobs:
         run: |
           cd port
           cmake -S . -B build -G Ninja
-          cmake --build build --target fs-overview-place-smoke fs-verdict-smoke fs-startup-smoke fs-traymenu-smoke fs-session-smoke fs-help-smoke fs-intelview-smoke fs-whatif-start-smoke fs-sentinel-test fs-tray-smoke
+          cmake --build build --target fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-overview-place-smoke fs-verdict-smoke fs-startup-smoke
 
       - name: Run UI smokes group 2
         run: |
           cd port
           export STOCKFW_TRAY_SMOKE=1
-          smokes="fs-overview-place-smoke fs-verdict-smoke
-                  fs-startup-smoke fs-traymenu-smoke fs-session-smoke
+          smokes="fs-copilot-smoke fs-statusview-smoke fs-activity-smoke
+                  fs-overview-place-smoke fs-verdict-smoke fs-startup-smoke"
+          for t in $smokes; do
+            echo "== $t"
+            ./build/$t.exe
+          done
+
+  windows-smokes-3:
+    name: Windows UI smokes group 3
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            base-devel
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-gtk3
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-xz
+            mingw-w64-ucrt-x86_64-openssl
+
+      - name: Build UI smokes group 3
+        run: |
+          cd port
+          cmake -S . -B build -G Ninja
+          cmake --build build --target fs-traymenu-smoke fs-session-smoke fs-help-smoke fs-intelview-smoke fs-whatif-start-smoke fs-sentinel-test fs-tray-smoke
+
+      - name: Run UI smokes group 3
+        run: |
+          cd port
+          export STOCKFW_TRAY_SMOKE=1
+          smokes="fs-traymenu-smoke fs-session-smoke
                   fs-help-smoke fs-intelview-smoke fs-whatif-start-smoke
                   fs-sentinel-test fs-tray-smoke"
           for t in $smokes; do
@@ -466,7 +542,7 @@ jobs:
 
   release:
     name: Draft the GitHub release
-    needs: [linux-tests, linux-smokes-1, linux-smokes-2, linux-live, windows-core, windows-smokes-1, windows-smokes-2, windows-installer]
+    needs: [linux-tests, linux-smokes-1, linux-smokes-2, linux-smokes-3, linux-live, windows-core, windows-smokes-1, windows-smokes-2, windows-smokes-3, windows-installer]
     if: >-
       startsWith(github.ref, 'refs/tags/v') ||
       (github.event_name == 'workflow_dispatch' && inputs.draft_release &&
@@ -509,7 +585,7 @@ jobs:
             tag_exists=no
           fi
           want="StockFW-$version-Setup.exe StockFW-$version-linux-x86_64.tar.gz SHA256SUMS.txt"
-          if gh release view "$tag" --json assets --jq '.assets[].name' have.txt 2>/dev/null; then
+          if gh release view "$tag" --json assets --jq '.assets[].name' > have.txt 2>/dev/null; then
             missing=0
             for a in $want; do grep -qxF "$a" have.txt || missing=1; done
             if [ "$missing" = 0 ]; then
