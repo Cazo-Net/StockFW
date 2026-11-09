@@ -362,7 +362,7 @@ jobs:
         run: |
           cd port
           cmake -S . -B build -G Ninja
-          cmake --build build
+          cmake --build build --target fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-overview-place-smoke fs-verdict-smoke fs-startup-smoke fs-traymenu-smoke fs-session-smoke fs-help-smoke fs-intelview-smoke fs-whatif-start-smoke fs-sentinel-test fs-tray-smoke
 
       - name: Run UI smokes
         run: |
