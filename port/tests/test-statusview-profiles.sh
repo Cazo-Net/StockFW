@@ -57,7 +57,7 @@ gcc "$HERE/ui-statusview-smoke.c" \
     -I src \
     -I "$OUT" \
     $(pkg-config --cflags glib-2.0 gobject-2.0 gio-2.0 gtk+-3.0) \
-    -DFS_VERSION='"1.0.7"' -DFS_PLATFORM_NAME='"linux"' \
+    -DFS_VERSION='"1.0.8"' -DFS_PLATFORM_NAME='"linux"' \
     -o "$BUILD_DIR/ui-statusview-smoke" \
     $UI_OBJS \
     "$OUT/libfs-core.a" \

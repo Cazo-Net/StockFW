@@ -2,13 +2,13 @@
 
 Firewall configuration tool for Linux, driving `iptables`.
 
-    StockFW 1.0.7 (Linux (iptables) backend)
+    StockFW 1.0.8 (Linux (iptables) backend)
 
 ## Install
 
     sha256sum -c SHA256SUMS.txt --ignore-missing   # from the release page
-    tar xzf StockFW-1.0.7-linux-x86_64.tar.gz
-    cd StockFW-1.0.7-linux-x86_64
+    tar xzf StockFW-1.0.8-linux-x86_64.tar.gz
+    cd StockFW-1.0.8-linux-x86_64
     sudo ./install.sh
 
 This installs:
