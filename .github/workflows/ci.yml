@@ -618,7 +618,7 @@ jobs:
 
   release:
     name: Draft the GitHub release
-    needs: [linux-tests, linux-smokes-1, linux-smokes-2, linux-smokes-3, linux-live, windows-core, windows-smokes-1a, windows-smokes-1b, windows-smokes-2, windows-smokes-3, windows-installer]
+    needs: [linux-tests, linux-smokes-1a, linux-smokes-1b, linux-smokes-2, linux-smokes-3, linux-live, windows-core, windows-smokes-1a, windows-smokes-1b, windows-smokes-2, windows-smokes-3, windows-installer]
     if: >-
       startsWith(github.ref, 'refs/tags/v') ||
       (github.event_name == 'workflow_dispatch' && inputs.draft_release &&
