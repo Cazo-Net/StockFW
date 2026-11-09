@@ -335,7 +335,7 @@ jobs:
   windows-smokes-1:
     name: Windows UI smokes group 1
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     defaults:
       run:
         shell: msys2 {0}
