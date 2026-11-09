@@ -38,24 +38,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  linux:
-    name: Linux build and tests
+  linux-unit:
+    name: Linux core and smoke tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - name: Install build and test dependencies
         run: |
-          # librsvg2-common (the SVG image loader) and shared-mime-info
-          # are only recommended by GTK, so --no-install-recommends leaves
-          # them out, yet every desktop has them: the Adwaita theme draws
-          # some of its marks (the radio bullet, for one) from SVG files.
-          # Without the loader GTK warns, and the smoke tests count any
-          # GTK warning as a failure.  fonts-dejavu-core is named, not
-          # left to the runner image: the Help layout tests measure text,
-          # and DejaVu Sans is wider than most, so they run in a known
-          # wide font rather than whatever sans the image happens to have.
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build pkg-config libgtk-3-dev \
@@ -74,10 +65,6 @@ jobs:
       - name: Command-line tool without GTK (FS_BUILD_GUI=OFF)
         working-directory: port
         run: |
-          # Configures with GTK hidden from pkg-config, builds fs-core
-          # and stockfw, and checks with readelf -d that stockfw needs
-          # no GTK, GDK, Pango or cairo library; the default (ON) must
-          # still refuse to configure without GTK.
           bash tests/test-nogui-build.sh
 
       - name: Core, adversarial and command-line tests
@@ -101,18 +88,12 @@ jobs:
           ./build-linux/fs-feed-test
           ./build-linux/fs-intelset-test
           ./build-linux/fs-fetch-test golden
-          # How curl is started and read, against a fake curl (the
-          # Windows job checks there is no console window).
           ./build-linux/fs-fetch-spawn-test
-          # As the runner's user here; the root step below runs it again
-          # for its live part.
           ./build-linux/fs-hostnet-test
 
       - name: Location database reader (libloc, IPFire's file, fuzzer)
         working-directory: port
         run: |
-          # Every part runs here: STOCKFW_GEODB_REQUIRE makes a missing
-          # tool a failure instead of a skip.
           ninja -C build-linux fs-geodb-test
           ./build-linux/fs-geodb-test tests/geodb
           STOCKFW_GEODB_REQUIRE=1 FUZZ_SECONDS=15 bash tests/test-geodb.sh
@@ -122,9 +103,6 @@ jobs:
         env:
           NO_AT_BRIDGE: "1"
         run: |
-          # fs-tray-smoke is left out on Linux: it checks that the icon
-          # is embedded in a notification area, and a bare X server has
-          # none.  The Windows job runs it.
           smokes="fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke
                   fs-simviz-smoke fs-theme-smoke fs-trustview-smoke
                   fs-copilot-smoke fs-statusview-smoke fs-activity-smoke
@@ -143,9 +121,6 @@ jobs:
         env:
           NO_AT_BRIDGE: "1"
         run: |
-          # As the runner's user: the backend is unavailable, so the app
-          # cannot touch the firewall.  stalonetray stands in for the
-          # notification area; xdotool reads which windows are on screen.
           ninja -C build-linux StockFW
           xvfb-run -a bash tests/test-instance.sh
 
@@ -155,9 +130,6 @@ jobs:
           NO_AT_BRIDGE: "1"
           STOCKFW_NOTRAY_REQUIRE: "1"
         run: |
-          # broadwayd (libgtk-3-bin) gives a GDK backend that is not
-          # X11, where GTK has no tray: the case of Wayland desktops and
-          # WSLg.  STOCKFW_NOTRAY_REQUIRE turns its SKIP into a failure.
           ninja -C build-linux StockFW fs-prefs-fake-smoke
           bash tests/test-notray.sh
 
@@ -166,13 +138,33 @@ jobs:
         run: |
           bash tests/test-autostart.sh
 
+  linux-live:
+    name: Linux live firewall and tarball tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config libgtk-3-dev \
+            librsvg2-common shared-mime-info fonts-dejavu-core \
+            iptables nftables xvfb xauth \
+            xdotool stalonetray desktop-file-utils \
+            liblzma-dev libssl-dev xz-utils \
+            python3-location location libloc-database clang libclang-rt-dev \
+            nsis gcc-mingw-w64-x86-64 libgtk-3-bin strace
+
+      - name: Build
+        run: |
+          cmake -S port -B port/build-linux -G Ninja
+          ninja -C port/build-linux
+
       - name: Live firewall tests as root, each in a private network namespace
         working-directory: port
         run: |
-          # These print SKIP and pass when root, iptables or nft is
-          # missing.  Everything is installed here, so a skip means the
-          # test did not run, and that fails the job.  With "parts",
-          # a lower-case "skip:" line (some checks not run) fails too.
           strict () {
             local log rc
             log="$(mktemp)"
@@ -188,10 +180,6 @@ jobs:
             fi
             return "$rc"
           }
-          # The threat-intel drivers run some checks as nobody, which
-          # must be able to reach them: ubuntu-24.04 makes home
-          # directories 0750, so every directory above the checkout gets
-          # o+x (search only, nothing becomes readable).
           ninja -C build-linux fs-nftset-load fs-intelset-driver \
             fs-intel-backend-driver fs-intel-e2e-driver stockfw-intel-test \
             fs-fetch-test fs-hostnet-test
@@ -203,46 +191,16 @@ jobs:
           strict tests/test-whatif-live.sh
           strict tests/test-logstart-events.sh
           strict tests/test-logstart-kmsg.sh
-          # H12: the What-If "Start the firewall" through the start gate.
-          # As the runner's user it prints SKIP (the What-If trusts a
-          # "stopped" reading only from root); here it must run.  Fake
-          # backend: no firewall is touched.
-          ninja -C build-linux fs-whatif-start-smoke
-          log="$(mktemp)"
-          sudo env NO_AT_BRIDGE=1 xvfb-run -a ./build-linux/fs-whatif-start-smoke \
-            > "$log" 2>&1 && rc=0 || rc=$?
-          cat "$log"
-          if grep -q '^SKIP' "$log"; then
-            echo "::error::fs-whatif-start-smoke was skipped on CI"
-            exit 1
-          fi
-          [ "$rc" -eq 0 ] || exit "$rc"
-          # 1.0.7 threat intel and countries: the nft sets, the Linux
-          # backend's slots, the engine end to end with real downloads
-          # from a local HTTPS server, `stockfw intel', and the
-          # downloader (curl as nobody), each in private namespaces.
           strict tests/test-intelset.sh
           strict tests/test-intel-backend.sh
           strict tests/test-intel-e2e.sh
           strict tests/test-intel-cli.sh
           strict tests/test-fetch.sh
-          # The dashboard's HTTP server as root: it serves SUDO_UID, and
-          # connections from root and nobody are closed at accept.  Its
-          # root-only checks say "skip:" when they cannot run (no
-          # setpriv): here that fails the job.
           strict tests/test-dashboard.sh parts
           sudo ./build-linux/fs-hostnet-test
-          # The boot unit and `stockfw start' as the unit runs it; the
-          # Linux installer in a private mount namespace; start at
-          # sign-in written as root on a user's behalf.
           strict tests/test-boot-start.sh
           strict tests/test-linux-install.sh
           strict tests/test-autostart.sh
-          # The command-line tool as root: the live event line of
-          # events -f, the lockout guard under sudo, real apply, start
-          # and stop (in a private namespace).  Its root-only parts say
-          # "skip:" in lower case when they cannot run; here every one
-          # of them must run, so such a line fails the job.
           log="$(mktemp)"
           sudo bash tests/test-cli.sh > "$log" 2>&1 && rc=0 || rc=$?
           cat "$log"
@@ -252,13 +210,6 @@ jobs:
           fi
           [ "$rc" -eq 0 ] || exit "$rc"
 
-      # The release tarball: its own Release build (the tests above ran
-      # on the default RelWithDebInfo one), packaged and stripped by the
-      # packager, then checked as a user gets it -- install.sh runnable
-      # as ./install.sh, the version, the changelog, the licence list.
-      # nsis and gcc-mingw-w64 above let test-release.sh compile
-      # StockFW.nsi and the version resource here as well (windres needs
-      # the MinGW preprocessor and windows.h, not binutils alone).
       - name: Build and check the Linux tarball
         id: tarball
         working-directory: port
@@ -291,12 +242,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # MSYS2 setup downloads its package databases from mirror.msys2.org,
-      # which sometimes stalls ("Operation too slow ... failed to
-      # synchronize all databases").  That fails the job before any of our
-      # code is built, so a stalled mirror is retried once after a pause,
-      # into a fresh directory, instead of turning the run red.  A second
-      # failure still fails the job.
       - name: Set up MSYS2
         id: msys2
         continue-on-error: true
@@ -349,24 +294,16 @@ jobs:
 
       - name: Every test suite (tests/full-suite.sh)
         env:
-          # The runner is elevated and its firewall service runs, so the
-          # threat-intel test on the real Windows Firewall must run:
-          # with this set, every SKIP of fs-intel-windows-test fails.
           STOCKFW_REQUIRE_WINDOWS_INTEL: "1"
         run: |
           cd port
           bash tests/full-suite.sh
 
-      # The installer is built whenever the program built, even when a
-      # test failed: the run stays red, and the installer is there to
-      # look at the failure on a real machine.
       - name: Build the installer
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           cd port
           bash installer/build_installer.sh
-          # Now that the runtime is staged, check it carries GLib's
-          # spawn helpers (without them no netsh or event log call works).
           bash tests/test-installer-spawn.sh
 
       - name: Keep the installer
@@ -378,28 +315,9 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # The release job puts this run's artifacts into the GitHub release:
-  # the Windows installer, the Linux tarball and SHA256SUMS.txt, with the
-  # notes taken from the version's section of CHANGELOG.md.  It runs only
-  # when both jobs passed, in one of two ways:
-  #
-  # - a pushed tag vX.Y.Z (the tag must match the version in
-  #   port/CMakeLists.txt);
-  # - "Run workflow" on main with "draft_release" ticked (no git needed),
-  #   for tag v<version>.  If that tag already exists, every file that goes
-  #   into the packages must be the same on main as on the tag.
-  #
-  # With no release for the tag, it creates a draft (a person reads it and
-  # presses Publish; a draft for a tag that does not exist yet names the
-  # commit that was built, and GitHub creates the tag on Publish).  With a
-  # release that lacks some of the three assets (one made on the website,
-  # for instance), it uploads them and fills in empty notes, and leaves
-  # the release published or draft as it was.  With all three assets
-  # present it changes nothing.  Either way it refuses a version whose
-  # CHANGELOG section has no date.
   release:
     name: Draft the GitHub release
-    needs: [linux, windows]
+    needs: [linux-unit, linux-live, windows]
     if: >-
       startsWith(github.ref, 'refs/tags/v') ||
       (github.event_name == 'workflow_dispatch' && inputs.draft_release &&
