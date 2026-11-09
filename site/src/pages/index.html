@@ -3,8 +3,10 @@ title: StockFW
 head_title: StockFW · Know what your firewall will do before it does it
 description: StockFW manages the firewall built into Windows and Linux. Live events, a plain-text policy, a what-if simulator and a local copilot. No driver, no cloud, no account.
 layout: home
+extra_js: <script src="{{root}}assets/js/cyber-hud.js" defer></script> <script src="{{root}}assets/js/hero-canvas.js" defer></script>
 ---
 <section class="hero">
+	<canvas id="hero-canvas" class="hero-canvas" aria-hidden="true"></canvas>
 	<div class="wrap hero-grid">
 		<div class="hero-copy">
 			<p class="label">Firewall manager · Windows and Linux · open source</p>
@@ -22,55 +24,7 @@ layout: home
 			</ul>
 		</div>
 
-		<div class="wi" id="wi">
-			<div class="wi-top"><span class="label">What-if simulator</span><span class="wi-dots" aria-hidden="true"><i></i><i></i><i></i></span></div>
-			<div class="wi-input"><span class="pr">stockfw simulate </span>"<span class="wi-q">allow ssh from 192.168.1.50 on port 22</span>"<span class="wi-caret" aria-hidden="true"></span></div>
-			<svg class="wi-scene" viewBox="0 0 460 150" role="img" aria-label="A packet travels from its source to the StockFW wall. The wall turns green and the packet continues when the policy allows it, or shakes red and the packet bounces back when it does not.">
-				<g class="node node-l" transform="translate(26 66)">
-					<g class="n-l-pc"><rect class="fillish" x="4" y="6" width="40" height="28" rx="3"/><path d="M14 42h20M24 34v8"/></g>
-					<g class="n-l-globe"><circle class="fillish" cx="24" cy="22" r="18"/><path d="M6 22h36M24 4c-7 6-7 30 0 36M24 4c7 6 7 30 0 36"/></g>
-				</g>
-				<text class="nlabel l-label" x="50" y="124" text-anchor="middle">192.168.1.50</text>
-				<text class="nsub l-sub" x="50" y="138" text-anchor="middle">remote host</text>
-				<line class="seg seg-l" x1="78" y1="86" x2="202" y2="86"/>
-				<line class="seg seg-r" x1="258" y1="86" x2="378" y2="86"/>
-				<g class="wall ok">
-					<rect class="wall-body" x="206" y="60" width="48" height="52" rx="3"/>
-					<path class="bricks" d="M206 73h48M206 86h48M206 99h48M222 60v13M238 73v13M222 86v13M238 99v13"/>
-					<path class="flame" d="M230 60c-9-6-10-16-3-25 1 6 4 9 7 10 1-5 0-9-2-13 8 5 12 14 8 22-2 4-6 6-10 6z"/>
-					<path class="flame-core" d="M230 59c-4-3-5-8-1-13 1 3 3 5 4 6 2 3 1 6-3 7z"/>
-				</g>
-				<g transform="translate(230 20)"><g class="badge badge-ok on"><circle r="12"/><path d="M-5 0l3.5 3.5L6-4"/></g></g>
-				<g transform="translate(230 20)"><g class="badge badge-no"><circle r="12"/><path d="M-4.5-4.5l9 9M4.5-4.5l-9 9"/></g></g>
-				<g class="node node-r glow" transform="translate(386 66)">
-					<rect class="halo" x="-6" y="-2" width="60" height="52" rx="8"/>
-					<g class="n-r-pc"><rect class="fillish" x="4" y="6" width="40" height="28" rx="3"/><path d="M14 42h20M24 34v8"/></g>
-					<g class="n-r-globe" style="display:none"><circle class="fillish" cx="24" cy="22" r="18"/><path d="M6 22h36M24 4c-7 6-7 30 0 36M24 4c7 6 7 30 0 36"/></g>
-				</g>
-				<text class="nlabel r-label" x="410" y="124" text-anchor="middle">this computer</text>
-				<text class="nsub r-sub" x="410" y="138" text-anchor="middle">local port 22</text>
-				<g class="packet" style="transform:translate(326px,74px)"><rect width="54" height="24" rx="4"/><text x="27" y="16" text-anchor="middle">TCP 22</text></g>
-			</svg>
-			<div class="wi-verdict"><span class="wi-pill ok">ALLOWED</span><span class="wi-scn">Inbound TCP port 22 (SSH) from 192.168.1.50 to this computer</span></div>
-			<dl class="wi-detail">
-				<dt>Rule</dt><dd class="d-rule">StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP)</dd>
-				<dt>Why</dt><dd class="d-why">You asked to allow this. It is already ALLOWED. Rule 'StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP)' allows it.</dd>
-				<dt>Fix</dt><dd class="d-fix">Nothing to change: this is already allowed, as you asked.</dd>
-				<dt>Exit</dt><dd class="d-exit exit-ok">0  (success)</dd>
-			</dl>
-			<div class="wi-chips" role="group" aria-label="Replay another line"></div>
-			<details class="wi-policy">
-				<summary>the example policy these verdicts were read against</summary>
-<pre><span class="k">inbound/allow-service</span>   SSH, 22, 192.168.1.0/24, admin LAN
-                        HTTPS, 443, Anyone, web server
-<span class="k">inbound/allow-from</span>      192.168.1.1, router
-                        2001:db8:1::/48, office v6
-<span class="k">outbound/deny-to</span>        198.51.100.66, known bad host
-<span class="k">outbound/deny-service</span>   Telnet, 23, Anyone, no cleartext logins</pre>
-			</details>
-			<p class="wi-note">Every verdict, reason and fix in this card is the real output of <code>stockfw simulate</code> against that policy, copied word for word. The page replays it; it does not judge anything itself.</p>
-		</div>
-	</div>
+		
 </section>
 
 <section class="strip" aria-label="How StockFW connects to your system">

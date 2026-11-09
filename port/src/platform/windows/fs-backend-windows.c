@@ -62,6 +62,7 @@
 #include "core/fs-util.h"
 #include "core/fs-winevt.h"
 #include "core/fs-toolpath.h"
+#include "core/fs-txapply.h"
 #include "netfw-compat.h"
 
 /* Linked through CMake: ole32, oleaut32, iphlpapi, ws2_32 */
@@ -1232,31 +1233,27 @@ firewalled_clear_rules (GError **error)
 	return FS_APPLY_PARTIAL;
 }
 
-/* [ firewalled_apply_rules ]
- * Replaces the rules we own with the ones the policy describes. */
+
+static GList *windows_tx_snapshot (gpointer user_data, GError **error);
+static gboolean windows_tx_restore_spec (gpointer user_data, const FsTxRuleSpec *spec, GError **error);
+static gboolean windows_tx_verify_present (gpointer user_data, const GList *specs, GError **error);
+
 static FsApplyResult
 firewalled_apply_rules (const FsPolicy *policy, GError **error)
 {
-	GList *rules, *iter;
+	GList *rules = NULL, *iter;
+	GPtrArray *refused = NULL;
+	gchar *refusal = NULL;
+	GList *snapshot = NULL;
 	guint applied = 0;
 	guint failed = 0;
 	GError *first_error = NULL;
 	FsApplyResult clear_result;
-	GPtrArray *refused = NULL;
-	gchar *refusal = NULL;
+	FsSettingsPlan *plan = NULL;
 
 	if (policy == NULL)
 		return FS_APPLY_FAILED;
 
-	/* A refused BLOCK row stops the apply before anything is
-	 * cleared.  This function replaces the whole set, so carrying on
-	 * would delete the block that is in force now and put nothing in
-	 * its place: fail-open, with only the rollback (when there is a
-	 * journal at all) to close the hole again.  The Linux generator
-	 * refuses the whole script for a deny it cannot write in the same
-	 * way.  A refused allow is different -- leaving it out keeps a
-	 * hole closed -- so those are reported below and the rest
-	 * applies. */
 	refusal = fs_fwrule_block_refusals (policy);
 	if (refusal != NULL) {
 		g_set_error (error,
@@ -1270,11 +1267,6 @@ firewalled_apply_rules (const FsPolicy *policy, GError **error)
 
 	rules = fs_fwrule_from_policy_checked (policy, &refused);
 
-	/* Rows the translation refused (a port that does not parse) have
-	 * no rule to create.  Each one counts as a failed rule, so the
-	 * verdict can never be "Rules applied" for a policy that is not
-	 * all in force, and their reasons are what the dialog shows:
-	 * the user can fix those, unlike a netsh exit code. */
 	if (refused->len > 0) {
 		GString *why = g_string_new (NULL);
 
@@ -1287,134 +1279,138 @@ firewalled_apply_rules (const FsPolicy *policy, GError **error)
 		failed += refused->len;
 		refusal = g_string_free (why, FALSE);
 	}
-
 	g_ptr_array_unref (refused);
 
-	/* Drop the previous set first so applying twice does not
-	 * accumulate duplicates.  P6: the clear verifies its own work by
-	 * re-enumerating, and a failure here is not swallowed -- the
-	 * verdict below degrades to PARTIAL so the caller never hears
-	 * "Rules applied" while stale copies are still active. */
-	clear_result = firewalled_clear_rules (&first_error);
-
-	for (iter = rules; iter != NULL; iter = iter->next) {
-		GError *local = NULL;
-
-		if (netsh_add_rule (iter->data, &local))
-			applied++;
-		else {
-			failed++;
-
-			/* Keep the first real failure for the dialog. */
-			if (first_error == NULL && local != NULL)
-				first_error = g_error_copy (local);
-
-			g_clear_error (&local);
-		}
-	}
-
-	fs_fwrule_list_free (rules);
-
-	/* P5: the Preferences settings this backend honors (the ICMP
-	 * allow-list, the reserved-source block) become
-	 * rules of their own.  firewalled_clear_rules() above already
-	 * retired the previous copies -- they carry the same "StockFW"
-	 * prefix the rule lifecycle owns -- and the apply gate is still
-	 * the only path into this function, so settings cannot reach the
-	 * firewall around it.  A settings failure counts exactly like a
-	 * policy failure: partial is partial. */
-	if (ctx_settings != NULL) {
-		FsSettingsPlan *plan = fs_settings_plan_new (ctx_settings);
-
-		for (guint i = 0; i < plan->rules->len; i++) {
-			const FsSettingRule *srule =
-				g_ptr_array_index (plan->rules, i);
-			GError *local = NULL;
-
-			if (netsh_add_setting_rule (srule, &local))
-				applied++;
-			else {
-				failed++;
-
-				if (first_error == NULL && local != NULL)
-					first_error = g_error_copy (local);
-
-				g_clear_error (&local);
-			}
-		}
-
-		fs_settings_plan_free (plan);
-	}
-
-	if (failed > 0 && applied == 0) {
-		/* Decide the verdict first: g_propagate_error() hands
-		 * ownership of first_error to *error (and g_clear_error()
-		 * would free it), so reading first_error->message afterwards
-		 * would be a use-after-free. */
-		gboolean needs_elevation =
-			netsh_needs_elevation (first_error != NULL
-			                       ? first_error->message : NULL);
-
-		if (refusal != NULL) {
-			/* The refused rows first: they are why nothing
-			 * could be created as written. */
-			g_set_error (error,
-			             g_quark_from_static_string (
-				             "fs-backend-windows"),
-			             0, "%s%s%s", refusal,
-			             first_error != NULL ? "\n" : "",
-			             first_error != NULL
-			             ? first_error->message : "");
-			g_clear_error (&first_error);
-		} else if (error != NULL && first_error != NULL)
-			g_propagate_error (error, first_error);
-		else {
-			if (error != NULL)
-				g_set_error_literal (
-					error,
-					g_quark_from_static_string (
-						"fs-backend-windows"),
-					0,
-					"None of the rules could be created.");
-
-			/* Not propagated, so nobody else will free it. */
-			g_clear_error (&first_error);
-		}
-
-		g_free (refusal);
-		return needs_elevation ? FS_APPLY_NO_PRIVILEGE : FS_APPLY_FAILED;
-	}
-
-	if (failed > 0) {
+	if (refusal != NULL && failed > 0 && rules == NULL) {
 		g_set_error (error, g_quark_from_static_string ("fs-backend-windows"),
-		             (int) failed, "%u of %u rules could not be created%s%s",
-		             failed, applied + failed,
-		             refusal != NULL ? ":\n" : "",
-		             refusal != NULL ? refusal : "");
-		/* The dialog gets the count; the first concrete reason is
-		 * still owned here and must not leak. */
-		g_clear_error (&first_error);
+		             0, "%s", refusal);
 		g_free (refusal);
-		return FS_APPLY_PARTIAL;
+		return FS_APPLY_FAILED;
 	}
 
-	g_free (refusal);
+	if (ctx_settings != NULL)
+		plan = fs_settings_plan_new (ctx_settings);
 
-	/* P6: nothing to add failed, but the clear could not verify that
-	 * the previous set is gone -- the verdict must still say so, with
-	 * the reason the clear recorded in first_error. */
+	/* 1. Take COM snapshot before any destructive changes */
+	snapshot = windows_tx_snapshot (NULL, &first_error);
+	if (first_error != NULL) {
+		if (error != NULL)
+			g_propagate_error (error, first_error);
+		else
+			g_clear_error (&first_error);
+		fs_fwrule_list_free (rules);
+		if (plan != NULL)
+			fs_settings_plan_free (plan);
+		g_free (refusal);
+		return FS_APPLY_FAILED;
+	}
+
+	/* 2. Clear existing managed rules with verified zero */
+	clear_result = firewalled_clear_rules (&first_error);
 	if (clear_result != FS_APPLY_OK) {
 		if (error != NULL && first_error != NULL)
 			g_propagate_error (error, first_error);
 		else
 			g_clear_error (&first_error);
-
+		fs_fwrule_list_free (rules);
+		if (plan != NULL)
+			fs_settings_plan_free (plan);
+		g_free (refusal);
+		g_list_free_full (snapshot, (GDestroyNotify) fs_tx_rule_spec_free);
 		return clear_result;
 	}
 
+	/* 3. Apply policy rules */
+	for (iter = rules; iter != NULL; iter = iter->next) {
+		GError *local = NULL;
+		if (netsh_add_rule (iter->data, &local)) {
+			applied++;
+		} else {
+			failed++;
+			if (first_error == NULL && local != NULL)
+				first_error = g_error_copy (local);
+			g_clear_error (&local);
+		}
+	}
+
+	/* 4. Apply settings rules */
+	if (plan != NULL) {
+		for (guint i = 0; i < plan->rules->len; i++) {
+			const FsSettingRule *srule = g_ptr_array_index (plan->rules, i);
+			GError *local = NULL;
+			if (netsh_add_setting_rule (srule, &local)) {
+				applied++;
+			} else {
+				failed++;
+				if (first_error == NULL && local != NULL)
+					first_error = g_error_copy (local);
+				g_clear_error (&local);
+			}
+		}
+	}
+
+	fs_fwrule_list_free (rules);
+	if (plan != NULL)
+		fs_settings_plan_free (plan);
+
+	/* 5. If any failure occurred, execute verified rollback to snapshot */
+	if (failed > 0) {
+		gboolean rollback_ok = TRUE;
+		GError *rollback_err = NULL;
+
+		/* Clear partial new rules */
+		firewalled_clear_rules (&rollback_err);
+		g_clear_error (&rollback_err);
+
+		/* Restore snapshot rules */
+		for (iter = snapshot; iter != NULL; iter = iter->next) {
+			const FsTxRuleSpec *spec = iter->data;
+			if (!windows_tx_restore_spec (NULL, spec, &rollback_err)) {
+				rollback_ok = FALSE;
+				break;
+			}
+		}
+
+		if (rollback_ok && !windows_tx_verify_present (NULL, snapshot, &rollback_err)) {
+			rollback_ok = FALSE;
+		}
+
+		g_set_error (error, g_quark_from_static_string ("fs-backend-windows"),
+		             (int) failed, "%u of %u rules could not be created%s%s%s%s",
+		             failed, applied + failed,
+		             refusal != NULL ? ":\n" : "",
+		             refusal != NULL ? refusal : "",
+		             first_error != NULL ? ": " : "",
+		             first_error != NULL ? first_error->message : "");
+
+		if (!rollback_ok) {
+			GError *combined = g_error_new (g_quark_from_static_string ("fs-backend-windows"), 0,
+				"%s; ROLLBACK FAILED%s%s",
+				error != NULL && *error != NULL ? (*error)->message : "apply failed",
+				rollback_err != NULL ? ": " : "",
+				rollback_err != NULL ? rollback_err->message : "unknown reason");
+			if (error != NULL) {
+				g_clear_error (error);
+				*error = combined;
+			} else {
+				g_error_free (combined);
+			}
+		}
+
+		g_clear_error (&first_error);
+		g_clear_error (&rollback_err);
+		g_list_free_full (snapshot, (GDestroyNotify) fs_tx_rule_spec_free);
+		g_free (refusal);
+		return FS_APPLY_PARTIAL;
+	}
+
+	g_clear_error (&first_error);
+	g_list_free_full (snapshot, (GDestroyNotify) fs_tx_rule_spec_free);
+	g_free (refusal);
 	return FS_APPLY_OK;
 }
 
+/* [ firewalled_apply_delta ]
 /* [ firewalled_apply_delta ]
  * The narrow path: delete only the names that are going away, restore
  * the kept rules whose names those deletions would take with them, and
@@ -3140,6 +3136,162 @@ fw_intel_list (FwIntel *fw, GPtrArray *ours, GPtrArray *objs,
  * size of the blocklist rules cannot cut the list short.  Rules in the
  * threat-intel group are skipped unread.  TRUE with *sink set, or
  * FALSE with *sink NULL when the rules cannot be listed. */
+static GList *
+windows_tx_snapshot (gpointer user_data, GError **error)
+{
+	FwIntel fw;
+	IUnknown *unk = NULL;
+	IEnumVARIANT *en = NULL;
+	GList *snapshot = NULL;
+	HRESULT hr;
+
+	if (!fw_intel_open (&fw, TRUE, error))
+		return NULL;
+
+	hr = fw.rules->lpVtbl->get__NewEnum (fw.rules, &unk);
+	if (FAILED (hr) || unk == NULL) {
+		intel_hr_error (error, FAILED (hr) ? hr : E_FAIL,
+		                "The Windows Firewall rules could not be listed for snapshot");
+		fw_intel_close (&fw);
+		return NULL;
+	}
+
+	hr = unk->lpVtbl->QueryInterface (unk, &FS_IID_IEnumVARIANT, (void **) &en);
+	unk->lpVtbl->Release (unk);
+	if (FAILED (hr) || en == NULL) {
+		intel_hr_error (error, FAILED (hr) ? hr : E_FAIL,
+		                "The Windows Firewall rules could not be listed for snapshot");
+		fw_intel_close (&fw);
+		return NULL;
+	}
+
+	for (;;) {
+		VARIANT v;
+		ULONG got = 0;
+		INetFwRule *r = NULL;
+
+		VariantInit (&v);
+		hr = en->lpVtbl->Next (en, 1, &v, &got);
+		if (FAILED (hr) || hr != S_OK || got == 0) {
+			VariantClear (&v);
+			break;
+		}
+
+		if (v.vt == VT_DISPATCH && v.pdispVal != NULL &&
+		    SUCCEEDED (v.pdispVal->lpVtbl->QueryInterface (
+			    v.pdispVal, &FS_IID_INetFwRule, (void **) &r)) &&
+		    r != NULL) {
+			BSTR bn = NULL;
+			gchar *name = NULL;
+
+			r->lpVtbl->get_Name (r, &bn);
+			name = bstr_take (bn);
+
+			if (name != NULL && fs_netsh_rule_name_is_ours (name)) {
+				FsTxRuleSpec *spec = g_new0 (FsTxRuleSpec, 1);
+				NET_FW_RULE_DIRECTION dir = 0;
+				NET_FW_ACTION action = NET_FW_ACTION_MAX;
+				LONG proto = -1;
+				BSTR b = NULL;
+
+				spec->name = name; name = NULL;
+
+				if (SUCCEEDED (r->lpVtbl->get_Direction (r, &dir)))
+					spec->direction = g_strdup (dir == NET_FW_RULE_DIR_IN ? "in" : "out");
+				else
+					spec->direction = g_strdup ("in");
+
+				if (SUCCEEDED (r->lpVtbl->get_Action (r, &action)))
+					spec->action = g_strdup (action == NET_FW_ACTION_ALLOW ? "allow" : "block");
+				else
+					spec->action = g_strdup ("allow");
+
+				if (SUCCEEDED (r->lpVtbl->get_Protocol (r, &proto))) {
+					if (proto == 6) spec->protocol = g_strdup ("TCP");
+					else if (proto == 17) spec->protocol = g_strdup ("UDP");
+					else spec->protocol = g_strdup ("any");
+				} else {
+					spec->protocol = g_strdup ("any");
+				}
+
+				r->lpVtbl->get_LocalPorts (r, &b); spec->local_ports = bstr_take (b);
+				r->lpVtbl->get_RemotePorts (r, &b); spec->remote_ports = bstr_take (b);
+				r->lpVtbl->get_RemoteAddresses (r, &b); spec->remote_address = bstr_take (b);
+				r->lpVtbl->get_ApplicationName (r, &b); spec->program = bstr_take (b);
+
+				snapshot = g_list_append (snapshot, spec);
+			}
+			g_free (name);
+			r->lpVtbl->Release (r);
+		}
+		VariantClear (&v);
+	}
+
+	en->lpVtbl->Release (en);
+	fw_intel_close (&fw);
+	return snapshot;
+}
+
+static gboolean
+windows_tx_restore_spec (gpointer user_data, const FsTxRuleSpec *spec, GError **error)
+{
+	FsFwRule *rule = fs_fwrule_new ();
+	gboolean ok;
+
+	rule->name = g_strdup (spec->name);
+	rule->direction = g_strcmp0 (spec->direction, "in") == 0 ? FS_DIR_INBOUND : FS_DIR_OUTBOUND;
+	rule->action = g_strcmp0 (spec->action, "allow") == 0 ? FS_ACTION_ALLOW : FS_ACTION_BLOCK;
+	if (g_strcmp0 (spec->protocol, "TCP") == 0)
+		rule->protocol = FS_PROTO_TCP;
+	else if (g_strcmp0 (spec->protocol, "UDP") == 0)
+		rule->protocol = FS_PROTO_UDP;
+	else
+		rule->protocol = FS_PROTO_ANY;
+
+	rule->local_ports = g_strdup (spec->local_ports);
+	rule->remote_ports = g_strdup (spec->remote_ports);
+	rule->remote_address = g_strdup (spec->remote_address);
+	rule->program = g_strdup (spec->program);
+
+	ok = netsh_add_rule (rule, error);
+	fs_fwrule_free (rule);
+	return ok;
+}
+
+static gboolean
+windows_tx_verify_present (gpointer user_data, const GList *specs, GError **error)
+{
+	GHashTable *ours = NULL;
+	GError *local = NULL;
+	const GList *iter;
+	gboolean ok = TRUE;
+
+	if (com_list_our_names (&ours, &local)) {
+		for (iter = specs; iter != NULL; iter = iter->next) {
+			const FsTxRuleSpec *spec = iter->data;
+			gchar *listed = netsh_safe_name (spec->name);
+			if (ours == NULL || !g_hash_table_contains (ours, listed)) {
+				ok = FALSE;
+				if (error != NULL && *error == NULL)
+					g_set_error (error, g_quark_from_static_string ("fs-backend-windows"), 0,
+					             "rollback verification failed: rule \"%s\" missing", spec->name);
+				g_free (listed);
+				break;
+			}
+			g_free (listed);
+		}
+		if (ours != NULL)
+			g_hash_table_destroy (ours);
+	} else {
+		g_clear_error (&local);
+		return TRUE;
+	}
+	return ok;
+}
+
+/* [ firewalled_apply_rules ]
+ * Replaces the rules we own with the ones the policy describes transactionally. */
+
 static gboolean
 com_list_our_names (GHashTable **sink, GError **error)
 {
