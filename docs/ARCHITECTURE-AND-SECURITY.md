@@ -1053,6 +1053,28 @@ Sentinel answers the rogue-agent case: a compromised or malicious process must b
 
 ---
 
+## Chapter 17: StockFW 1.0.9 Nexora Addendum (AEGIS-ML & Autonomous XDR)
+
+*This chapter records what shipped in StockFW 1.0.9 (November 2026). It documents the realization of the Nexora intelligence engine, AEGIS-ML continuous active learning, automated XDR playbooks, the interactive network topology graph, tamper-evident audit ledgers, and post-quantum ZTNA stubs.*
+
+### 17.1 Nexora AEGIS-ML Active Learning Engine (`fs-ml.c`, `fs-ml-monitor.c`)
+- **Sliding-Window Feature Extraction**: Aggregates `FsHit` event streams into 13 behavioral features per host over sliding time windows.
+- **PSI Drift Monitoring**: Implements Population Stability Index (PSI) drift detection against training distributions (arXiv 2607.17336) with 200-sample minimum gates, quantile binning, Welford running variance confidence tracking, and strict 50-label validation requirements before triggering GBDT retraining.
+- **Model Hot-Reloading**: Automatically compiles and hot-swaps quantized integer decision-tree C headers (`core/fs-ml-model.h`) for sub-millisecond inference with zero cloud dependency.
+
+### 17.2 Autonomous XDR Playbooks & Incident Reporting (`fs-playbook.c`)
+- **Self-Healing Response Rules**: Automatically triggers containment actions (`FS_XDR_ACTION_BLOCK_IP`, `FS_XDR_ACTION_ISOLATE_HOST`, `FS_XDR_ACTION_REVOKE_TRUST`) upon detecting AEGIS-ML anomalies, brute-force attacks, C2 beacons, or CISA KEV vulnerability matches.
+- **JSON Incident Serialization**: Structures security incidents and dispatches structured logs for SIEM and forensic analysis.
+
+### 17.3 Interactive Network Topology Graph (`fs-topology.c`)
+- **Cairo-Rendered Node Graph**: A force-directed visualizer mapping active processes, remote ASNs, and live connections in real time on a dedicated GTK3 view.
+
+### 17.4 Tamper-Evident Audit Ledger & Post-Quantum ZTNA (`fs-audit-ledger.c`, `fs-quantum.c`)
+- **Cryptographic Hash-Chaining**: SHA-256 block hashing of every policy modification, rule application, and Sentinel auto-block into an immutable forensic log (`audit.log`).
+- **Post-Quantum Cryptography Stubs**: CRYSTALS-Kyber key encapsulation and CRYSTALS-Dilithium signature stubs for future-proof zero-trust session security.
+
+---
+
 ## Chapter 12: 1.0.5 Addendum
 
 *This chapter records what shipped in StockFW 1.0.5 (October 2026). Chapters 1–10 carry the 1.0.3 base text and Chapter 11 the 1.0.4 additions; where this chapter restates an earlier claim, it is authoritative. Every feature below is teeth-tested by the suites named in Chapter 8.*
