@@ -1025,6 +1025,34 @@ Sentinel answers the rogue-agent case: a compromised or malicious process must b
 
 ---
 
+## Chapter 16: The Guinness-Level Sovereign Roadmap (Phase v1.1 to v3.0)
+
+*This chapter documents the ultimate evolution of StockFW into the world's first sovereign, kernel-aware, local AI security fabric, ensuring absolute superiority over traditional cloud-tethered EDRs and blind L3/L4 firewalls.*
+
+### 16.1 Phase v1.1 — The Proactive Shield
+- **CISA KEV Local Feed Parser**: Offline ingestion and daily caching of the CISA Known Exploited Vulnerabilities JSON feed (`fs-feed.c`), cross-referencing installed software on Windows/Linux to alert users of active threats before exploitation occurs.
+- **Windows WFP Per-Process Rules**: Exposing robust per-application and path-aware egress controls via native Windows Filtering Platform (WFP) ALE APIs in the StockFW UI.
+- **Linux Tetragon / eBPF TracingPolicy Generation**: Automated compilation of StockFW rules into high-performance eBPF tracing policies for kernel-level process network isolation on Linux.
+
+### 16.2 Phase v1.2 — The Neural Sentinel
+- **Embedded INT8 Tree-Ensemble (TinyML) Engine**: Integration of a quantized gradient-boosted decision-tree model, trained offline by a script in `port/tools/ml/` and exported to `core/fs-ml-model.h`, directly into the Copilot's event-feed path for zero-day port scans, lateral movement, brute-force login attempts, and C2 beacon detection in microseconds per event. Integer-only tree walks, zero telemetry, absolute offline sovereignty.
+- **Advanced Behavioral Copilot UI**: Real-time confidence scores, behavioral anomaly explanations, and one-click auto-blocking with 10-minute timeboxes and instant undo.
+
+### 16.3 Phase v1.3 — The L7 & AI Governor
+- **Native DNS & SNI Inspection**: eBPF-based inspection of DNS queries and TLS ClientHello SNI headers to detect DNS tunneling and block C2 domains by name without proxy overhead.
+- **LLM & MCP Gateway Rules**: Specialized policy templates and governance rules to police local AI agents, Model Context Protocol (MCP) servers, and LLM API endpoints against data exfiltration.
+
+### 16.4 Phase v2.0 — The Autonomous Sovereign Fabric
+- **Native Rust eBPF Datapath (`aya`)**: Replacing external helper daemons with a fully embedded Rust eBPF engine inside StockFW for sub-microsecond packet and syscall termination (`SIGKILL`).
+- **Graph-Based What-If Simulation 2.0**: Advanced reachability analysis simulating multi-rule precedence conflicts across IPv4, IPv6, and process ancestry trees.
+
+### 16.5 Phase v3.0 — The Guinness Standard: Local Sovereign Mesh
+- **P2P Encrypted Local Fleet Mesh**: Peer-to-peer synchronization of threat intelligence and adaptive isolation rules across local subnet nodes over encrypted WireGuard tunnels without any centralized cloud controller or SaaS dependency.
+- **Hardware TPM Attestation**: Cryptographic signing of host firewall policies via motherboard TPM 2.0 chips for absolute hardware-backed zero-trust integrity.
+
+
+---
+
 ## Chapter 12: 1.0.5 Addendum
 
 *This chapter records what shipped in StockFW 1.0.5 (October 2026). Chapters 1–10 carry the 1.0.3 base text and Chapter 11 the 1.0.4 additions; where this chapter restates an earlier claim, it is authoritative. Every feature below is teeth-tested by the suites named in Chapter 8.*
