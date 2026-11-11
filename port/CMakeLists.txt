@@ -74,6 +74,7 @@ add_library(fs-core STATIC
   src/core/fs-autoblock.c
   src/core/fs-sentinel.c
   src/core/fs-ml.c
+  src/core/fs-l7.c
   src/core/fs-instance.c
   src/core/fs-autostart.c
   src/core/fs-blocktally.c
