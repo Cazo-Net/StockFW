@@ -1,5 +1,5 @@
 /*---[ fs-ml.h ]---------------------------------------------------------
- * Neural Sentinel: Behavioral Anomaly & TinyML Threat Detection Engine
+ * StockFW Nexora / AEGIS-ML: Behavioral Anomaly & TinyML Threat Detection Engine
  * Part of StockFW Phase v1.2 (The Neural Sentinel)
  *
  * Evaluates host network activity windows against a quantized decision-tree
