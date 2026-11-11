@@ -478,6 +478,9 @@ row_shell (GtkWidget *card, const gchar *id, const gchar *title,
 	gtk_widget_set_name (box, name);
 	g_free (name);
 
+	gtk_widget_set_hexpand (text, TRUE);
+	gtk_widget_set_halign (text, GTK_ALIGN_FILL);
+
 	gtk_box_pack_start (GTK_BOX (text), label_new (title, "pref-label", TRUE),
 	                    FALSE, FALSE, 0);
 	if (about != NULL)

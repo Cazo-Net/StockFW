@@ -22,6 +22,7 @@
 #include "ui/fs-policyview.h"
 #include "ui/fs-hitview.h"
 #include "ui/fs-activityview.h"
+#include "ui/fs-topology.h"
 #include "ui/fs-copilot.h"
 #include "ui/fs-trustview.h"
 #include "ui/fs-intelview.h"
@@ -646,6 +647,8 @@ install_theme (void)
 		gdk_screen_get_default (),
 		GTK_STYLE_PROVIDER (provider),
 		GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+
+	g_print ("StockFW Nexora theme successfully installed!\n");
 
 	g_object_unref (provider);
 }

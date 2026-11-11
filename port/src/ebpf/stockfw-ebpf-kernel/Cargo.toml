@@ -1,0 +1,22 @@
+[package]
+name = "stockfw-ebpf-kernel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+aya-ebpf = { workspace = true }
+stockfw-ebpf-common = { path = "../stockfw-ebpf-common" }
+
+[profile.dev]
+opt-level = 3
+debug = false
+panic = "abort"
+
+[profile.release]
+opt-level = 3
+debug = false
+ip-link = false
+panic = "abort"

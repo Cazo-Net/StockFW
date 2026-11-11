@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include "core/fs-apply.h"
+#include "core/fs-audit-ledger.h"
 #include "core/fs-backend.h"
 #include "core/fs-eventfilter.h"
 #include "core/fs-prefs.h"
@@ -944,6 +945,53 @@ test_gate_takes_lock (void)
 	g_free (run);
 }
 #endif
+
+static void
+test_audit_ledger (void)
+{
+	gchar *h1 = NULL, *h2 = NULL;
+	gchar *path = fs_audit_ledger_path ();
+	GPtrArray *entries;
+	gchar *merkle_root;
+
+	CHECK (fs_audit_ledger_log ("POLICY_CHANGE", "admin", "rule added", &h1),
+	       "audit ledger: first entry logged successfully");
+	CHECK (h1 != NULL && strlen (h1) == 64,
+	       "audit ledger: first hash computed and 64 chars (SHA-256)");
+
+	CHECK (fs_audit_ledger_log ("AUTO_BLOCK", "sentinel", "ip blocked", &h2),
+	       "audit ledger: second entry logged successfully");
+	CHECK (h2 != NULL && strlen (h2) == 64,
+	       "audit ledger: second hash computed");
+
+	entries = fs_audit_ledger_load (path);
+	CHECK (entries != NULL && entries->len == 2,
+	       "audit ledger: loaded 2 entries from ledger file");
+
+	CHECK (fs_audit_ledger_verify_chain (entries),
+	       "audit ledger: chain verification passes on valid chain");
+
+	merkle_root = fs_audit_ledger_compute_merkle_root (entries);
+	CHECK (merkle_root != NULL && strlen (merkle_root) == 64,
+	       "audit ledger: Merkle root computed successfully");
+	g_free (merkle_root);
+
+	/* Tamper with entry 0 details */
+	if (entries && entries->len > 0) {
+		FsAuditLedgerEntry *e0 = g_ptr_array_index (entries, 0);
+		g_free (e0->details);
+		e0->details = g_strdup ("tampered details");
+	}
+
+	CHECK (!fs_audit_ledger_verify_chain (entries),
+	       "audit ledger: chain verification fails on tampered entry");
+
+	if (entries)
+		g_ptr_array_free (entries, TRUE);
+	g_free (h1);
+	g_free (h2);
+	g_free (path);
+}
 
 /* The scratch directory, removed at the end (Windows has no TMPDIR to
  * put it under the test's own folder). */

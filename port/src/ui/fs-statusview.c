@@ -108,6 +108,104 @@ static guint events[2][2];
 enum { TOTAL_IN, TOTAL_OUT, TOTAL_CONN, TOTAL_TRAFFIC, N_TOTALS };
 static GtkWidget *total_value[N_TOTALS];
 static GtkWidget *total_note[N_TOTALS];
+static GtkWidget *sparkline_area[N_TOTALS];
+
+#define SPARK_POINTS 20
+static gdouble spark_history[N_TOTALS][SPARK_POINTS];
+static guint   spark_count[N_TOTALS] = { 0 };
+
+static void
+push_spark_value (gint which, gdouble val)
+{
+	if (which < 0 || which >= N_TOTALS)
+		return;
+	if (spark_count[which] < SPARK_POINTS) {
+		spark_history[which][spark_count[which]++] = val;
+	} else {
+		for (guint j = 0; j < SPARK_POINTS - 1; j++)
+			spark_history[which][j] = spark_history[which][j + 1];
+		spark_history[which][SPARK_POINTS - 1] = val;
+	}
+	if (sparkline_area[which] != NULL)
+		gtk_widget_queue_draw (sparkline_area[which]);
+}
+
+static gboolean
+on_sparkline_draw (GtkWidget *widget, cairo_t *cr, gpointer data)
+{
+	gint which = GPOINTER_TO_INT (data);
+	GtkAllocation alloc;
+	guint count = spark_count[which];
+	gdouble min_v = 0, max_v = 1;
+	gdouble w, h;
+
+	gtk_widget_get_allocation (widget, &alloc);
+	w = (gdouble) alloc.width;
+	h = (gdouble) alloc.height;
+
+	if (count < 2) {
+		cairo_set_source_rgb (cr, 0.78, 0.80, 0.83);
+		cairo_set_line_width (cr, 1.0);
+		cairo_move_to (cr, 0, h - 2);
+		cairo_line_to (cr, w, h - 2);
+		cairo_stroke (cr);
+		return FALSE;
+	}
+
+	min_v = spark_history[which][0];
+	max_v = spark_history[which][0];
+	for (guint i = 1; i < count; i++) {
+		if (spark_history[which][i] < min_v) min_v = spark_history[which][i];
+		if (spark_history[which][i] > max_v) max_v = spark_history[which][i];
+	}
+	if (max_v - min_v < 0.001) {
+		max_v = min_v + 1.0;
+	}
+
+	cairo_set_source_rgba (cr, 0.16, 0.47, 0.84, 0.08);
+	cairo_move_to (cr, 0, h);
+	for (guint i = 0; i < count; i++) {
+		gdouble x = (gdouble) i / (gdouble) (SPARK_POINTS - 1) * w;
+		gdouble norm = (spark_history[which][i] - min_v) / (max_v - min_v);
+		gdouble y = h - 4 - norm * (h - 8);
+		cairo_line_to (cr, x, y);
+	}
+	cairo_line_to (cr, w, h);
+	cairo_close_path (cr);
+	cairo_fill (cr);
+
+	cairo_set_source_rgb (cr, 0.16, 0.47, 0.84);
+	cairo_set_line_width (cr, 2.0);
+	cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+	cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
+
+	for (guint i = 0; i < count; i++) {
+		gdouble x = (gdouble) i / (gdouble) (SPARK_POINTS - 1) * w;
+		gdouble norm = (spark_history[which][i] - min_v) / (max_v - min_v);
+		gdouble y = h - 4 - norm * (h - 8);
+		if (i == 0)
+			cairo_move_to (cr, x, y);
+		else
+			cairo_line_to (cr, x, y);
+	}
+	cairo_stroke (cr);
+
+	{
+		gdouble x = (gdouble) (count - 1) / (gdouble) (SPARK_POINTS - 1) * w;
+		gdouble norm = (spark_history[which][count - 1] - min_v) / (max_v - min_v);
+		gdouble y = h - 4 - norm * (h - 8);
+
+		cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
+		cairo_arc (cr, x, y, 5.0, 0, 2 * 3.1415926535);
+		cairo_fill (cr);
+
+		cairo_set_source_rgb (cr, 0.16, 0.47, 0.84);
+		cairo_arc (cr, x, y, 3.5, 0, 2 * 3.1415926535);
+		cairo_fill (cr);
+	}
+
+	return FALSE;
+}
 
 /* Open connections. */
 enum
@@ -703,6 +801,7 @@ update_counters (void)
 		gchar *note = g_strdup_printf (_("%u blocked"), events[dir][1]);
 
 		set_total (dir == 0 ? TOTAL_IN : TOTAL_OUT, value, note);
+		push_spark_value (dir == 0 ? TOTAL_IN : TOTAL_OUT, (gdouble) events[dir][0]);
 		g_free (value);
 		g_free (note);
 	}
@@ -734,6 +833,8 @@ fs_statusview_events_reset (void)
 	events[0][0] = events[0][1] = 0;
 	events[1][0] = events[1][1] = 0;
 
+	push_spark_value (TOTAL_IN, 0.0);
+	push_spark_value (TOTAL_OUT, 0.0);
 	update_counters ();
 }
 
@@ -1074,6 +1175,7 @@ refresh_network (void)
 		gchar *note = g_strdup_printf (DOWN "%s" DOT UP "%s", rx, tx);
 
 		set_total (TOTAL_TRAFFIC, rate, note);
+		push_spark_value (TOTAL_TRAFFIC, (gdouble) total_rate);
 		g_free (rate);
 		g_free (rx);
 		g_free (tx);
@@ -1286,6 +1388,7 @@ refresh_connections (void)
 		                                            "%u programs", n), n);
 
 		set_total (TOTAL_CONN, value, note);
+		push_spark_value (TOTAL_CONN, (gdouble) remote_count);
 		g_free (value);
 		g_free (note);
 	}
@@ -2017,6 +2120,13 @@ build_totals (void)
 		                    FALSE, FALSE, 0);
 		total_value[i] = label_new ("0", "stat-big", 0.0);
 		gtk_box_pack_start (GTK_BOX (card), total_value[i], FALSE, FALSE, 0);
+
+		sparkline_area[i] = gtk_drawing_area_new ();
+		gtk_widget_set_size_request (sparkline_area[i], -1, 26);
+		g_signal_connect (sparkline_area[i], "draw",
+		                  G_CALLBACK (on_sparkline_draw), GINT_TO_POINTER (i));
+		gtk_box_pack_start (GTK_BOX (card), sparkline_area[i], FALSE, FALSE, 2);
+
 		total_note[i] = label_new ("", "stat-note", 0.0);
 		gtk_label_set_ellipsize (GTK_LABEL (total_note[i]),
 		                         PANGO_ELLIPSIZE_END);
