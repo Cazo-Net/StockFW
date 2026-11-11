@@ -297,6 +297,38 @@ treeview row.alert:selected {
 	background-color: #f9d7d3;
 	color: #8a1c12;
 }
+
+/* --- Nexora AEGIS-ML & Card Polishing -------------------------------- */
+.nexora-card {
+	background-color: #ffffff;
+	border: 1px solid #e3e6eb;
+	border-radius: 12px;
+	padding: 14px;
+}
+
+.nexora-badge-ok {
+	background-color: #f4fbf7;
+	color: #1e7f4f;
+	border-radius: 6px;
+	padding: 4px 8px;
+	font-weight: 600;
+}
+
+.nexora-badge-warn {
+	background-color: #fff8eb;
+	color: #8a5300;
+	border-radius: 6px;
+	padding: 4px 8px;
+	font-weight: 600;
+}
+
+.nexora-badge-alert {
+	background-color: #fef4f3;
+	color: #b42318;
+	border-radius: 6px;
+	padding: 4px 8px;
+	font-weight: 600;
+}
 .data-grid row:selected,
 treeview row:selected {
 	border: none;
