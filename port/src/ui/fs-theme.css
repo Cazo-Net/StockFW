@@ -29,6 +29,7 @@ window {
 	border: 1px solid #e3e6eb;
 	border-radius: 12px;
 	padding: 4px 6px 6px 6px;
+	margin-bottom: 12px;
 }
 frame.card-frame > label {
 	margin: 10px 0 4px 6px;
@@ -304,6 +305,7 @@ treeview row.alert:selected {
 	border: 1px solid #e3e6eb;
 	border-radius: 12px;
 	padding: 14px;
+	margin-bottom: 12px;
 }
 
 .nexora-badge-ok {
@@ -345,6 +347,7 @@ treeview cell {
 	border: 1px solid #e0e0e0;
 	border-radius: 8px;
 	padding: 14px;
+	margin-bottom: 12px;
 }
 /* Circular badge around the state icon. */
 .hero-badge {
@@ -392,6 +395,7 @@ treeview cell {
 	border: 1px solid #e0e0e0;
 	border-radius: 8px;
 	padding: 8px;
+	margin-bottom: 12px;
 }
 /* Thin rules under each counter row, the summary's grid lines. */
 .events-summary label {
@@ -489,6 +493,7 @@ dialog {
 	border: 1px solid #e3e6eb;
 	border-radius: 12px;
 	padding: 14px 16px;
+	margin-bottom: 12px;
 }
 .card-title {
 	font-weight: bold;
@@ -680,6 +685,7 @@ button.nav-item label {
 	background-color: #ffffff;
 	border: 1px solid #e3e6eb;
 	border-radius: 12px;
+	margin-bottom: 12px;
 }
 /* Soft lift for every card-like surface: one tight, faint shadow, so a
  * card reads as resting on the canvas without a heavy drop shadow. */
@@ -730,6 +736,7 @@ button.fs-link label {
 	border-radius: 12px;
 	padding: 24px;
 	background-color: #f6f7f9;
+	margin-bottom: 16px;
 }
 .hero-icon-tile {
 	border-radius: 14px;
@@ -916,6 +923,7 @@ button.fs-link label {
 	background-color: #ffffff;
 	border: 1px solid #e3e6eb;
 	border-radius: 10px;
+	margin-bottom: 12px;
 }
 .cp-list-frame > border {
 	border: none;
@@ -1016,6 +1024,7 @@ label.pref-group-title {
 }
 .pref-card {
 	padding: 2px 0;
+	margin-bottom: 12px;
 }
 .pref-row {
 	padding: 12px 18px;
@@ -1359,6 +1368,7 @@ button.help-chip:hover {
 	border: 1px solid #e3e6eb;
 	border-radius: 12px;
 	padding: 14px 16px 6px 16px;
+	margin-bottom: 12px;
 }
 .help-child {
 	padding: 8px 0;
@@ -1425,6 +1435,7 @@ label.about-desc {
 }
 .about-card {
 	padding: 14px 16px;
+	margin-bottom: 12px;
 }
 label.about-credit,
 label.about-text {

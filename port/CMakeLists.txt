@@ -42,6 +42,7 @@ pkg_check_modules(GETTEXT IMPORTED_TARGET glib-2.0)
 # signature.  Windows (MSYS2 UCRT64): mingw-w64-ucrt-x86_64-xz and
 # mingw-w64-ucrt-x86_64-openssl; the DLLs are staged beside the exe.
 pkg_check_modules(GEODB REQUIRED IMPORTED_TARGET liblzma libcrypto)
+pkg_check_modules(JSONGLIB REQUIRED IMPORTED_TARGET json-glib-1.0)
 
 # ------------------------------------------------------------------ core
 # Portable: no OS headers, no GTK. Shared by both backends and the UI.
@@ -60,6 +61,7 @@ add_library(fs-core STATIC
   src/core/fs-health.c
   src/core/fs-eventrule.c
   src/core/fs-audit.c
+  src/core/fs-audit-ledger.c
   src/core/fs-trust.c
   src/core/fs-apply.c
   src/core/fs-netparse.c
@@ -74,6 +76,7 @@ add_library(fs-core STATIC
   src/core/fs-autoblock.c
   src/core/fs-sentinel.c
   src/core/fs-ml.c
+  src/core/fs-ml-monitor.c
   src/core/fs-l7.c
   src/core/fs-instance.c
   src/core/fs-autostart.c
@@ -92,13 +95,18 @@ add_library(fs-core STATIC
   src/core/fs-verdict.c
   src/core/fs-eventfilter.c
   src/core/fs-helpcontent.c
+  src/core/fs-mesh.c
+  src/core/fs-quantum.c
+  src/core/fs-playbook.c
+  src/core/fs-kev.c
+  src/core/fs-ebpf.c
 )
 target_include_directories(fs-core PUBLIC src resources)
 pkg_check_modules(GLIBONLY REQUIRED IMPORTED_TARGET glib-2.0 gio-2.0)
 if(FS_BUILD_GUI)
-  target_link_libraries(fs-core PUBLIC PkgConfig::GTK3 PkgConfig::GEODB)
+  target_link_libraries(fs-core PUBLIC PkgConfig::GTK3 PkgConfig::GEODB PkgConfig::JSONGLIB)
 else()
-  target_link_libraries(fs-core PUBLIC PkgConfig::GLIBONLY PkgConfig::GEODB)
+  target_link_libraries(fs-core PUBLIC PkgConfig::GLIBONLY PkgConfig::GEODB PkgConfig::JSONGLIB)
 endif()
 # The engine names itself to feed servers ("StockFW/<version>").
 target_compile_definitions(fs-core PRIVATE FS_VERSION="${PROJECT_VERSION}")
@@ -211,6 +219,7 @@ add_executable(StockFW
   src/ui/fs-hitview.c
   src/ui/fs-eventmodel.c
   src/ui/fs-activityview.c
+  src/ui/fs-topology.c
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
@@ -414,6 +423,7 @@ set(FS_UI_ONLY_SOURCES
   src/ui/fs-hitview.c
   src/ui/fs-eventmodel.c
   src/ui/fs-activityview.c
+  src/ui/fs-topology.c
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
@@ -626,6 +636,10 @@ endif() # FS_BUILD_GUI
 # anywhere the core builds.  `ninja fs-intel-test'.
 add_executable(fs-intel-test EXCLUDE_FROM_ALL tests/test-intel.c)
 target_link_libraries(fs-intel-test PRIVATE fs-core-nogui)
+
+# eBPF loader and map integration test
+add_executable(test-ebpf EXCLUDE_FROM_ALL tests/test-ebpf.c)
+target_link_libraries(test-ebpf PRIVATE fs-core-nogui)
 # Threat intel on the real Windows Firewall (Round 3, design 11): the
 # Windows backend's intel slots, every rule read back through
 # INetFwRules.  Needs an elevated shell (prints SKIP otherwise).
@@ -659,8 +673,8 @@ target_link_libraries(fs-netplace-test PRIVATE fs-core-nogui)
 # The What-If engine's golden table: the reading of a line, both firewall
 # models, the Linux model pinned to the generator's chains, and the
 # fixes it offers (test-whatif.c; test-core.sh runs it too).  GLib only.
-add_executable(fs-whatif-test EXCLUDE_FROM_ALL tests/test-whatif.c)
-target_link_libraries(fs-whatif-test PRIVATE fs-core-nogui)
+add_executable(fs-nexora-test EXCLUDE_FROM_ALL tests/test-nexora-ml.c)
+target_link_libraries(fs-nexora-test PRIVATE fs-core-nogui)
 # The Copilot's policy health check: exact coverage, the golden table on
 # both platform models, and every fix verified by the What-If engine
 # (test-health.c; test-core.sh runs it too).  GLib only.

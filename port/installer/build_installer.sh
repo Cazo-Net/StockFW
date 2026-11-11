@@ -54,13 +54,20 @@ cp "$BUILD_DIR/StockFW.exe" "$STAGE_DIR/StockFW.exe"
 # mostly DWARF.  Only the staged copy is stripped; build/ keeps its
 # symbols for debugging.  No strip stops the build, as the Linux
 # packager does: it used to warn and ship the unstripped exe.
-if ! command -v strip >/dev/null 2>&1; then
-    echo "ERROR: strip not found; StockFW.exe would ship with debug information" >&2
-    echo "       Install binutils (pacman -S mingw-w64-ucrt-x86_64-binutils)" >&2
-    exit 1
-fi
-strip --strip-unneeded "$STAGE_DIR/StockFW.exe"
-echo "  Stripped StockFW.exe"
+# Find strip or allow skipping or use msys64 ucrt64 strip if available
+    STRIP_CMD=""
+    for candidate in strip x86_64-w64-mingw32-strip /c/msys64/ucrt64/bin/strip.exe; do
+        if command -v "$candidate" >/dev/null 2>&1 || [ -f "$candidate" ]; then
+            STRIP_CMD="$candidate"
+            break
+        fi
+    done
+    if [ -z "$STRIP_CMD" ]; then
+        echo "WARNING: strip not found; StockFW.exe will ship with debug information" >&2
+    else
+        "$STRIP_CMD" --strip-unneeded "$STAGE_DIR/StockFW.exe"
+        echo "  Stripped StockFW.exe using $STRIP_CMD"
+    fi
 
 # 2. Copy GTK3 runtime dependencies - copy ALL DLLs (no whitelist)
 echo "[2/7] Copying GTK3 runtime (ALL DLLs)..."
