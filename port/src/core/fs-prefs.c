@@ -351,6 +351,7 @@ static const FsPrefSpec prefs_table[] = {
 	/* The window and the tray */
 	SPEC_BOOL (FS_PREFS_ENABLE_TRAY_ICON,        TRUE,  FALSE),
 	SPEC_BOOL (FS_PREFS_MINIMIZE_TO_TRAY,        TRUE,  FALSE),
+	SPEC_BOOL (FS_PREFS_DARK_MODE,               FALSE, FALSE),
 	SPEC_BOOL (FS_PREFS_START_ON_GUI,            FALSE, FALSE),
 
 	/* Events */

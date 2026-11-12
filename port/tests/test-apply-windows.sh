@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # Regression test for transactional Windows policy application
 # (firewalled_apply_rules, firewalled_snapshot_rules,
 #  firewalled_restore_snapshot).
@@ -197,7 +197,7 @@ HARNESS_EOF
 
 # The test harness compiles against the real Windows backend.
 CF="$(pkg-config --cflags glib-2.0 gobject-2.0 gio-2.0)"
-LF="$(pkg-config --libs glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto)"
+LF="$(pkg-config --libs glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto json-glib-1.0)"
 
 # fs-toolpath.c must be compiled here as well: it lives in libfs-core.a,
 # which is built without FS_TOOLPATH_TESTING, so fs_toolpath_test_dir()
@@ -235,3 +235,4 @@ fi
 TEST_RC=$?
 
 exit $TEST_RC
+

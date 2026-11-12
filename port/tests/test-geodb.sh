@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # The location database reader (src/core/fs-geodb.c, 1.0.7 design
 # section 12) against libloc itself, IPFire's own database, the xz tool,
 # the downloader and a coverage-guided fuzzer.
@@ -245,9 +245,9 @@ if ! command -v clang >/dev/null; then
   skip "clang is not installed"
 elif ! clang -g -O1 -fsanitize=fuzzer,address,undefined \
          -fno-sanitize-recover=undefined -DFS_GEODB_TESTING=1 \
-         -I "$PORT/src" $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+         -I "$PORT/src" $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
          -o "$W/fuzz-geodb" "$HERE/fuzz-geodb.c" "$PORT"/src/core/*.c \
-         $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) \
+         $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
          > "$W/fuzz-cc.log" 2>&1; then
   if grep -q -e 'libclang_rt.fuzzer' -e 'fuzzer.*not found' "$W/fuzz-cc.log"; then
     skip "clang has no libFuzzer runtime (apt install libclang-rt-dev)"
@@ -294,3 +294,4 @@ fi
 echo
 if [ $fails -eq 0 ]; then echo "PASSED: 0 failure(s)"; else echo "FAILED: $fails failure(s)"; fi
 [ $fails -eq 0 ]
+

@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # Builds the platform event source on its own and checks that it
 # either actually monitors or explains why it cannot.
 #
@@ -34,6 +34,7 @@ cc "$HERE/test-logstart.c" \
    -o "$BUILD_DIR/test-logstart" \
    $BACKEND \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $PLATFORM_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $PLATFORM_LIBS
 
 "$BUILD_DIR/test-logstart"
+

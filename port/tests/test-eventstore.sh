@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # The event store and the on-disk event history: core/fs-eventstore.c
 # and core/fs-eventlog.c, against the core sources directly (no CMake),
 # like test-core.sh.  GLib only, no display, no root.
@@ -29,10 +29,11 @@ fi
 
 cc -O2 -Wall -Wextra -Wno-unused-parameter tests/test-eventstore.c \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
    -o "$BUILD_DIR/test-eventstore" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
 
 export STOCKFW_RULES_DIR="$BUILD_DIR/rules"
 "$BUILD_DIR/test-eventstore" "$@"
+

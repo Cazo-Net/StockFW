@@ -625,8 +625,18 @@ row_topic (GtkListBoxRow *row)
 static gboolean
 filter_row (GtkListBoxRow *row, gpointer data)
 {
+	const FsHelpTopic *t = row_topic (row);
 	(void) data;
-	return topic_listed (row_topic (row));
+	if (t == NULL)
+		return FALSE;
+#ifdef G_OS_WIN32
+	if (g_strcmp0 (t->id, "linux") == 0)
+		return FALSE;
+#else
+	if (g_strcmp0 (t->id, "windows") == 0)
+		return FALSE;
+#endif
+	return topic_listed (t);
 }
 
 static void

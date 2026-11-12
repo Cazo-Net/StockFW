@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # Windows firewall state integration test: drives the real backend
 # against the real Windows Firewall service and checks that the state
 # it reports matches what was just applied.
@@ -162,7 +162,7 @@ int main (int argc, char **argv)
 EOF
 
 CF="$(pkg-config --cflags gtk+-3.0 glib-2.0 gobject-2.0 gio-2.0)"
-LF="$(pkg-config --libs gtk+-3.0 glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto)"
+LF="$(pkg-config --libs gtk+-3.0 glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto json-glib-1.0)"
 
 gcc -o "$BUILD_DIR/test-state" \
 	-I "$PORT/src" $CF \
@@ -290,3 +290,4 @@ else
 	echo "FAILED: $failures failure(s)"
 	exit 1
 fi
+

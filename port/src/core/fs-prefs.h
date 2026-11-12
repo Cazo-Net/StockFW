@@ -22,6 +22,7 @@ G_BEGIN_DECLS
  * type and its one default. */
 #define FS_PREFS_ENABLE_TRAY_ICON "/apps/stockfw/client/enable_tray_icon"
 #define FS_PREFS_MINIMIZE_TO_TRAY "/apps/stockfw/client/minimize_to_tray"
+#define FS_PREFS_DARK_MODE        "/apps/stockfw/client/dark_mode"
 
 #define FS_PREFS_SKIP_REDUNDANT          "/apps/stockfw/client/filter/redundant"
 #define FS_PREFS_SKIP_NOT_FOR_FIREWALL   "/apps/stockfw/client/filter/not_for_firewall"

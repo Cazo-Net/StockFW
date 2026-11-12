@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # Status-page profile-frame test: a backend with no profiles must not
 # offer per-profile switches that are reachable on screen.
 #
@@ -62,6 +62,7 @@ gcc "$HERE/ui-statusview-smoke.c" \
     $UI_OBJS \
     "$OUT/libfs-core.a" \
     "$OUT/fs-backend-linux.o" \
-    $(pkg-config --libs glib-2.0 gobject-2.0 gio-2.0 gtk+-3.0 liblzma libcrypto)
+    $(pkg-config --libs glib-2.0 gobject-2.0 gio-2.0 gtk+-3.0 liblzma libcrypto json-glib-1.0)
 
 "$BUILD_DIR/ui-statusview-smoke"
+
