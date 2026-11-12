@@ -1,0 +1,188 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 700" width="100%" height="100%" role="img" aria-label="CAZT runtime fabric architecture diagram showing data flow from AI Agent through CAIT token, eBPF/WFP egress gate, and Hash-Chained Audit Ledger">
+  <defs>
+    <!-- Arrowhead marker -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="currentColor" />
+    </marker>
+    <!-- Accent Arrowhead marker for security boundaries -->
+    <marker id="arrow-accent" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#3b82f6" />
+    </marker>
+    <!-- Drop Shadow Filter -->
+    <filter id="shadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-opacity="0.08" />
+    </filter>
+  </defs>
+
+  <style>
+    /* Styling conforming to system dark theme standards */
+    text {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    }
+    .bg { fill: #0f172a; }
+    .card-bg { fill: #1e293b; stroke: #334155; stroke-width: 1.5; }
+    .accent-card-bg { fill: #1e293b; stroke: #3b82f6; stroke-width: 2; }
+    .title-text { fill: #f8fafc; font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+    .subtitle-text { fill: #94a3b8; font-size: 13px; font-weight: 400; }
+    .section-title { fill: #f1f5f9; font-size: 15px; font-weight: 600; }
+    .box-title { fill: #f8fafc; font-size: 14px; font-weight: 600; }
+    .box-desc { fill: #94a3b8; font-size: 11px; }
+    .badge-text { fill: #60a5fa; font-size: 10px; font-weight: 600; font-family: monospace; }
+    .edge-label { fill: #cbd5e1; font-size: 11px; font-weight: 500; background: #0f172a; }
+    .edge-label-sub { fill: #64748b; font-size: 10px; font-family: monospace; }
+    .line { stroke: #475569; stroke-width: 2; fill: none; }
+    .line-accent { stroke: #3b82f6; stroke-width: 2.5; fill: none; }
+    .line-dashed { stroke: #64748b; stroke-width: 1.5; stroke-dasharray: 4,4; fill: none; }
+    .zone-box { fill: #111827; stroke: #374151; stroke-width: 1; stroke-dasharray: 6,6; rx: 12px; }
+  </style>
+
+  <!-- Background -->
+  <rect width="1100" height="700" class="bg" rx="0" />
+
+  <!-- Title & Subtitle -->
+  <g transform="translate(50, 45)">
+    <text x="0" y="0" class="title-text">CAZT Runtime Fabric Architecture</text>
+    <text x="0" y="22" class="subtitle-text">Deterministic zero-trust security pipeline enforcing cryptographically bound egress and tamper-evident audit ledgers.</text>
+  </g>
+
+  <!-- Zones -->
+  <!-- Zone 1: Agent Sandbox -->
+  <rect x="50" y="100" width="220" height="520" class="zone-box" />
+  <text x="75" y="128" class="section-title">User Space / Agent Sandbox</text>
+  <text x="75" y="145" class="edge-label-sub">PID Namespace Isolated</text>
+
+  <!-- Zone 2: Token Authority -->
+  <rect x="310" y="100" width="220" height="520" class="zone-box" />
+  <text x="335" y="128" class="section-title">CAIT Token Authority</text>
+  <text x="335" y="145" class="edge-label-sub">Cryptographic Attestation</text>
+
+  <!-- Zone 3: Kernel / OS Enforcer -->
+  <rect x="570" y="100" width="220" height="520" class="zone-box" />
+  <text x="595" y="128" class="section-title">Kernel Space (eBPF / WFP)</text>
+  <text x="595" y="145" class="edge-label-sub">Network Packet Inspector</text>
+
+  <!-- Zone 4: Immutable Ledger -->
+  <rect x="830" y="100" width="220" height="520" class="zone-box" />
+  <text x="855" y="128" class="section-title">Audit Ledger</text>
+  <text x="855" y="145" class="edge-label-sub">Hash-Chained Storage</text>
+
+
+  <!-- ================= COMPONENTS ================= -->
+
+  <!-- 1. AI Agent -->
+  <g transform="translate(70, 180)" filter="url(#shadow)">
+    <rect width="180" height="110" rx="8" class="card-bg" />
+    <path d="M 20 25 L 35 25 M 27.5 17.5 L 27.5 32.5" stroke="#60a5fa" stroke-width="2" />
+    <text x="50" y="28" class="box-title">AI Agent</text>
+    <text x="50" y="44" class="badge-text">PID 4192</text>
+    <line x1="20" y1="60" x2="160" y2="60" stroke="#334155" stroke-width="1" />
+    <text x="20" y="80" class="box-desc">Executes tool calls &amp;</text>
+    <text x="20" y="94" class="box-desc">initiates outbound payload</text>
+  </g>
+
+  <!-- 2. CAIT Token Issuer -->
+  <g transform="translate(330, 180)" filter="url(#shadow)">
+    <rect width="180" height="110" rx="8" class="card-bg" />
+    <circle cx="32" cy="28" r="8" fill="#3b82f6" opacity="0.2" />
+    <path d="M 28 28 L 32 32 L 38 24" stroke="#3b82f6" stroke-width="2" fill="none" />
+    <text x="50" y="28" class="box-title">CAIT Token</text>
+    <text x="50" y="44" class="badge-text">Ed25519 Bound</text>
+    <line x1="20" y1="60" x2="160" y2="60" stroke="#334155" stroke-width="1" />
+    <text x="20" y="80" class="box-desc">Contextual capability</text>
+    <text x="20" y="94" class="box-desc">manifest &amp; scopes</text>
+  </g>
+
+  <!-- 3. eBPF / WFP Egress Gate -->
+  <g transform="translate(590, 180)" filter="url(#shadow)">
+    <rect width="180" height="110" rx="8" class="accent-card-bg" />
+    <path d="M 24 20 L 32 20 L 32 36 L 24 36 Z" fill="none" stroke="#3b82f6" stroke-width="2" />
+    <text x="50" y="28" class="box-title">Egress Gate</text>
+    <text x="50" y="44" class="badge-text">eBPF / WFP Hook</text>
+    <line x1="20" y1="60" x2="160" y2="60" stroke="#334155" stroke-width="1" />
+    <text x="20" y="80" class="box-desc">Verifies token sig &amp;</text>
+    <text x="20" y="94" class="box-desc">enforces flow policy</text>
+  </g>
+
+  <!-- 4. Hash-Chained Audit Ledger -->
+  <g transform="translate(850, 180)" filter="url(#shadow)">
+    <rect width="180" height="110" rx="8" class="card-bg" />
+    <path d="M 24 20 L 36 20 M 24 28 L 36 28 M 24 36 L 32 36" stroke="#10b981" stroke-width="2" />
+    <text x="50" y="28" class="box-title">Audit Ledger</text>
+    <text x="50" y="44" class="badge-text" fill="#10b981">SHA-256 Merkle</text>
+    <line x1="20" y1="60" x2="160" y2="60" stroke="#334155" stroke-width="1" />
+    <text x="20" y="80" class="box-desc">Append-only log of</text>
+    <text x="20" y="94" class="box-desc">all verified transactions</text>
+  </g>
+
+
+  <!-- ================= SECONDARY SYSTEM LAYER (Revocation & Policy) ================= -->
+
+  <g transform="translate(330, 410)" filter="url(#shadow)">
+    <rect width="180" height="110" rx="8" class="card-bg" />
+    <circle cx="30" cy="28" r="6" fill="#f59e0b" />
+    <text x="50" y="28" class="box-title">Policy Registry</text>
+    <text x="50" y="44" class="badge-text" fill="#f59e0b">Local Store</text>
+    <line x1="20" y1="60" x2="160" y2="60" stroke="#334155" stroke-width="1" />
+    <text x="20" y="80" class="box-desc">Defines destination</text>
+    <text x="20" y="94" class="box-desc">CIDR &amp; endpoint ACLs</text>
+  </g>
+
+  <g transform="translate(590, 410)" filter="url(#shadow)">
+    <rect width="180" height="110" rx="8" class="card-bg" />
+    <path d="M 24 24 L 36 24 M 30 18 L 30 34" stroke="#ef4444" stroke-width="2" />
+    <text x="50" y="28" class="box-title">Drop / Alert</text>
+    <text x="50" y="44" class="badge-text" fill="#ef4444">Policy Violation</text>
+    <line x1="20" y1="60" x2="160" y2="60" stroke="#334155" stroke-width="1" />
+    <text x="20" y="80" class="box-desc">Terminates socket &amp;</text>
+    <text x="20" y="94" class="box-desc">reports security event</text>
+  </g>
+
+
+  <!-- ================= CONNECTING EDGES (DATA FLOW) ================= -->
+
+  <!-- 1. Agent to CAIT Token Request -->
+  <path d="M 250 220 L 320 220" class="line-accent" marker-end="url(#arrow-accent)" />
+  <rect x="256" y="202" width="58" height="18" fill="#0f172a" rx="3" />
+  <text x="259" y="215" class="edge-label">requests</text>
+
+  <!-- 2. CAIT Token to Agent (Response/Grant) -->
+  <path d="M 320 250 L 250 250" class="line" marker-end="url(#arrow)" />
+  <rect x="258" y="255" width="54" height="18" fill="#0f172a" rx="3" />
+  <text x="261" y="268" class="edge-label">grants token</text>
+
+  <!-- 3. CAIT Token Authority to Policy Registry -->
+  <path d="M 420 290 L 420 400" class="line" marker-end="url(#arrow)" />
+  <rect x="382" y="335" width="76" height="18" fill="#0f172a" rx="3" />
+  <text x="386" y="348" class="edge-label">validates ACL</text>
+
+  <!-- 4. Agent Outbound Flow to eBPF / WFP Egress Gate -->
+  <path d="M 510 220 L 580 220" class="line-accent" marker-end="url(#arrow-accent)" />
+  <rect x="518" y="202" width="56" height="18" fill="#0f172a" rx="3" />
+  <text x="522" y="215" class="edge-label">intercepts</text>
+
+  <!-- 5. Egress Gate to Audit Ledger (Success Case) -->
+  <path d="M 770 220 L 840 220" class="line-accent" marker-end="url(#arrow-accent)" />
+  <rect x="780" y="202" width="52" height="18" fill="#0f172a" rx="3" />
+  <text x="783" y="215" class="edge-label">appends</text>
+
+  <!-- 6. Egress Gate to Drop/Alert (Failure Case) -->
+  <path d="M 680 290 L 680 400" class="line-dashed" marker-end="url(#arrow)" />
+  <rect x="625" y="335" width="110" height="18" fill="#0f172a" rx="3" />
+  <text x="630" y="348" class="edge-label" fill="#ef4444">invalid / dropped</text>
+
+
+  <!-- ================= LEGEND / FOOTER ================= -->
+  <g transform="translate(50, 640)">
+    <rect width="1000" height="40" fill="#1e293b" rx="6" stroke="#334155" />
+    <circle cx="25" cy="20" r="5" fill="#3b82f6" />
+    <text x="40" y="24" class="edge-label" fill="#f8fafc">Happy Path (Verified Egress)</text>
+
+    <line x1="240" y1="20" x2="270" y2="20" stroke="#64748b" stroke-width="1.5" stroke-dasharray="4,4" />
+    <text x="282" y="24" class="edge-label" fill="#f8fafc">Policy Violation / Drop</text>
+
+    <path d="M 500 16 L 520 16" stroke="#10b981" stroke-width="2" />
+    <circle cx="510" cy="16" r="3" fill="#10b981" />
+    <text x="532" y="24" class="edge-label" fill="#f8fafc">Cryptographic Hash-Chain (SHA-256)</text>
+  </g>
+
+</svg>
