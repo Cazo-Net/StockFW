@@ -39,6 +39,7 @@
 #include "core/fs-i18n.h"
 
 #include <string.h>
+#include <gdk-pixbuf/gdk-pixbuf.h>
 
 /* How often the live panels are resampled.  Interface counters are
  * cheap; enumerating sockets is dearer, so it runs less often. */
@@ -108,10 +109,109 @@ static guint events[2][2];
 enum { TOTAL_IN, TOTAL_OUT, TOTAL_CONN, TOTAL_TRAFFIC, N_TOTALS };
 static GtkWidget *total_value[N_TOTALS];
 static GtkWidget *total_note[N_TOTALS];
+static GtkWidget *sparkline_area[N_TOTALS];
+
+#define SPARK_POINTS 20
+static gdouble spark_history[N_TOTALS][SPARK_POINTS];
+static guint   spark_count[N_TOTALS] = { 0 };
+
+static void
+push_spark_value (gint which, gdouble val)
+{
+	if (which < 0 || which >= N_TOTALS)
+		return;
+	if (spark_count[which] < SPARK_POINTS) {
+		spark_history[which][spark_count[which]++] = val;
+	} else {
+		for (guint j = 0; j < SPARK_POINTS - 1; j++)
+			spark_history[which][j] = spark_history[which][j + 1];
+		spark_history[which][SPARK_POINTS - 1] = val;
+	}
+	if (sparkline_area[which] != NULL)
+		gtk_widget_queue_draw (sparkline_area[which]);
+}
+
+static gboolean
+on_sparkline_draw (GtkWidget *widget, cairo_t *cr, gpointer data)
+{
+	gint which = GPOINTER_TO_INT (data);
+	GtkAllocation alloc;
+	guint count = spark_count[which];
+	gdouble min_v = 0, max_v = 1;
+	gdouble w, h;
+
+	gtk_widget_get_allocation (widget, &alloc);
+	w = (gdouble) alloc.width;
+	h = (gdouble) alloc.height;
+
+	if (count < 2) {
+		cairo_set_source_rgb (cr, 0.78, 0.80, 0.83);
+		cairo_set_line_width (cr, 1.0);
+		cairo_move_to (cr, 0, h - 2);
+		cairo_line_to (cr, w, h - 2);
+		cairo_stroke (cr);
+		return FALSE;
+	}
+
+	min_v = spark_history[which][0];
+	max_v = spark_history[which][0];
+	for (guint i = 1; i < count; i++) {
+		if (spark_history[which][i] < min_v) min_v = spark_history[which][i];
+		if (spark_history[which][i] > max_v) max_v = spark_history[which][i];
+	}
+	if (max_v - min_v < 0.001) {
+		max_v = min_v + 1.0;
+	}
+
+	cairo_set_source_rgba (cr, 0.16, 0.47, 0.84, 0.08);
+	cairo_move_to (cr, 0, h);
+	for (guint i = 0; i < count; i++) {
+		gdouble x = (gdouble) i / (gdouble) (SPARK_POINTS - 1) * w;
+		gdouble norm = (spark_history[which][i] - min_v) / (max_v - min_v);
+		gdouble y = h - 4 - norm * (h - 8);
+		cairo_line_to (cr, x, y);
+	}
+	cairo_line_to (cr, w, h);
+	cairo_close_path (cr);
+	cairo_fill (cr);
+
+	cairo_set_source_rgb (cr, 0.16, 0.47, 0.84);
+	cairo_set_line_width (cr, 2.0);
+	cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+	cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
+
+	for (guint i = 0; i < count; i++) {
+		gdouble x = (gdouble) i / (gdouble) (SPARK_POINTS - 1) * w;
+		gdouble norm = (spark_history[which][i] - min_v) / (max_v - min_v);
+		gdouble y = h - 4 - norm * (h - 8);
+		if (i == 0)
+			cairo_move_to (cr, x, y);
+		else
+			cairo_line_to (cr, x, y);
+	}
+	cairo_stroke (cr);
+
+	{
+		gdouble x = (gdouble) (count - 1) / (gdouble) (SPARK_POINTS - 1) * w;
+		gdouble norm = (spark_history[which][count - 1] - min_v) / (max_v - min_v);
+		gdouble y = h - 4 - norm * (h - 8);
+
+		cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
+		cairo_arc (cr, x, y, 5.0, 0, 2 * 3.1415926535);
+		cairo_fill (cr);
+
+		cairo_set_source_rgb (cr, 0.16, 0.47, 0.84);
+		cairo_arc (cr, x, y, 3.5, 0, 2 * 3.1415926535);
+		cairo_fill (cr);
+	}
+
+	return FALSE;
+}
 
 /* Open connections. */
 enum
 {
+	CONN_COL_ICON,
 	CONN_COL_PROGRAM,
 	CONN_COL_REMOTE,
 	CONN_COL_PORT,
@@ -703,6 +803,7 @@ update_counters (void)
 		gchar *note = g_strdup_printf (_("%u blocked"), events[dir][1]);
 
 		set_total (dir == 0 ? TOTAL_IN : TOTAL_OUT, value, note);
+		push_spark_value (dir == 0 ? TOTAL_IN : TOTAL_OUT, (gdouble) events[dir][0]);
 		g_free (value);
 		g_free (note);
 	}
@@ -734,6 +835,8 @@ fs_statusview_events_reset (void)
 	events[0][0] = events[0][1] = 0;
 	events[1][0] = events[1][1] = 0;
 
+	push_spark_value (TOTAL_IN, 0.0);
+	push_spark_value (TOTAL_OUT, 0.0);
 	update_counters ();
 }
 
@@ -1074,6 +1177,7 @@ refresh_network (void)
 		gchar *note = g_strdup_printf (DOWN "%s" DOT UP "%s", rx, tx);
 
 		set_total (TOTAL_TRAFFIC, rate, note);
+		push_spark_value (TOTAL_TRAFFIC, (gdouble) total_rate);
 		g_free (rate);
 		g_free (rx);
 		g_free (tx);
@@ -1133,7 +1237,7 @@ on_adapters_toggle (GtkButton *button, gpointer data)
  * across refreshes, which clear-and-refill would throw away every
  * couple of seconds. */
 static void
-conn_set_nth (gint n, const gchar *program, const gchar *remote,
+conn_set_nth (gint n, GdkPixbuf *icon, const gchar *program, const gchar *remote,
               const gchar *port, const gchar *service,
               const gchar *direction, gboolean local)
 {
@@ -1144,6 +1248,7 @@ conn_set_nth (gint n, const gchar *program, const gchar *remote,
 		gtk_list_store_append (conn_store, &iter);
 
 	gtk_list_store_set (conn_store, &iter,
+	                    CONN_COL_ICON, icon,
 	                    CONN_COL_PROGRAM, program,
 	                    CONN_COL_REMOTE, remote,
 	                    CONN_COL_PORT, port,
@@ -1256,6 +1361,7 @@ refresh_connections (void)
 		                    fs_util_is_loopback_address (c->destination);
 
 		conn_set_nth ((gint) row,
+			              NULL,
 		              c->program != NULL ? c->program : "",
 		              remote != NULL ? remote : "",
 		              c->port != NULL ? c->port : "",
@@ -1286,6 +1392,7 @@ refresh_connections (void)
 		                                            "%u programs", n), n);
 
 		set_total (TOTAL_CONN, value, note);
+		push_spark_value (TOTAL_CONN, (gdouble) remote_count);
 		g_free (value);
 		g_free (note);
 	}
@@ -1818,6 +1925,8 @@ build_header (void)
 	GtkWidget *header = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
 	GtkWidget *titles = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
 
+	add_class (header, "page-head");
+
 	gtk_box_pack_start (GTK_BOX (titles),
 	                    label_new (_("Overview"), "page-title", 0.0),
 	                    FALSE, FALSE, 0);
@@ -2017,6 +2126,13 @@ build_totals (void)
 		                    FALSE, FALSE, 0);
 		total_value[i] = label_new ("0", "stat-big", 0.0);
 		gtk_box_pack_start (GTK_BOX (card), total_value[i], FALSE, FALSE, 0);
+
+		sparkline_area[i] = gtk_drawing_area_new ();
+		gtk_widget_set_size_request (sparkline_area[i], -1, 26);
+		g_signal_connect (sparkline_area[i], "draw",
+		                  G_CALLBACK (on_sparkline_draw), GINT_TO_POINTER (i));
+		gtk_box_pack_start (GTK_BOX (card), sparkline_area[i], FALSE, FALSE, 2);
+
 		total_note[i] = label_new ("", "stat-note", 0.0);
 		gtk_label_set_ellipsize (GTK_LABEL (total_note[i]),
 		                         PANGO_ELLIPSIZE_END);
@@ -2035,6 +2151,19 @@ build_totals (void)
 		  "adapters (virtual ones are left out so bridged traffic is "
 		  "not counted twice)."));
 	return grid;
+}
+
+static GtkTreeViewColumn *
+conn_icon_column (GtkWidget *view, gint col)
+{
+	GtkCellRenderer *renderer = gtk_cell_renderer_pixbuf_new ();
+	GtkTreeViewColumn *column;
+
+	g_object_set (renderer, "ypad", 6, "xpad", 6, NULL);
+	column = gtk_tree_view_column_new_with_attributes ("", renderer,
+	                                                   "pixbuf", col, NULL);
+	gtk_tree_view_append_column (GTK_TREE_VIEW (view), column);
+	return column;
 }
 
 static GtkTreeViewColumn *
@@ -2084,10 +2213,10 @@ build_connections (void)
 	gtk_box_pack_start (GTK_BOX (head), conn_search, FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (connections_card), head, FALSE, FALSE, 0);
 
-	conn_store = gtk_list_store_new (CONN_N_COLS, G_TYPE_STRING,
+	conn_store = gtk_list_store_new (CONN_N_COLS, GDK_TYPE_PIXBUF,
 	                                 G_TYPE_STRING, G_TYPE_STRING,
 	                                 G_TYPE_STRING, G_TYPE_STRING,
-	                                 G_TYPE_BOOLEAN);
+	                                 G_TYPE_STRING, G_TYPE_BOOLEAN);
 	conn_filter = gtk_tree_model_filter_new (GTK_TREE_MODEL (conn_store),
 	                                         NULL);
 	gtk_tree_model_filter_set_visible_func (GTK_TREE_MODEL_FILTER (conn_filter),
@@ -2098,6 +2227,7 @@ build_connections (void)
 	g_object_unref (sorted);
 	add_class (view, "overview-grid");
 	gtk_tree_view_set_enable_search (GTK_TREE_VIEW (view), FALSE);
+	conn_icon_column (view, CONN_COL_ICON);
 	conn_column (view, _("Program"), CONN_COL_PROGRAM, "bold");
 	conn_column (view, _("Remote address"), CONN_COL_REMOTE, "mono");
 	conn_column (view, _("Port"), CONN_COL_PORT, "mono");

@@ -1,0 +1,20 @@
+[workspace]
+members = [
+    "stockfw-ebpf-common",
+    "stockfw-ebpf-kernel",
+    "stockfw-ebpf-loader",
+]
+resolver = "2"
+
+[workspace.package]
+version = "2.0.0"
+edition = "2021"
+authors = ["StockFW Core Team <noreply@anthropic.com>"]
+license = "GPL-2.0-only"
+
+[workspace.dependencies]
+aya = "0.12"
+aya-ebpf = "0.11"
+tokio = { version = "1.38", features = ["full"] }
+log = "0.4"
+serde = { version = "1.0", features = ["derive"] }

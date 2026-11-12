@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # P4 -- Detection validation: a repeatable adversarial suite run against
 # the engine.  Named attack and benign corpora replayed through
 # fs_copilot_feed_event_full() with exact clocks: port scans, suspicious
@@ -759,10 +759,11 @@ cc "$BUILD_DIR/test-adversarial.c" \
    $(pkg-config --cflags glib-2.0) \
    -o "$BUILD_DIR/test-adversarial" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
 
 # Keep rule/journal/audit files out of the real directories.
 export STOCKFW_RULES_DIR="$BUILD_DIR/rules"
 rm -rf "$STOCKFW_RULES_DIR"
 
 "$BUILD_DIR/test-adversarial"
+

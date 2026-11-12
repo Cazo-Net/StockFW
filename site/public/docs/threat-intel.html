@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Threat-intel blocklists · StockFW</title>
 <meta name="description" content="Blocking known-bad address ranges from published feeds on Linux and Windows: which feeds, how consent and downloads work, what can never be blocked, how the lists reach nftables or Windows Firewall, and how to tell what the engine is really doing.">
-<meta name="color-scheme" content="light">
-<meta name="theme-color" content="#ffffff">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#030407">
 <meta property="og:title" content="Threat-intel blocklists · StockFW">
 <meta property="og:description" content="Blocking known-bad address ranges from published feeds on Linux and Windows: which feeds, how consent and downloads work, what can never be blocked, how the lists reach nftables or Windows Firewall, and how to tell what the engine is really doing.">
 <meta property="og:type" content="website">
@@ -14,6 +14,7 @@
 <link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
 <link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="../assets/css/site.css">
+	<link rel="stylesheet" href="../assets/css/github-dark.css">
 <link rel="stylesheet" href="../assets/css/docs.css">
 </head>
 <body class="layout-docs">
@@ -23,14 +24,13 @@
 		<a class="brand" href="../index.html">
 			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.7</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
-			<a href="../index.html#tour">Features</a>
-			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../index.html">About</a>
 			<a href="../download.html">Download</a>
-			<a href="../changelog.html">Changelog</a>
-			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+			<a href="../docs/index.html" aria-current="page">Documentation</a>
+			<a href="../changelog.html">Blog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">Support</a>
 		</nav>
 		<div class="head-tools">
 			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
@@ -91,7 +91,7 @@
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
 			Documentation: Protection
 		</button>
-		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Protection</p>
+		<p class="crumbs"><a href="../index.html">Home</a> / <a href="../docs/index.html">Documentation</a> / Protection</p>
 		<article class="prose">
 <h1>Threat-intel blocklists</h1>
 <p class="lede">A policy says what <em>you</em> allow. A blocklist says what the wider community has seen attacking, hosting botnet controllers or spraying brute-force logins, as address ranges that are refused on sight. StockFW brings well-known feeds in, off until you turn each one on, with the same discipline as the rest of the app: nothing silent, nothing that cannot be undone, and the kernel’s real state shown rather than the configuration.</p>
@@ -177,7 +177,7 @@
 		</article>
 		<footer class="doc-foot">
 			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/ipv6.html"><span>Previous</span><strong>IPv6</strong></a><a class="next" href="../docs/country-blocking.html"><span>Next</span><strong>Country and network-owner blocking</strong></a></nav>
-			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/threat-intel.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+			<p class="edit-line"><span>Describes StockFW 1.0.8.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/threat-intel.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
 		</footer>
 	</div>
 	<aside class="toc" aria-label="On this page">

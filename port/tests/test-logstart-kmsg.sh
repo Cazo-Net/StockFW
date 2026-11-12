@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # The Linux event monitor reading the kernel ring buffer (/dev/kmsg):
 # real LOG lines arrive with the right verdict, forged user-space lines
 # do not.  See test-logstart-kmsg.c.  Needs root, iptables, and a host
@@ -39,10 +39,11 @@ cd "$PORT"
 
 cc "$HERE/test-logstart-kmsg.c" \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
    -o "$BUILD_DIR/test-logstart-kmsg" \
    src/platform/linux/fs-backend-linux.c \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto)
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0)
 
 "$BUILD_DIR/test-logstart-kmsg"
+

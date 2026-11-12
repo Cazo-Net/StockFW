@@ -73,7 +73,7 @@
 #include <string.h>
 
 #ifndef FS_VERSION
-#define FS_VERSION "1.0.7"
+#define FS_VERSION "1.0.8"
 #endif
 
 static int failures = 0;

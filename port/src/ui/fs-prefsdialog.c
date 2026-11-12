@@ -478,6 +478,9 @@ row_shell (GtkWidget *card, const gchar *id, const gchar *title,
 	gtk_widget_set_name (box, name);
 	g_free (name);
 
+	gtk_widget_set_hexpand (text, TRUE);
+	gtk_widget_set_halign (text, GTK_ALIGN_FILL);
+
 	gtk_box_pack_start (GTK_BOX (text), label_new (title, "pref-label", TRUE),
 	                    FALSE, FALSE, 0);
 	if (about != NULL)
@@ -1051,6 +1054,12 @@ build_general (PrefsWin *win, GtkWidget *nav)
 	 * session is kept for the next one. */
 	set_blocked (tray, !fs_tray_supported ());
 	set_blocked (minimize, !fs_tray_supported ());
+
+	card = card_new (cards, _("Appearance"));
+	add_switch (win, card, FS_PREFS_DARK_MODE,
+		_("Dark mode"),
+		_("Use a dark color palette for the StockFW window and dialogs."),
+		NULL);
 
 	card = card_new (cards, _("Firewall"));
 	add_switch (win, card, FS_PREFS_START_ON_GUI,

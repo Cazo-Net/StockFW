@@ -1,0 +1,128 @@
+/* StockFW — Pure Red & Black 2077 Minimalist Cyberware */
+
+:root {
+	/* Pure Red & Black Theme */
+	--bg: #000000;
+	--surface: #0a0002;
+	--surface-2: #140005;
+	--ink: #f8fafc;
+	--ink-2: #cbd5e1;
+	--muted: #94a3b8;
+	--line: #290a12;
+	--line-strong: #ff0044;
+
+	--wall: #ff0033;
+	--wall-hover: #ff1a4d;
+	--wall-deep: #80001a;
+	--wall-tint: rgba(255, 0, 51, 0.15);
+	--on-wall: #ffffff;
+
+	--allow: #ff0033;
+	--allow-bg: rgba(255, 0, 51, 0.1);
+	--allow-line: rgba(255, 0, 51, 0.4);
+	--block: #ff0033;
+	--block-bg: rgba(255, 0, 51, 0.15);
+	--block-line: rgba(255, 0, 51, 0.5);
+	--soon: #ff6688;
+	--soon-bg: rgba(255, 102, 136, 0.1);
+	--soon-line: rgba(255, 102, 136, 0.4);
+	--link: #ff0033;
+
+	--night: #000000;
+	--night-2: #050001;
+	--night-3: #0f0003;
+	--night-line: #1f0006;
+	--on-night: #ffffff;
+	--on-night-2: #e2e8f0;
+	--on-night-muted: #94a3b8;
+
+	--code-bg: #000000;
+	--code-ink: #ff0033;
+	--code-dim: #94a3b8;
+	--code-hi: #ff3366;
+	--code-ok: #ff0033;
+
+	--shadow: 0 0 30px rgba(255, 0, 51, 0.15), inset 0 0 15px rgba(255, 0, 51, 0.05);
+	--radius: 0px;
+}
+
+/* CRT Scanline Overlay */
+body::before {
+	content: " ";
+	display: block;
+	position: fixed;
+	top: 0; left: 0; bottom: 0; right: 0;
+	background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.35) 50%), linear-gradient(90deg, rgba(255, 0, 51, 0.03), rgba(0, 0, 0, 0.01), rgba(255, 0, 51, 0.03));
+	z-index: 99999;
+	background-size: 100% 3px, 6px 100%;
+	pointer-events: none;
+}
+
+body {
+	background-color: var(--bg);
+	color: var(--ink);
+	font-family: var(--mono);
+	letter-spacing: 0.03em;
+}
+
+/* Red & Black HUD Panels */
+.card, header, footer, pre, code, .hero, .box {
+	background: var(--surface) !important;
+	border: 1px solid var(--wall) !important;
+	box-shadow: 0 0 20px rgba(255, 0, 51, 0.15);
+}
+
+.card::after, header::after {
+	content: "";
+	position: absolute;
+	bottom: -1px; right: -1px;
+	width: 8px; height: 8px;
+	background: var(--wall);
+}
+
+/* Red Glow Headings */
+h1, h2, h3, .logo-text {
+	color: #fff;
+	text-shadow: 0 0 12px rgba(255, 0, 51, 0.8), 0 0 25px rgba(255, 0, 51, 0.4);
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+/* Buttons */
+button, .btn, a.btn {
+	background: transparent;
+	color: var(--ink);
+	border: 2px solid var(--wall);
+	clip-path: polygon(10% 0, 100% 0, 100% 70%, 90% 100%, 0 100%, 0 30%);
+	font-weight: 600;
+	text-transform: uppercase;
+	transition: all 0.2s ease;
+}
+
+button:hover, .btn:hover, a.btn:hover {
+	background: var(--wall);
+	color: #000;
+	box-shadow: 0 0 30px var(--wall);
+}
+
+/* Terminal Cyber Matrix Output */
+pre {
+	background: var(--code-bg);
+	border-left: 4px solid var(--wall) !important;
+	color: #ff3366;
+}
+
+/* Telemetry HUD Widget */
+.telemetry-hud {
+	position: relative;
+	background: linear-gradient(135deg, #050001, #0f0003);
+	border: 1px solid var(--wall);
+	padding: 18px 22px;
+	margin-top: 24px;
+	box-shadow: 0 0 30px rgba(255, 0, 51, 0.2);
+}
+
+.hud-stat .val {
+	color: var(--wall);
+	text-shadow: 0 0 12px rgba(255, 0, 51, 0.6);
+}

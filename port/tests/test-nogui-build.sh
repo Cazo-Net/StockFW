@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # The build without the desktop app (master plan PR 1, adjustment 5).
 #
 # FS_BUILD_GUI=OFF must configure and build fs-core and the command-line
@@ -92,3 +92,4 @@ else
 	echo "FAILED: $fails failure(s)"
 fi
 exit $(( fails > 0 ))
+

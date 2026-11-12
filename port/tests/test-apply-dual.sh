@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # The Linux backend with both address families (1.0.7), executed for
 # real.  Runs itself inside a private network namespace (unshare -n),
 # so the host's own firewall is never touched.
@@ -177,7 +177,7 @@ main (int argc, char **argv)
 CEOF
 
 CF="$(pkg-config --cflags glib-2.0 gobject-2.0 gio-2.0)"
-LF="$(pkg-config --libs glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto)"
+LF="$(pkg-config --libs glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto json-glib-1.0)"
 # fs-toolpath.c with FS_TOOLPATH_TESTING: root then takes its tools from
 # PATH, so the fake ip6tables-restore below is the one that runs.  The
 # release build takes them from the system directories only.
@@ -449,3 +449,4 @@ T '[ "$out" = "STOP ok" ] && ! iptables -n -L INBOUND >/dev/null 2>&1' "and stop
 echo ""
 if [ "$failures" -eq 0 ]; then echo "PASSED: 0 failure(s)"; else echo "FAILED: $failures failure(s)"; fi
 exit $((failures > 0))
+

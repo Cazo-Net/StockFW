@@ -44,6 +44,7 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-autoblock.h"
 #include "core/fs-autostart.h"
 #include "core/fs-blocktally.h"
+#include "core/fs-playbook.h"
 #include <glib/gstdio.h>
 #include <stdlib.h>
 #ifndef G_OS_WIN32
@@ -126,6 +127,12 @@ static void test_rule_csv (void)
 	rule->comment = g_strdup ("from LAN");
 
 	csv = fs_rule_to_csv (rule);
+	/* Four fields, as in 1.0.7: the Program column is optional and is
+	 * only written for a rule that actually binds an application
+	 * (test_rule_csv_program).  columns_for() reports 4 for a service
+	 * kind, and a program-less row written as 4 fields keeps the file
+	 * byte-identical to what 1.0.7 wrote, so an upgrade rewrites
+	 * nothing. */
 	CHECK (g_strcmp0 (csv, "SSH, 22, 192.168.1.0/24, from LAN") == 0,
 	       "service rule serialises as \"%s\"", csv);
 
@@ -173,6 +180,92 @@ static void test_rule_csv (void)
 	CHECK (fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_FROM,
 	                         "a, b, c, d, e, f") == NULL,
 	       "over-long row rejected");
+
+	/* A service row with an empty 5th field is "no program", and the
+	 * journal writes exactly that for every rule without one.  Read
+	 * back as "" instead of NULL the policy compares changed against
+	 * itself, so every re-apply of an unchanged policy churns the
+	 * firewall: fs_fwrule_equal uses g_strcmp0, and fs-apply.c's
+	 * delta runs a narrow remove+add instead of reporting no change. */
+	{
+		FsPolicy *a = fs_policy_new ();
+		FsPolicy *b = fs_policy_new ();
+		FsPolicyDelta *d;
+		FsRule *r = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_SERVICE);
+		FsRule *loaded;
+		gchar *row;
+
+		r->service = g_strdup ("firefox");
+		r->port    = g_strdup ("443");
+		r->target  = g_strdup (FS_TARGET_ANY);
+		fs_policy_add (a, r);
+		fs_rule_free (r);
+
+		row = fs_rule_to_csv (g_ptr_array_index (
+			a->kinds[FS_RULE_OUTBOUND_ALLOW_SERVICE], 0));
+		loaded = fs_rule_from_csv (FS_RULE_OUTBOUND_ALLOW_SERVICE, row);
+		CHECK (loaded != NULL && loaded->program == NULL,
+		       "an empty program field loads as NULL");
+		if (loaded != NULL)
+			fs_policy_add (b, loaded);
+		g_free (row);
+		fs_rule_free (loaded);
+
+		d = fs_policy_delta (b, a);
+		CHECK (d->empty,
+		       "an unchanged policy round-trips to an empty delta");
+		fs_policy_delta_free (d);
+		fs_policy_free (a);
+		fs_policy_free (b);
+	}
+}
+
+static void test_rule_csv_program (void)
+{
+	/* New rows write program as the fifth field. */
+	FsRule *rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_SERVICE);
+	gchar *csv;
+	FsRule *back;
+
+	rule->service = g_strdup ("firefox");
+	rule->port    = g_strdup ("443");
+	rule->target  = g_strdup (FS_TARGET_ANY);
+	rule->comment = g_strdup ("browser HTTPS");
+	rule->program = g_strdup ("C:\\Program Files\\Mozilla Firefox\\firefox.exe");
+
+	csv = fs_rule_to_csv (rule);
+	CHECK (g_strcmp0 (csv, "firefox, 443, Anyone, browser HTTPS, "
+			     "C:\\Program Files\\Mozilla Firefox\\firefox.exe") == 0,
+	       "service rule with program serialises as \"%s\"", csv);
+
+	back = fs_rule_from_csv (FS_RULE_OUTBOUND_ALLOW_SERVICE, csv);
+	CHECK (back != NULL, "service rule with program parses back");
+	CHECK (back != NULL && g_strcmp0 (back->program,
+			  "C:\\Program Files\\Mozilla Firefox\\firefox.exe") == 0 &&
+		   g_strcmp0 (back->service, "firefox") == 0 &&
+		   g_strcmp0 (back->target, "Anyone") == 0 &&
+		   g_strcmp0 (back->comment, "browser HTTPS") == 0,
+	       "service round-trip preserves program field");
+
+	g_free (csv);
+	fs_rule_free (rule);
+	fs_rule_free (back);
+
+	/* Old 1.0.7 rows have four fields and load with program left NULL. */
+	back = fs_rule_from_csv (FS_RULE_OUTBOUND_ALLOW_SERVICE,
+				 "firefox, 443, Anyone, browser HTTPS");
+	CHECK (back != NULL, "old four-field row still loads");
+	CHECK (back != NULL && back->program == NULL,
+	       "old row leaves program NULL");
+	fs_rule_free (back);
+
+	/* A program field containing a comma is rejected by validation. */
+	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_SERVICE);
+	rule->service = g_strdup ("bad");
+	rule->program = g_strdup ("C:\\bad,path.exe");
+	CHECK (!fs_rule_validate (rule, NULL),
+	       "program field with comma is rejected");
+	fs_rule_free (rule);
 }
 
 static void test_policy_persist (void)
@@ -958,6 +1051,45 @@ static void test_fwrule_netsh_golden (void)
 		       "on (got %s)", name);
 		g_free (name);
 	}
+}
+
+/* P0-D: netsh program= is emitted for per-app rules, with spaces
+ * preserved (argv quoting handled by CreateProcess, no shell). */
+static void
+test_fwrule_netsh_program (void)
+{
+	FsPolicy *policy = fs_policy_new ();
+	FsRule *row = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_SERVICE);
+	FsFwRule *rule;
+	GStrv args;
+	gchar *joined;
+
+	row->service = g_strdup ("firefox");
+	row->port    = g_strdup ("443");
+	row->target  = g_strdup (FS_TARGET_ANY);
+	row->program = g_strdup ("C:\\Program Files\\Mozilla Firefox\\firefox.exe");
+	fs_policy_add (policy, row);
+	fs_rule_free (row);
+
+	rule = g_list_nth_data (fs_fwrule_from_policy (policy), 0);
+	CHECK (rule != NULL, "one rule compiled");
+	if (rule != NULL) {
+		args = fs_fwrule_netsh_args (rule);
+		CHECK (args != NULL, "netsh args produced");
+		if (args != NULL) {
+			joined = g_strjoinv ("|", args);
+			CHECK (strstr (joined,
+				"program=C:\\Program Files\\Mozilla Firefox\\firefox.exe") != NULL,
+				       "program= is in netsh args: %s", joined);
+			CHECK (strchr (joined, '"') == NULL,
+				       "no quote characters reach netsh");
+			g_free (joined);
+			g_strfreev (args);
+		}
+		fs_fwrule_free (rule);
+	}
+
+	fs_policy_free (policy);
 }
 
 static void test_service_lookup (void)
@@ -11652,6 +11784,7 @@ int main (void)
 	test_cli_platform_words ();
 	test_hosts ();
 	test_rule_csv ();
+	test_rule_csv_program ();
 	test_policy_persist ();
 	test_fwrule_ports ();
 	test_fwrule_services_golden ();
@@ -11659,6 +11792,7 @@ int main (void)
 	test_fwrule_expand ();
 	test_fwrule_forward ();
 	test_fwrule_netsh_golden ();
+	test_fwrule_netsh_program ();
 	test_service_lookup ();
 	test_script_generation ();
 	test_copilot_suggestion_apply ();
@@ -11736,6 +11870,32 @@ int main (void)
 	test_policy_load_report ();
 	test_apply_while_stopped ();
 	test_lockout_check ();
+	{
+		FsPlaybook *pb = fs_playbook_new ("pb-1", "Test Playbook", "Description",
+		                                  FS_PLAYBOOK_TRIGGER_ML_ANOMALY, 50);
+		FsXdrIncident *inc;
+		gchar *json;
+
+		CHECK (pb != NULL && g_strcmp0 (pb->id, "pb-1") == 0, "playbook created successfully");
+		fs_playbook_add_action (pb, FS_XDR_ACTION_BLOCK_IP);
+		fs_playbook_add_action (pb, FS_XDR_ACTION_AUDIT_LOG);
+
+		CHECK (fs_playbook_execute (pb, "Malicious beacon detected", 80, NULL, NULL),
+		       "playbook executes when risk score >= min_risk_score");
+		CHECK (!fs_playbook_execute (pb, "Low risk event", 20, NULL, NULL),
+		       "playbook skips execution when risk score < min_risk_score");
+
+		inc = fs_xdr_incident_new ("pb-1", "Malicious beacon detected", 80, TRUE, "Blocked IP 203.0.113.9");
+		CHECK (inc != NULL && g_strcmp0 (inc->playbook_id, "pb-1") == 0, "xdr incident created");
+
+		json = fs_xdr_incident_to_json (inc);
+		CHECK (json != NULL && strstr (json, "pb-1") != NULL && strstr (json, "80") != NULL,
+		       "xdr incident serializes to JSON correctly");
+
+		g_free (json);
+		fs_xdr_incident_free (inc);
+		fs_playbook_free (pb);
+	}
 	/* === end WP-B === */
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
@@ -11757,10 +11917,10 @@ fi
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} "$BUILD_DIR/test-core.c" \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
    -o "$BUILD_DIR/test-core" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
 
 # Keep rule files out of the real rules directory.
 export STOCKFW_RULES_DIR="$BUILD_DIR/rules"
@@ -11774,10 +11934,10 @@ core_rc=0
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} -DFS_GEODB_TESTING=1 tests/test-geodb.c \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
    -o "$BUILD_DIR/test-geodb" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
 geodb_rc=0
 "$BUILD_DIR/test-geodb" tests/geodb > "$BUILD_DIR/geodb.log" 2>&1 || geodb_rc=$?
 grep -E '^(FAIL|SKIP)|checks,|test-geodb:' "$BUILD_DIR/geodb.log" || true
@@ -11788,10 +11948,10 @@ grep -E '^(FAIL|SKIP)|checks,|test-geodb:' "$BUILD_DIR/geodb.log" || true
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} -DFS_GEODB_TESTING=1 tests/test-intel-geo.c \
    -I src -I tests \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
    -o "$BUILD_DIR/test-intel-geo" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
 intelgeo_rc=0
 "$BUILD_DIR/test-intel-geo" > "$BUILD_DIR/intel-geo.log" 2>&1 || intelgeo_rc=$?
 grep -E '^(FAIL|SKIP)|checks,|test-intel-geo:' "$BUILD_DIR/intel-geo.log" || true
@@ -11802,10 +11962,10 @@ grep -E '^(FAIL|SKIP)|checks,|test-intel-geo:' "$BUILD_DIR/intel-geo.log" || tru
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} tests/test-whatif.c \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
    -o "$BUILD_DIR/test-whatif" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
 whatif_rc=0
 "$BUILD_DIR/test-whatif" || whatif_rc=$?
 
@@ -11815,10 +11975,10 @@ whatif_rc=0
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} tests/test-health.c \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
    -o "$BUILD_DIR/test-health" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
 health_rc=0
 "$BUILD_DIR/test-health" || health_rc=$?
 
@@ -11830,10 +11990,10 @@ health_rc=0
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} tests/test-pr3-core.c \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
    -o "$BUILD_DIR/test-pr3-core" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
 pr3_rc=0
 TMPDIR="$BUILD_DIR" "$BUILD_DIR/test-pr3-core" || pr3_rc=$?
 
@@ -11844,10 +12004,10 @@ TMPDIR="$BUILD_DIR" "$BUILD_DIR/test-pr3-core" || pr3_rc=$?
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} tests/test-pr4-core.c \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
    -o "$BUILD_DIR/test-pr4-core" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
 pr4_rc=0
 TMPDIR="$BUILD_DIR" "$BUILD_DIR/test-pr4-core" || pr4_rc=$?
 
@@ -12012,10 +12172,10 @@ echo "ok:   cli guard: fs_cli_take_opt options and the option tables agree"
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} tests/test-sockets.c \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
    -o "$BUILD_DIR/test-sockets" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
 if ! "$BUILD_DIR/test-sockets"; then
   exit 1
 fi

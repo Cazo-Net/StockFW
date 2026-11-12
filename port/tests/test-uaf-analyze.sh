@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # Use-after-free analysis for a single source file.
 #
 # GCC's -fanalyzer follows the free, and g_free() is aliased to free()
@@ -124,3 +124,4 @@ echo "ok:   compiled and analysed, no use-after-free found"
 echo
 echo "PASSED: 0 failure(s)"
 exit 0
+

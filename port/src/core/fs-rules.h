@@ -45,6 +45,12 @@ typedef struct
 	gchar      *to;         /* forward destination host         */
 	gchar      *to_port;    /* forward destination port         */
 	gchar      *comment;
+	/* The executable this rule is bound to (Windows: the full program
+	 * path, e.g. C:\Program Files\App\app.exe).  NULL means the rule is
+	 * not bound to any program and applies to every program.  The field
+	 * is meaningful for the service rule kinds; host and forward kinds
+	 * leave it NULL on disk. */
+	gchar      *program;
 	gboolean    enabled;    /* FALSE means #off: on disk        */
 } FsRule;
 

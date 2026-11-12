@@ -22,9 +22,11 @@
 #include "ui/fs-policyview.h"
 #include "ui/fs-hitview.h"
 #include "ui/fs-activityview.h"
+#include "ui/fs-topology.h"
 #include "ui/fs-copilot.h"
 #include "ui/fs-trustview.h"
 #include "ui/fs-intelview.h"
+#include "ui/fs-nexora.h"
 #include "ui/fs-tray.h"
 #include "ui/fs-icons.h"
 #include "core/fs-apply.h"
@@ -494,13 +496,15 @@ build_sidebar (void)
 		{ FS_ICON_SHIELD,       N_("Overview") },
 		{ FS_ICON_LIST,         N_("Events") },
 		{ FS_ICON_ACTIVITY,     N_("Activity") },
+		{ FS_ICON_ACTIVITY,     N_("Topology") },
 		{ FS_ICON_SLIDERS,      N_("Policy") },
 		{ FS_ICON_SHIELD_X,     N_("Threat Intel") },
 		{ FS_ICON_CHAT,         N_("Copilot") },
 		{ FS_ICON_CHECK_CIRCLE, N_("Trust") },
+		{ FS_ICON_SHIELD,       N_("Nexora AI") },
 	};
-	GtkWidget *bar, *brand, *tile, *names, *label, *spacer, *footer, *row;
 
+	GtkWidget *bar, *brand, *tile, *names, *label, *spacer, *footer, *row;
 	bar = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
 	gtk_widget_set_size_request (bar, 220, -1);
 	gtk_style_context_add_class (gtk_widget_get_style_context (bar),
@@ -624,6 +628,25 @@ build_sidebar (void)
  * src/ui/fs-theme.css, compiled into the binary (fs-theme-css.h is
  * generated at configure time), so the installed exe needs no data
  * files beside it. */
+
+/* [ apply_dark_mode ] -- apply dark theme setting to GtkSettings and main window. */
+static void
+apply_dark_mode (void)
+{
+	gboolean dark = fs_prefs_bool (FS_PREFS_DARK_MODE);
+	GtkSettings *settings = gtk_settings_get_default ();
+	if (settings != NULL) {
+		g_object_set (settings, "gtk-application-prefer-dark-theme", dark, NULL);
+	}
+	if (fsapp.window != NULL) {
+		GtkStyleContext *ctx = gtk_widget_get_style_context (fsapp.window);
+		if (dark)
+			gtk_style_context_add_class (ctx, "dark");
+		else
+			gtk_style_context_remove_class (ctx, "dark");
+	}
+}
+
 static void
 install_theme (void)
 {
@@ -646,6 +669,8 @@ install_theme (void)
 		gdk_screen_get_default (),
 		GTK_STYLE_PROVIDER (provider),
 		GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+
+	g_print ("StockFW Nexora theme successfully installed!\n");
 
 	g_object_unref (provider);
 }
@@ -1035,6 +1060,110 @@ session_safety_begin (GtkApplication *app)
 #endif
 }
 
+
+/* --- Floating Notification Toast Overlay (XDR Playbooks & AI Alerts) --- */
+static GtkWidget *toast_box = NULL;
+
+static gboolean
+toast_timeout_cb (gpointer data)
+{
+	GtkWidget *card = GTK_WIDGET (data);
+	if (card != NULL && GTK_IS_WIDGET (card)) {
+		gtk_widget_destroy (card);
+	}
+	return G_SOURCE_REMOVE;
+}
+
+static void
+on_toast_close_clicked (GtkButton *btn, gpointer data)
+{
+	(void) btn;
+	GtkWidget *card = GTK_WIDGET (data);
+	guint *tid = g_object_get_data (G_OBJECT (card), "toast-timeout-id");
+	if (tid != NULL && *tid != 0) {
+		g_source_remove (*tid);
+		*tid = 0;
+	}
+	if (card != NULL && GTK_IS_WIDGET (card)) {
+		gtk_widget_destroy (card);
+	}
+}
+
+void
+fs_app_show_toast (const gchar *title, const gchar *message, gboolean is_error)
+{
+	GtkWidget *card, *vbox, *tlabel, *mlabel, *close_btn;
+	guint *tid_ptr;
+
+	if (toast_box == NULL)
+		return;
+
+	card = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+	gtk_style_context_add_class (gtk_widget_get_style_context (card), "toast-card");
+	if (is_error)
+		gtk_style_context_add_class (gtk_widget_get_style_context (card), "error");
+
+	/* Icon */
+	{
+		FsIconKind icon_kind = is_error ? FS_ICON_SHIELD_X : FS_ICON_SHIELD;
+		GtkWidget *icon = fs_icon_new (icon_kind, 20);
+		gtk_widget_set_valign (icon, GTK_ALIGN_CENTER);
+		gtk_box_pack_start (GTK_BOX (card), icon, FALSE, FALSE, 0);
+	}
+
+	vbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+	gtk_widget_set_hexpand (vbox, TRUE);
+	gtk_widget_set_valign (vbox, GTK_ALIGN_CENTER);
+
+	tlabel = gtk_label_new (title ? title : _("Notification"));
+	gtk_label_set_xalign (GTK_LABEL (tlabel), 0.0);
+	gtk_style_context_add_class (gtk_widget_get_style_context (tlabel), "toast-title");
+	gtk_box_pack_start (GTK_BOX (vbox), tlabel, FALSE, FALSE, 0);
+
+	if (message != NULL && *message != '\0') {
+		mlabel = gtk_label_new (message);
+		gtk_label_set_xalign (GTK_LABEL (mlabel), 0.0);
+		gtk_label_set_line_wrap (GTK_LABEL (mlabel), TRUE);
+		gtk_style_context_add_class (gtk_widget_get_style_context (mlabel), "toast-message");
+		gtk_box_pack_start (GTK_BOX (vbox), mlabel, FALSE, FALSE, 0);
+	}
+
+	gtk_box_pack_start (GTK_BOX (card), vbox, TRUE, TRUE, 0);
+
+	/* Close button */
+	close_btn = gtk_button_new_with_label ("×");
+	gtk_button_set_relief (GTK_BUTTON (close_btn), GTK_RELIEF_NONE);
+	gtk_widget_set_valign (close_btn, GTK_ALIGN_CENTER);
+	gtk_style_context_add_class (gtk_widget_get_style_context (close_btn), "toast-close");
+	g_signal_connect (close_btn, "clicked", G_CALLBACK (on_toast_close_clicked), card);
+	gtk_box_pack_start (GTK_BOX (card), close_btn, FALSE, FALSE, 0);
+
+	tid_ptr = g_new0 (guint, 1);
+	*tid_ptr = g_timeout_add_seconds (5, toast_timeout_cb, card);
+	g_object_set_data_full (G_OBJECT (card), "toast-timeout-id", tid_ptr, g_free);
+
+	gtk_box_pack_start (GTK_BOX (toast_box), card, FALSE, FALSE, 0);
+	gtk_widget_show_all (toast_box);
+}
+
+void
+fs_app_show_xdr_toast (const gchar *playbook_name, const gchar *action_summary)
+{
+	gchar *title = g_strdup_printf (_("XDR Playbook Triggered: %s"), playbook_name ? playbook_name : "Security Playbook");
+	fs_app_show_toast (title, action_summary ? action_summary : _("Automated incident response action executed successfully."), FALSE);
+	g_free (title);
+}
+
+void
+fs_app_show_ai_alert_toast (const gchar *alert_title, const gchar *details, guint risk_score)
+{
+	gchar *title = g_strdup_printf (_("AI Alert (Risk Score: %u): %s"), risk_score, alert_title ? alert_title : "Anomaly Detected");
+	gboolean is_high = (risk_score >= 70);
+	fs_app_show_toast (title, details ? details : _("AEGIS-ML threat engine flagged abnormal network behavior."), is_high);
+	g_free (title);
+}
+
+
 void
 fs_app_activate (GtkApplication *app)
 {
@@ -1077,9 +1206,22 @@ fs_app_activate (GtkApplication *app)
 
 	/* Theme first: everything built below picks up the classes. */
 	install_theme ();
+	apply_dark_mode ();
 
-	box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
-	gtk_container_add (GTK_CONTAINER (fsapp.window), box);
+	{
+		GtkWidget *overlay = gtk_overlay_new ();
+		gtk_container_add (GTK_CONTAINER (fsapp.window), overlay);
+
+		box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+		gtk_container_add (GTK_CONTAINER (overlay), box);
+
+		toast_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
+		gtk_widget_set_halign (toast_box, GTK_ALIGN_END);
+		gtk_widget_set_valign (toast_box, GTK_ALIGN_END);
+		gtk_widget_set_margin_end (toast_box, 20);
+		gtk_widget_set_margin_bottom (toast_box, 20);
+		gtk_overlay_add_overlay (GTK_OVERLAY (overlay), toast_box);
+	}
 
 	register_actions ();
 
@@ -1117,6 +1259,7 @@ fs_app_activate (GtkApplication *app)
 	            "time."),
 	          fs_activityview_page (), TRUE);
 
+	add_page (_("Topology"), _("Interactive network flow graph and topology visualizer."), fs_topology_page (), TRUE);
 	policy = fs_policy_new ();
 
 	/* The Events page was built above (before there was a policy to
@@ -1187,13 +1330,15 @@ fs_app_activate (GtkApplication *app)
 	            "whether it has changed since you attested it."),
 	          fs_trustview_page (), FALSE);
 
+	add_page (_("Nexora AI"), _("AEGIS-ML confidence scores, PSI drift monitoring, and active learning dashboard."), fs_nexora_page (), TRUE);
 	/* Policy loaded, Sentinel reconciled: now the firewall may start. */
 	start_at_launch (due);
 	fs_policy_free (due);
 
 	/* Everything inside the window is shown now; the window itself
 	 * only below, once it is known whether it may stay hidden. */
-	gtk_widget_show_all (box);
+	gtk_widget_show (fsapp.window);
+		gtk_widget_show_all (fsapp.window);
 	sync_nav ((guint) gtk_notebook_get_current_page (
 		GTK_NOTEBOOK (fsapp.notebook)));
 
@@ -1235,6 +1380,7 @@ fs_app_present (void)
 
 	hidden_start_end ();
 	fs_tray_show_window ();
+	gtk_window_present (GTK_WINDOW (fsapp.window));
 }
 
 void

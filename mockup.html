@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StockFW Nexora - Desktop Window Mockup</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        body {
+            background-color: #0b0f19;
+            color: #e2e8f0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .window-container {
+            width: 1280px;
+            height: 800px;
+            background: #111827;
+            border: 1px solid #1f2937;
+            border-radius: 12px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* Title Bar */
+        .title-bar {
+            height: 40px;
+            background: #0f172a;
+            border-bottom: 1px solid #1e293b;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            user-select: none;
+        }
+
+        .title-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .window-dots {
+            display: flex;
+            gap: 8px;
+        }
+
+        .dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .dot-close { background: #ef4444; }
+        .dot-min { background: #f59e0b; }
+        .dot-max { background: #10b981; }
+
+        .app-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #94a3b8;
+            letter-spacing: 0.5px;
+        }
+
+        .title-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 12px;
+            color: #64748b;
+        }
+
+        .status-badge {
+            background: rgba(16, 185, 129, 0.1);
+            color: #34d399;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-weight: 500;
+            border: 1px solid rgba(16, 185, 129, 0.2);
+        }
+
+        /* Main App Body */
+        .app-body {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 240px;
+            background: #0f172a;
+            border-right: 1px solid #1e293b;
+            display: flex;
+            flex-direction: column;
+            padding: 20px 12px;
+            gap: 24px;
+        }
+
+        .sidebar-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding-left: 8px;
+        }
+
+        .brand-logo {
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            color: white;
+            font-size: 16px;
+            box-shadow: 0 0 15px rgba(59, 130, 246, 0.4);
+        }
+
+        .brand-name {
+            font-size: 15px;
+            font-weight: 700;
+            color: #f8fafc;
+        }
+
+        .brand-sub {
+            font-size: 11px;
+            color: #64748b;
+        }
+
+        .nav-section {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .nav-title {
+            font-size: 11px;
+            text-transform: uppercase;
+            color: #475569;
+            font-weight: 600;
+            padding-left: 10px;
+            margin-bottom: 8px;
+            letter-spacing: 0.8px;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 12px;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #94a3b8;
+            text-decoration: none;
+            transition: all 0.2s;
+            cursor: pointer;
+        }
+
+        .nav-item:hover {
+            background: rgba(255, 255, 255, 0.03);
+            color: #e2e8f0;
+        }
+
+        .nav-item.active {
+            background: rgba(59, 130, 246, 0.15);
+            color: #60a5fa;
+            font-weight: 500;
+            border: 1px solid rgba(59, 130, 246, 0.2);
+        }
+
+        .sidebar-footer {
+            margin-top: auto;
+            background: #1e293b;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #334155;
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .user-avatar {
+            width: 32px;
+            height: 32px;
+            background: #3b82f6;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 12px;
+            color: white;
+        }
+
+        .user-details .name {
+            font-size: 13px;
+            font-weight: 600;
+            color: #f1f5f9;
+        }
+
+        .user-details .role {
+            font-size: 11px;
+            color: #64748b;
+        }
+
+        /* Content Area */
+        .content-area {
+            flex: 1;
+            background: #0b0f19;
+            padding: 24px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        .header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .page-title h1 {
+            font-size: 22px;
+            font-weight: 700;
+            color: #f8fafc;
+        }
+
+        .page-title p {
+            font-size: 13px;
+            color: #64748b;
+            margin-top: 2px;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 12px;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            border: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: background 0.2s;
+        }
+
+        .btn-secondary {
+            background: #1e293b;
+            color: #cbd5e1;
+            border: 1px solid #334155;
+        }
+
+        .btn-secondary:hover {
+            background: #334155;
+        }
+
+        .btn-primary {
+            background: #3b82f6;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #2563eb;
+        }
+
+        /* Threat Cards Grid */
+        .threat-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+        }
+
+        .threat-card {
+            background: #111827;
+            border-radius: 10px;
+            padding: 16px;
+            border: 1px solid #1f2937;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .threat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 4px;
+            height: 100%;
+        }
+
+        .threat-card.critical::before { background: #ef4444; }
+        .threat-card.high::before { background: #f59e0b; }
+        .threat-card.medium::before { background: #3b82f6; }
+
+        .threat-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .threat-type {
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .critical .threat-type { color: #f87171; }
+        .high .threat-type { color: #fbbf24; }
+        .medium .threat-type { color: #60a5fa; }
+
+        .threat-time {
+            font-size: 11px;
+            color: #64748b;
+        }
+
+        .threat-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #f1f5f9;
+        }
+
+        .threat-desc {
+            font-size: 12px;
+            color: #94a3b8;
+            line-height: 1.4;
+        }
+
+        .threat-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid #1f2937;
+            padding-top: 10px;
+            margin-top: 4px;
+            font-size: 11px;
+            color: #64748b;
+        }
+
+        .threat-badge {
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 500;
+        }
+
+        .critical .threat-badge { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+        .high .threat-badge { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
+        .medium .threat-badge { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
+
+        /* Lower Section Layout (Open Connections & AEGIS-ML) */
+        .lower-section {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 16px;
+        }
+
+        .card-panel {
+            background: #111827;
+            border-radius: 10px;
+            border: 1px solid #1f2937;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            padding: 16px;
+            border-bottom: 1px solid #1f2937;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .panel-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #f1f5f9;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .panel-action {
+            font-size: 12px;
+            color: #3b82f6;
+            cursor: pointer;
+            font-weight: 500;
+        }
+
+        /* Connections Table */
+        .connections-table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+            font-size: 12px;
+        }
+
+        .connections-table th {
+            background: #0f172a;
+            color: #64748b;
+            font-weight: 600;
+            padding: 10px 16px;
+            border-bottom: 1px solid #1f2937;
+        }
+
+        .connections-table td {
+            padding: 12px 16px;
+            border-bottom: 1px solid #1f2937;
+            color: #cbd5e1;
+        }
+
+        .connections-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .connections-table tr:hover {
+            background: rgba(255, 255, 255, 0.01);
+        }
+
+        .ip-address {
+            font-family: monospace;
+            color: #38bdf8;
+        }
+
+        .status-dot {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            margin-right: 6px;
+        }
+
+        .status-dot.active { background: #10b981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.6); }
+        .status-dot.warning { background: #f59e0b; box-shadow: 0 0 8px rgba(245, 158, 11, 0.6); }
+        .status-dot.blocked { background: #ef4444; }
+
+        /* AEGIS-ML Widget */
+        .aegis-body {
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .aegis-metric-card {
+            background: #0f172a;
+            border: 1px solid #1e293b;
+            border-radius: 8px;
+            padding: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .metric-label {
+            font-size: 12px;
+            color: #64748b;
+        }
+
+        .metric-value {
+            font-size: 16px;
+            font-weight: 700;
+            color: #f8fafc;
+            font-family: monospace;
+        }
+
+        .metric-value.success { color: #34d399; }
+        .metric-value.warning { color: #fbbf24; }
+
+        .drift-chart-container {
+            height: 90px;
+            background: #0f172a;
+            border: 1px solid #1e293b;
+            border-radius: 8px;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            color: #64748b;
+        }
+
+        .chart-svg {
+            width: 100%;
+            height: 45px;
+        }
+
+        .aegis-status-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 12px;
+            background: rgba(16, 185, 129, 0.05);
+            border: 1px solid rgba(16, 185, 129, 0.15);
+            padding: 8px 12px;
+            border-radius: 6px;
+            color: #34d399;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="window-container">
+        <!-- Title Bar -->
+        <div class="title-bar">
+            <div class="title-left">
+                <div class="window-dots">
+                    <div class="dot dot-close"></div>
+                    <div class="dot dot-min"></div>
+                    <div class="dot dot-max"></div>
+                </div>
+                <div class="app-title">StockFW Nexora Desktop v2.4.1</div>
+            </div>
+            <div class="title-right">
+                <span class="status-badge">AEGIS-ML Active</span>
+                <span>SEC-ZONE-01</span>
+            </div>
+        </div>
+
+        <!-- Main App Body -->
+        <div class="app-body">
+            <!-- Sidebar -->
+            <div class="sidebar">
+                <div class="sidebar-brand">
+                    <div class="brand-logo">N</div>
+                    <div>
+                        <div class="brand-name">NEXORA</div>
+                        <div class="brand-sub">StockFW Security</div>
+                    </div>
+                </div>
+
+                <div class="nav-section">
+                    <div class="nav-title">Overview</div>
+                    <a class="nav-item active">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg>
+                        Dashboard
+                    </a>
+                    <a class="nav-item">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                        Threat Analytics
+                    </a>
+                    <a class="nav-item">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>
+                        Open Connections
+                    </a>
+                </div>
+
+                <div class="nav-section">
+                    <div class="nav-title">Intelligence</div>
+                    <a class="nav-item">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
+                        AEGIS-ML Drift
+                    </a>
+                    <a class="nav-item">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                        Incident Logs
+                    </a>
+                </div>
+
+                <div class="sidebar-footer">
+                    <div class="user-info">
+                        <div class="user-avatar">AX</div>
+                        <div class="user-details">
+                            <div class="name">Admin Officer</div>
+                            <div class="role">Level 4 Clearance</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Content Area -->
+            <div class="content-area">
+                <!-- Header -->
+                <div class="header-row">
+                    <div class="page-title">
+                        <h1>Security Command Center</h1>
+                        <p>Real-time telemetry, threat detection, and active connection monitoring.</p>
+                    </div>
+                    <div class="action-buttons">
+                        <button class="btn btn-secondary">
+                            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                            Sync Telemetry
+                        </button>
+                        <button class="btn btn-primary">
+                            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+                            Deploy Countermeasures
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Threat Cards Grid -->
+                <div class="threat-grid">
+                    <div class="threat-card critical">
+                        <div class="threat-header">
+                            <span class="threat-type">Critical Vector</span>
+                            <span class="threat-time">2m ago</span>
+                        </div>
+                        <div class="threat-title">Unauthorized Root Probe</div>
+                        <div class="threat-desc">Multiple sequential exploit attempts detected against core auth daemon via port 443.</div>
+                        <div class="threat-footer">
+                            <span>Source: 185.220.101.4</span>
+                            <span class="threat-badge">Blocked</span>
+                        </div>
+                    </div>
+
+                    <div class="threat-card high">
+                        <div class="threat-header">
+                            <span class="threat-type">High Priority</span>
+                            <span class="threat-time">14m ago</span>
+                        </div>
+                        <div class="threat-title">Memory Drift Anomaly</div>
+                        <div class="threat-desc">AEGIS-ML detected non-standard allocation pattern in process buffer #0x84FF.</div>
+                        <div class="threat-footer">
+                            <span>Module: nexora_core.dll</span>
+                            <span class="threat-badge">Quarantined</span>
+                        </div>
+                    </div>
+
+                    <div class="threat-card medium">
+                        <div class="threat-header">
+                            <span class="threat-type">Medium Alert</span>
+                            <span class="threat-time">42m ago</span>
+                        </div>
+                        <div class="threat-title">Encrypted Tunnel Spike</div>
+                        <div class="threat-desc">Unrecognized outbound TLS handshake pattern with unknown external endpoint.</div>
+                        <div class="threat-footer">
+                            <span>Protocol: HTTPS/TLSv1.3</span>
+                            <span class="threat-badge">Monitoring</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Lower Section -->
+                <div class="lower-section">
+                    <!-- Open Connections Table -->
+                    <div class="card-panel">
+                        <div class="panel-header">
+                            <div class="panel-title">
+                                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"></path></svg>
+                                Open Connections & Sessions
+                            </div>
+                            <span class="panel-action">View All (48 Active)</span>
+                        </div>
+                        <table class="connections-table">
+                            <thead>
+                                <tr>
+                                    <th>Endpoint IP</th>
+                                    <th>Protocol</th>
+                                    <th>State / Status</th>
+                                    <th>Bytes In/Out</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><span class="ip-address">10.142.55.12:64211</span></td>
+                                    <td>TCP / Secure</td>
+                                    <td><span class="status-dot active"></span>Established</td>
+                                    <td>1.4 MB / 840 KB</td>
+                                </tr>
+                                <tr>
+                                    <td><span class="ip-address">192.168.1.104:443</span></td>
+                                    <td>HTTPS / TLS1.3</td>
+                                    <td><span class="status-dot active"></span>Encrypted</td>
+                                    <td>14.8 MB / 4.2 MB</td>
+                                </tr>
+                                <tr>
+                                    <td><span class="ip-address">172.16.8.92:8080</span></td>
+                                    <td>HTTP / Proxy</td>
+                                    <td><span class="status-dot warning"></span>High Latency</td>
+                                    <td>512 KB / 120 KB</td>
+                                </tr>
+                                <tr>
+                                    <td><span class="ip-address">185.220.101.4:9001</span></td>
+                                    <td>RAW / TCP</td>
+                                    <td><span class="status-dot blocked"></span>Terminated</td>
+                                    <td>4 KB / 0 KB</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- AEGIS-ML Drift Status Widget -->
+                    <div class="card-panel">
+                        <div class="panel-header">
+                            <div class="panel-title">
+                                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                                AEGIS-ML Drift Status
+                            </div>
+                            <span class="panel-action">Config</span>
+                        </div>
+                        <div class="aegis-body">
+                            <div class="aegis-metric-card">
+                                <span class="metric-label">Model Confidence</span>
+                                <span class="metric-value success">99.42%</span>
+                            </div>
+
+                            <div class="aegis-metric-card">
+                                <span class="metric-label">Drift Divergence</span>
+                                <span class="metric-value warning">0.0184 Δ</span>
+                            </div>
+
+                            <div class="drift-chart-container">
+                                <div class="chart-header">
+                                    <span>Drift History (24h)</span>
+                                    <span>Stable</span>
+                                </div>
+                                <svg class="chart-svg" viewBox="0 0 200 40" preserveAspectRatio="none">
+                                    <path d="M 0 30 Q 30 25 60 28 T 120 15 T 180 20 L 200 18" fill="none" stroke="#3b82f6" stroke-width="2"/>
+                                    <path d="M 0 30 Q 30 25 60 28 T 120 15 T 180 20 L 200 18 L 200 40 L 0 40 Z" fill="rgba(59, 130, 246, 0.1)"/>
+                                </svg>
+                            </div>
+
+                            <div class="aegis-status-row">
+                                <span>Inference Engine</span>
+                                <strong>Optimal</strong>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>

@@ -1025,6 +1025,56 @@ Sentinel answers the rogue-agent case: a compromised or malicious process must b
 
 ---
 
+## Chapter 16: The Guinness-Level Sovereign Roadmap (Phase v1.1 to v3.0)
+
+*This chapter documents the ultimate evolution of StockFW into the world's first sovereign, kernel-aware, local AI security fabric, ensuring absolute superiority over traditional cloud-tethered EDRs and blind L3/L4 firewalls.*
+
+### 16.1 Phase v1.1 — The Proactive Shield
+- **CISA KEV Local Feed Parser**: Offline ingestion and daily caching of the CISA Known Exploited Vulnerabilities JSON feed (`fs-feed.c`), cross-referencing installed software on Windows/Linux to alert users of active threats before exploitation occurs.
+- **Windows WFP Per-Process Rules**: Exposing robust per-application and path-aware egress controls via native Windows Filtering Platform (WFP) ALE APIs in the StockFW UI.
+- **Linux Tetragon / eBPF TracingPolicy Generation**: Automated compilation of StockFW rules into high-performance eBPF tracing policies for kernel-level process network isolation on Linux.
+
+### 16.2 Phase v1.2 — The Neural Sentinel
+- **Embedded INT8 Tree-Ensemble (TinyML) Engine**: Integration of a quantized gradient-boosted decision-tree model, trained offline by a script in `port/tools/ml/` and exported to `core/fs-ml-model.h`, directly into the Copilot's event-feed path for zero-day port scans, lateral movement, brute-force login attempts, and C2 beacon detection in microseconds per event. Integer-only tree walks, zero telemetry, absolute offline sovereignty.
+- **Advanced Behavioral Copilot UI**: Real-time confidence scores, behavioral anomaly explanations, and one-click auto-blocking with 10-minute timeboxes and instant undo.
+
+### 16.3 Phase v1.3 — The L7 & AI Governor
+- **Native DNS & SNI Inspection**: eBPF-based inspection of DNS queries and TLS ClientHello SNI headers to detect DNS tunneling and block C2 domains by name without proxy overhead.
+- **LLM & MCP Gateway Rules**: Specialized policy templates and governance rules to police local AI agents, Model Context Protocol (MCP) servers, and LLM API endpoints against data exfiltration.
+
+### 16.4 Phase v2.0 — The Autonomous Sovereign Fabric
+- **Native Rust eBPF Datapath (`aya`)**: Replacing external helper daemons with a fully embedded Rust eBPF engine inside StockFW for sub-microsecond packet and syscall termination (`SIGKILL`).
+- **Graph-Based What-If Simulation 2.0**: Advanced reachability analysis simulating multi-rule precedence conflicts across IPv4, IPv6, and process ancestry trees.
+
+### 16.5 Phase v3.0 — The Guinness Standard: Local Sovereign Mesh
+- **P2P Encrypted Local Fleet Mesh**: Peer-to-peer synchronization of threat intelligence and adaptive isolation rules across local subnet nodes over encrypted WireGuard tunnels without any centralized cloud controller or SaaS dependency.
+- **Hardware TPM Attestation**: Cryptographic signing of host firewall policies via motherboard TPM 2.0 chips for absolute hardware-backed zero-trust integrity.
+
+
+---
+
+## Chapter 17: StockFW 1.0.9 Nexora Addendum (AEGIS-ML & Autonomous XDR)
+
+*This chapter records what shipped in StockFW 1.0.9 (November 2026). It documents the realization of the Nexora intelligence engine, AEGIS-ML continuous active learning, automated XDR playbooks, the interactive network topology graph, tamper-evident audit ledgers, and post-quantum ZTNA stubs.*
+
+### 17.1 Nexora AEGIS-ML Active Learning Engine (`fs-ml.c`, `fs-ml-monitor.c`)
+- **Sliding-Window Feature Extraction**: Aggregates `FsHit` event streams into 13 behavioral features per host over sliding time windows.
+- **PSI Drift Monitoring**: Implements Population Stability Index (PSI) drift detection against training distributions (arXiv 2607.17336) with 200-sample minimum gates, quantile binning, Welford running variance confidence tracking, and strict 50-label validation requirements before triggering GBDT retraining.
+- **Model Hot-Reloading**: Automatically compiles and hot-swaps quantized integer decision-tree C headers (`core/fs-ml-model.h`) for sub-millisecond inference with zero cloud dependency.
+
+### 17.2 Autonomous XDR Playbooks & Incident Reporting (`fs-playbook.c`)
+- **Self-Healing Response Rules**: Automatically triggers containment actions (`FS_XDR_ACTION_BLOCK_IP`, `FS_XDR_ACTION_ISOLATE_HOST`, `FS_XDR_ACTION_REVOKE_TRUST`) upon detecting AEGIS-ML anomalies, brute-force attacks, C2 beacons, or CISA KEV vulnerability matches.
+- **JSON Incident Serialization**: Structures security incidents and dispatches structured logs for SIEM and forensic analysis.
+
+### 17.3 Interactive Network Topology Graph (`fs-topology.c`)
+- **Cairo-Rendered Node Graph**: A force-directed visualizer mapping active processes, remote ASNs, and live connections in real time on a dedicated GTK3 view.
+
+### 17.4 Tamper-Evident Audit Ledger & Post-Quantum ZTNA (`fs-audit-ledger.c`, `fs-quantum.c`)
+- **Cryptographic Hash-Chaining**: SHA-256 block hashing of every policy modification, rule application, and Sentinel auto-block into an immutable forensic log (`audit.log`).
+- **Post-Quantum Cryptography Stubs**: CRYSTALS-Kyber key encapsulation and CRYSTALS-Dilithium signature stubs for future-proof zero-trust session security.
+
+---
+
 ## Chapter 12: 1.0.5 Addendum
 
 *This chapter records what shipped in StockFW 1.0.5 (October 2026). Chapters 1–10 carry the 1.0.3 base text and Chapter 11 the 1.0.4 additions; where this chapter restates an earlier claim, it is authoritative. Every feature below is teeth-tested by the suites named in Chapter 8.*

@@ -7,6 +7,8 @@
 #include "core/fs-i18n.h"
 #include "core/fs-service.h"
 
+static gboolean kind_is_service (FsRuleKind kind);
+
 #include <string.h>
 #ifndef G_OS_WIN32
 #include <errno.h>
@@ -20,10 +22,10 @@
  * be reordered without a migration.  The UI reads the labels from here so
  * the tree view and the CSV can never drift apart. */
 static const gchar *in_allow_from_columns[]   = { N_("Allow connections from host"), N_("Comment"), NULL };
-static const gchar *in_allow_service_columns[]= { N_("Allow service"), N_("Port"), N_("For"), N_("Comment"), NULL };
+static const gchar *in_allow_service_columns[]= { N_("Allow service"), N_("Port"), N_("For"), N_("Comment"), N_("Program"), NULL };
 static const gchar *in_forward_columns[]      = { N_("Forward service"), N_("Firewall port"), N_("To"), N_("Port"), N_("Comment"), NULL };
 static const gchar *out_host_columns[]        = { N_("Host"), N_("Comment"), NULL };
-static const gchar *out_service_columns[]     = { N_("Allow service"), N_("Port"), N_("For"), N_("Comment"), NULL };
+static const gchar *out_service_columns[]     = { N_("Allow service"), N_("Port"), N_("For"), N_("Comment"), N_("Program"), NULL };
 
 static const gchar * const *
 columns_for (FsRuleKind kind, gint *num_columns)
@@ -105,6 +107,7 @@ fs_rule_copy (const FsRule *rule)
 	copy->to      = g_strdup (rule->to);
 	copy->to_port = g_strdup (rule->to_port);
 	copy->comment = g_strdup (rule->comment);
+	copy->program = g_strdup (rule->program);
 	copy->enabled = rule->enabled;
 
 	return copy;
@@ -122,6 +125,7 @@ fs_rule_free (FsRule *rule)
 	g_free (rule->to);
 	g_free (rule->to_port);
 	g_free (rule->comment);
+	g_free (rule->program);
 
 	g_free (rule);
 }
@@ -149,11 +153,21 @@ fs_rule_to_csv (const FsRule *rule)
 	case FS_RULE_INBOUND_ALLOW_SERVICE:
 	case FS_RULE_OUTBOUND_ALLOW_SERVICE:
 	case FS_RULE_OUTBOUND_DENY_SERVICE:
-		g_string_append_printf (out, "%s, %s, %s, %s",
-		                        rule->service ? rule->service : "",
-		                        rule->port    ? rule->port    : "",
-		                        rule->target  ? rule->target  : "",
-		                        rule->comment ? rule->comment : "");
+		/* service, port, target, comment[, program].  Only write program
+		 * when present, so rules without an app binding remain 4 fields. */
+		if (rule->program != NULL && *rule->program != '\0')
+			g_string_append_printf (out, "%s, %s, %s, %s, %s",
+			                        rule->service ? rule->service : "",
+			                        rule->port    ? rule->port    : "",
+			                        rule->target  ? rule->target  : "",
+			                        rule->comment ? rule->comment : "",
+			                        rule->program);
+		else
+			g_string_append_printf (out, "%s, %s, %s, %s",
+			                        rule->service ? rule->service : "",
+			                        rule->port    ? rule->port    : "",
+			                        rule->target  ? rule->target  : "",
+			                        rule->comment ? rule->comment : "");
 		break;
 
 	default:
@@ -183,8 +197,13 @@ fs_rule_from_csv (FsRuleKind kind, const gchar *csv)
 	n_tokens = g_strv_length (tokens);
 
 	/* The original accepted rows with a missing trailing comment, so
-	 * allow fewer fields but reject more than the layout defines. */
-	if (n_tokens > (gsize) expected) {
+	 * allow fewer fields but reject more than the layout defines.
+	 * Service kinds accept an optional 5th program field for 1.0.8. */
+	gsize max_expected = expected;
+	if (kind_is_service (kind))
+		max_expected = 5;
+
+	if (n_tokens > max_expected) {
 		g_strfreev (tokens);
 		return NULL;
 	}
@@ -210,6 +229,18 @@ fs_rule_from_csv (FsRuleKind kind, const gchar *csv)
 		rule->port    = g_strdup (n_tokens > 1 ? tokens[1] : NULL);
 		rule->target  = g_strdup (n_tokens > 2 ? tokens[2] : NULL);
 		rule->comment = g_strdup (n_tokens > 3 ? tokens[3] : NULL);
+		{
+			const gchar *prog = n_tokens > 4 ? tokens[4] : NULL;
+
+			/* An empty field means "no program": fs_rule_to_csv writes
+			 * this column for every service row, so a NULL program
+			 * round-trips as "" -- which g_strcmp0 does not fold away,
+			 * and fs_policy_delta would then see a change that is not
+			 * there on every re-apply. */
+			if (prog != NULL && *prog == '\0')
+				prog = NULL;
+			rule->program = g_strdup (prog);
+		}
 		break;
 
 	default:
@@ -1203,7 +1234,7 @@ fs_rules_error_quark (void)
 gboolean
 fs_rule_validate (const FsRule *rule, GError **error)
 {
-	const gchar *fields[6];
+	const gchar *fields[7];
 
 	if (rule == NULL || rule->kind < 0 || rule->kind >= FS_RULE_N_KINDS) {
 		g_set_error_literal (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
@@ -1217,6 +1248,7 @@ fs_rule_validate (const FsRule *rule, GError **error)
 	fields[3] = rule->to;
 	fields[4] = rule->to_port;
 	fields[5] = rule->comment;
+	fields[6] = rule->program;
 
 	/* The policy files are comma-separated with no quoting: a comma
 	 * inside a field would silently become a field boundary, and a

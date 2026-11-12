@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # The Windows Security-log reader's logic (core/fs-winevt.c) against a
 # fake log, on any platform: wevtutil XML parsing, the poll query and
 # argv, bursts of 4,000 and past the 10,000 cap, cut-short reads, a
@@ -31,10 +31,11 @@ fi
 
 cc -O2 -Wall -Wextra -Wno-unused-parameter tests/test-winevt.c \
    -I src -I tests \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
    -o "$BUILD_DIR/test-winevt" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
 
 export STOCKFW_RULES_DIR="$BUILD_DIR/rules"
 "$BUILD_DIR/test-winevt" "$@"
+

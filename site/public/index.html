@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>StockFW · Know what your firewall will do before it does it</title>
 <meta name="description" content="StockFW manages the firewall built into Windows and Linux. Live events, a plain-text policy, a what-if simulator and a local copilot. No driver, no cloud, no account.">
-<meta name="color-scheme" content="light">
-<meta name="theme-color" content="#ffffff">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#030407">
 <meta property="og:title" content="StockFW · Know what your firewall will do before it does it">
 <meta property="og:description" content="StockFW manages the firewall built into Windows and Linux. Live events, a plain-text policy, a what-if simulator and a local copilot. No driver, no cloud, no account.">
 <meta property="og:type" content="website">
@@ -14,6 +14,7 @@
 <link rel="apple-touch-icon" href="./assets/img/apple-touch-icon.png">
 <link rel="preload" href="./assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="./assets/css/site.css">
+	<link rel="stylesheet" href="./assets/css/github-dark.css">
 <link rel="stylesheet" href="./assets/css/home.css">
 </head>
 <body class="layout-home">
@@ -23,14 +24,13 @@
 		<a class="brand" href="./index.html">
 			<img src="./assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.7</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
-			<a href="./index.html#tour">Features</a>
-			<a href="./docs/index.html">Docs</a>
+			<a href="./index.html">About</a>
 			<a href="./download.html">Download</a>
-			<a href="./changelog.html">Changelog</a>
-			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+			<a href="./docs/index.html">Documentation</a>
+			<a href="./changelog.html">Blog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">Support</a>
 		</nav>
 		<div class="head-tools">
 			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
@@ -46,13 +46,14 @@
 
 <main id="main">
 <section class="hero">
+	<canvas id="hero-canvas" class="hero-canvas" aria-hidden="true"></canvas>
 	<div class="wrap hero-grid">
 		<div class="hero-copy">
 			<p class="label">Firewall manager · Windows and Linux · open source</p>
 			<h1>Know what your firewall will do <em>before it does it.</em></h1>
 			<p class="hero-sub">StockFW drives the firewall your system already has. It shows every connection that was allowed or blocked, keeps your policy as files you can read and diff, and answers “what would happen if?” before you change a thing.</p>
 			<div class="btn-row">
-				<a class="btn btn-wall" href="./download.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0 5-5m-5 5-5-5M4 19h16"/></svg>Download 1.0.7</a>
+				<a class="btn btn-wall" href="./download.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0 5-5m-5 5-5-5M4 19h16"/></svg>Download 1.0.8</a>
 				<a class="btn btn-line" href="./docs/index.html">Read the documentation</a>
 			</div>
 			<ul class="hero-facts" aria-label="What StockFW never contains">
@@ -63,55 +64,7 @@
 			</ul>
 		</div>
 
-		<div class="wi" id="wi">
-			<div class="wi-top"><span class="label">What-if simulator</span><span class="wi-dots" aria-hidden="true"><i></i><i></i><i></i></span></div>
-			<div class="wi-input"><span class="pr">stockfw simulate </span>"<span class="wi-q">allow ssh from 192.168.1.50 on port 22</span>"<span class="wi-caret" aria-hidden="true"></span></div>
-			<svg class="wi-scene" viewBox="0 0 460 150" role="img" aria-label="A packet travels from its source to the StockFW wall. The wall turns green and the packet continues when the policy allows it, or shakes red and the packet bounces back when it does not.">
-				<g class="node node-l" transform="translate(26 66)">
-					<g class="n-l-pc"><rect class="fillish" x="4" y="6" width="40" height="28" rx="3"/><path d="M14 42h20M24 34v8"/></g>
-					<g class="n-l-globe"><circle class="fillish" cx="24" cy="22" r="18"/><path d="M6 22h36M24 4c-7 6-7 30 0 36M24 4c7 6 7 30 0 36"/></g>
-				</g>
-				<text class="nlabel l-label" x="50" y="124" text-anchor="middle">192.168.1.50</text>
-				<text class="nsub l-sub" x="50" y="138" text-anchor="middle">remote host</text>
-				<line class="seg seg-l" x1="78" y1="86" x2="202" y2="86"/>
-				<line class="seg seg-r" x1="258" y1="86" x2="378" y2="86"/>
-				<g class="wall ok">
-					<rect class="wall-body" x="206" y="60" width="48" height="52" rx="3"/>
-					<path class="bricks" d="M206 73h48M206 86h48M206 99h48M222 60v13M238 73v13M222 86v13M238 99v13"/>
-					<path class="flame" d="M230 60c-9-6-10-16-3-25 1 6 4 9 7 10 1-5 0-9-2-13 8 5 12 14 8 22-2 4-6 6-10 6z"/>
-					<path class="flame-core" d="M230 59c-4-3-5-8-1-13 1 3 3 5 4 6 2 3 1 6-3 7z"/>
-				</g>
-				<g transform="translate(230 20)"><g class="badge badge-ok on"><circle r="12"/><path d="M-5 0l3.5 3.5L6-4"/></g></g>
-				<g transform="translate(230 20)"><g class="badge badge-no"><circle r="12"/><path d="M-4.5-4.5l9 9M4.5-4.5l-9 9"/></g></g>
-				<g class="node node-r glow" transform="translate(386 66)">
-					<rect class="halo" x="-6" y="-2" width="60" height="52" rx="8"/>
-					<g class="n-r-pc"><rect class="fillish" x="4" y="6" width="40" height="28" rx="3"/><path d="M14 42h20M24 34v8"/></g>
-					<g class="n-r-globe" style="display:none"><circle class="fillish" cx="24" cy="22" r="18"/><path d="M6 22h36M24 4c-7 6-7 30 0 36M24 4c7 6 7 30 0 36"/></g>
-				</g>
-				<text class="nlabel r-label" x="410" y="124" text-anchor="middle">this computer</text>
-				<text class="nsub r-sub" x="410" y="138" text-anchor="middle">local port 22</text>
-				<g class="packet" style="transform:translate(326px,74px)"><rect width="54" height="24" rx="4"/><text x="27" y="16" text-anchor="middle">TCP 22</text></g>
-			</svg>
-			<div class="wi-verdict"><span class="wi-pill ok">ALLOWED</span><span class="wi-scn">Inbound TCP port 22 (SSH) from 192.168.1.50 to this computer</span></div>
-			<dl class="wi-detail">
-				<dt>Rule</dt><dd class="d-rule">StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP)</dd>
-				<dt>Why</dt><dd class="d-why">You asked to allow this. It is already ALLOWED. Rule 'StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP)' allows it.</dd>
-				<dt>Fix</dt><dd class="d-fix">Nothing to change: this is already allowed, as you asked.</dd>
-				<dt>Exit</dt><dd class="d-exit exit-ok">0  (success)</dd>
-			</dl>
-			<div class="wi-chips" role="group" aria-label="Replay another line"></div>
-			<details class="wi-policy">
-				<summary>the example policy these verdicts were read against</summary>
-<pre><span class="k">inbound/allow-service</span>   SSH, 22, 192.168.1.0/24, admin LAN
-                        HTTPS, 443, Anyone, web server
-<span class="k">inbound/allow-from</span>      192.168.1.1, router
-                        2001:db8:1::/48, office v6
-<span class="k">outbound/deny-to</span>        198.51.100.66, known bad host
-<span class="k">outbound/deny-service</span>   Telnet, 23, Anyone, no cleartext logins</pre>
-			</details>
-			<p class="wi-note">Every verdict, reason and fix in this card is the real output of <code>stockfw simulate</code> against that policy, copied word for word. The page replays it; it does not judge anything itself.</p>
-		</div>
-	</div>
+		
 </section>
 
 <section class="strip" aria-label="How StockFW connects to your system">
@@ -128,12 +81,12 @@
 		<div class="sec-head">
 			<p class="label">The desktop app</p>
 			<h2>Six pages. Each one answers a question you actually have.</h2>
-			<p>Every page below is a screenshot of StockFW 1.0.7 on Linux, in a test network that was really sending the traffic you see. Claims carry a stamp naming the automated test that proves them.</p>
+			<p>Every page below is a screenshot of StockFW 1.0.8 on Linux, in a test network that was really sending the traffic you see. Claims carry a stamp naming the automated test that proves them.</p>
 		</div>
 
 		<div class="shell">
 			<nav class="shell-rail" role="tablist" aria-label="App pages">
-				<div class="shell-brand"><img src="./assets/img/logo-64.png" alt="" width="30" height="30"><span>StockFW<small>1.0.7</small></span></div>
+				<div class="shell-brand"><img src="./assets/img/logo-64.png" alt="" width="30" height="30"><span>StockFW<small>1.0.8</small></span></div>
 				<a class="shell-tab" role="tab" href="#tour-overview" aria-controls="tour-overview" aria-selected="true" id="tab-overview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.5 6v6c0 4.5 3.2 7.6 7.5 9 4.3-1.4 7.5-4.5 7.5-9V6L12 3Z"/></svg>Overview<small>Am I protected?</small></a>
 				<a class="shell-tab" role="tab" href="#tour-events" aria-controls="tour-events" aria-selected="false" id="tab-events"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>Events<small>What just happened?</small></a>
 				<a class="shell-tab" role="tab" href="#tour-activity" aria-controls="tour-activity" aria-selected="false" id="tab-activity"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17l5-7 4 4 5-8 4 5"/></svg>Activity<small>How much, over time?</small></a>
@@ -274,7 +227,7 @@
 		</div>
 		<div class="cli-grid">
 			<div class="code" data-copy="commands"><div class="code-head"><span>Terminal · real output</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sudo stockfw status</span>
-StockFW 1.0.7  Linux (iptables) - web1
+StockFW 1.0.8  Linux (iptables) - web1
 
   Firewall     ● running
   IPv6         filtered
@@ -362,7 +315,7 @@ Firewall: running.  Make it live: /usr/local/bin/stockfw apply</code></pre></div
 <section class="sec" id="next">
 	<div class="wrap">
 		<div class="sec-head">
-			<p class="label">New in 1.0.7</p>
+			<p class="label">New in 1.0.8</p>
 			<h2>What 1.0.7 adds.</h2>
 			<p>The terminal release: on Linux, <code>stockfw</code> does from a terminal what the window does, settings included, and says what is true. The <a href="./changelog.html">changelog</a> has the full list, and the <a href="./docs/cli.html">command line page</a> covers each command with its real output.</p>
 		</div>
@@ -387,7 +340,7 @@ Firewall: running.  Make it live: /usr/local/bin/stockfw apply</code></pre></div
 		<div class="sec-head">
 			<p class="label">Since 1.0.7</p>
 			<h2>What 1.0.7 brought.</h2>
-			<p>The previous release rebuilt the desktop app; all of it is in 1.0.7 too.</p>
+			<p>The previous release rebuilt the desktop app; all of it is in 1.0.8 too.</p>
 		</div>
 		<div class="next-grid">
 			<div class="next-card"><h3>IPv6 on Linux</h3><p>One policy loaded into both families in one step, rolled back together if either half is refused. Neighbour discovery, router adverts and DHCPv6 replies always pass.</p></div>
@@ -408,15 +361,17 @@ Firewall: running.  Make it live: /usr/local/bin/stockfw apply</code></pre></div
 		<div class="dl-card">
 			<div>
 				<h2>Install it in a minute.</h2>
-				<p>StockFW 1.0.7 for Windows and Linux: an installer, a Linux tarball and checksums on GitHub, or build the same code from source in a few commands.</p>
+				<p>StockFW 1.0.8 for Windows and Linux: an installer, a Linux tarball and checksums on GitHub, or build the same code from source in a few commands.</p>
 			</div>
 			<div class="btn-row">
-				<a class="btn btn-wall" href="./download.html">Download 1.0.7</a>
+				<a class="btn btn-wall" href="./download.html">Download 1.0.8</a>
 				<a class="btn btn-line" href="./docs/index.html">Documentation</a>
 			</div>
 		</div>
 	</div>
 </section>
+
+<script src="./assets/js/hero-canvas.js" defer></script>
 
 </main>
 <footer class="site-foot">

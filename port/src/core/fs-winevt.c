@@ -275,6 +275,9 @@ make_hit (const gchar *p, const gchar *end, guint event_id, gchar *time)
 	if (app != NULL && *app != '\0') {
 		const gchar *base = strrchr (app, '\\');
 
+		/* Preserve the full executable path: an Event → Per-App Rule
+		 * needs the program identity, not just the file name. */
+		hit->program = g_strdup (app);
 		base = base != NULL ? base + 1 : app;
 		if (*base != '\0')
 			hit->service = g_strdup (base);
