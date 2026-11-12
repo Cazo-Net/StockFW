@@ -1075,6 +1075,47 @@ Sentinel answers the rogue-agent case: a compromised or malicious process must b
 
 ---
 
+## Chapter 18: Cryptographic Agentic Zero-Trust (CAZT) Runtime Fabric (`fs-zero-trust.c`)
+
+*This chapter documents the architecture of CAZT, StockFW Nexora 2.0.0's breakthrough security primitive designed to protect hosts against autonomous AI agent swarms, compromised Model Context Protocol (MCP) servers, and malicious LLM plugins.*
+
+### 18.1 Cryptographic Agentic Identity Tokens (CAIT)
+- **Per-Process HMAC Session Minting**: When an AI agent or tool process spawns, CAZT mints an ephemeral HMAC-SHA256 session token bound directly to its process ID (PID) and timestamp.
+- **Constant-Time Verification**: Zero-trust socket connect/bind system calls verify agent identity tokens in constant time (<0.02ms) to prevent timing attacks.
+
+### 18.2 Agentic Capability Manifests & MCP Tool Grants
+- **Strict Tool-Gating**: AI frameworks and local LLMs must present cryptographically signed capability manifests specifying authorized target domains and payload size limits (e.g., max 2MB outbound).
+- **Autonomous Containment**: If AEGIS-ML detects adversarial drift or unauthorized data exfiltration, CAZT instantly revokes the agent's identity token, severing active socket connections and vaulting the binary into quarantine (`fs-quarantine.c`).
+
+### 18.3 Audit Ledger Integration
+- **Forensic Traceability**: Every token mint, verification success, egress permission, and containment event is automatically recorded into the SHA-256 hash-chained audit ledger (`fs-audit-ledger.c`).
+
+---
+
+## Chapter 19: StockFW Nexora 2.0.0 Complete Engineering Specification & Test Architecture
+
+*This chapter provides the definitive architectural specification for StockFW Nexora 2.0.0, covering all core C modules, Rust eBPF loaders, active-learning machine learning pipelines, automated test harnesses, and UI views.*
+
+### 19.1 Subsystem Directory & Component Mapping
+- **AEGIS-ML TinyML & Drift Monitor**: `port/src/core/fs-ml.c`, `port/src/core/fs-ml-monitor.c`, `port/tools/ml/train_sentinel.py` (Quantized GBDT, PSI drift detection, confidence variance tracking).
+- **Cryptographic Agentic Zero-Trust (CAZT)**: `port/src/core/fs-zero-trust.c`, `port/src/core/fs-zero-trust.h` (CAIT session minting, capability manifests, MCP tool-gating, automated socket containment).
+- **Universal Kernel Fabric**: `port/src/core/fs-ebpf.c`, `port/src/core/fs-wfp.c`, `port/src/ebpf/` (Rust `aya` `no_std` BPF kernel bytecode, `STOCKFW_IP_BLOCKMAP`, Windows WFP BFE COM API client sessions).
+- **Tamper-Evident Audit Ledger**: `port/src/core/fs-audit-ledger.c` (SHA-256 block hashing, Merkle root verification).
+- **Autonomous XDR Playbooks & Threat Intel**: `port/src/core/fs-playbook.c`, `port/src/core/fs-kev.c`, `port/src/core/fs-feed-sync.c`, `port/src/core/fs-quarantine.c` (Self-healing response rules, CISA KEV auto-reconciliation, encrypted quarantine vault).
+- **Interactive UI & Visualizers**: `port/src/ui/fs-nexora.c`, `port/src/ui/fs-topology.c`, `port/src/ui/fs-app.c`, `port/src/ui/fs-theme.css` (CAZT dashboard, Cairo network flow graph, masterclass card layout, notification toasts).
+
+### 19.2 Automated Test Suites & Verification Architecture
+- **AEGIS-ML PSI Drift Test**: `port/tests/test-nexora-ml.c` (Validates sliding window extraction and 200-sample PSI thresholds).
+- **Cryptographic Audit Ledger Test**: `port/tests/test-audit-ledger-standalone.c` (Verifies SHA-256 hash chaining and chain integrity).
+- **CAZT Room A / Room B Integration Test**: `port/tests/test-cazt-rooms.c` (Simulates active AI agent cluster node issuing signed CAIT tokens in Room A and peer swarm node receiving WireGuard mesh revocation packets to sever sockets in Room B).
+- **eBPF & FFI Map Sync Test**: `port/tests/test-ebpf.c` (Verifies BPF hash map population and kernel ring buffer event polling).
+- **Headless UI Smoke Test**: `port/tests/ui-smoke-all.c` (Instantiates all 9 application pages without display server assertion errors).
+
+### 19.3 Build & Packaging Pipeline
+- **Windows NSIS Installer**: Configured via `port/installer/nsis/StockFW.nsi` and compiled via `makensis.exe`, packaging `StockFW-1.0.9-Setup.exe` with zero console popup (`-mwindows`) and immediate foreground focus (`gtk_window_present`).
+
+---
+
 ## Chapter 12: 1.0.5 Addendum
 
 *This chapter records what shipped in StockFW 1.0.5 (October 2026). Chapters 1–10 carry the 1.0.3 base text and Chapter 11 the 1.0.4 additions; where this chapter restates an earlier claim, it is authoritative. Every feature below is teeth-tested by the suites named in Chapter 8.*
