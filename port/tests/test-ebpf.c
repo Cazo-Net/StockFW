@@ -30,12 +30,12 @@ test_ebpf_policy_and_config (void)
 	g_free (policy);
 
 	gchar *map_cfg = fs_ebpf_generate_map_config ();
-	CHECK (map_cfg != NULL && strstr (map_cfg, "stockfw_ip_blockmap") != NULL,
+	CHECK (map_cfg != NULL && strstr (map_cfg, "STOCKFW_IP_BLOCKMAP") != NULL,
 	       "map config generated correctly");
 	g_free (map_cfg);
 
 	gchar *sock_prog = fs_ebpf_generate_socket_filter_program ("/bin/bash", FS_ACTION_BLOCK);
-	CHECK (sock_prog != NULL && strstr (sock_prog, "stockfw_egress_filter") != NULL,
+	CHECK (sock_prog != NULL && strstr (sock_prog, "stockfw_tc_egress") != NULL,
 	       "socket filter program generated correctly");
 	g_free (sock_prog);
 }
@@ -44,7 +44,16 @@ static void
 test_ebpf_manager_integration (void)
 {
 	GError *error = NULL;
-	const guint8 dummy_bytecode[] = { 0x7f, 0x45, 0x4c, 0x46, 0x01, 0x00, 0x00, 0x00 };
+	const guint8 dummy_bytecode[] = {
+		0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x01, 0x00, 0xf7, 0x00, 0x01, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x40, 0x00,
+		0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00
+	};
 
 	FsEbpfManager *mgr = fs_ebpf_manager_load (dummy_bytecode, sizeof (dummy_bytecode), &error);
 	CHECK (mgr != NULL && error == NULL, "ebpf manager loaded bytecode successfully");
@@ -60,9 +69,22 @@ test_ebpf_manager_integration (void)
 
 	fs_ebpf_manager_free (mgr);
 
-	/* Test invalid bytecode */
-	FsEbpfManager *mgr_bad = fs_ebpf_manager_load (NULL, 0, &error);
-	CHECK (mgr_bad == NULL && error != NULL, "ebpf manager correctly rejects empty bytecode");
+	/* Test invalid bytecode (too small) */
+	FsEbpfManager *mgr_bad_size = fs_ebpf_manager_load (dummy_bytecode, 4, &error);
+	CHECK (mgr_bad_size == NULL && error != NULL, "ebpf manager correctly rejects undersized bytecode");
+	g_clear_error (&error);
+
+	/* Test invalid bytecode (bad magic) */
+	const guint8 bad_magic[] = { 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x00,
+	                             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	                             0x01, 0x00, 0xf7, 0x00, 0x01, 0x00, 0x00, 0x00,
+	                             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	                             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	                             0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00,
+	                             0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x40, 0x00,
+	                             0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00 };
+	FsEbpfManager *mgr_bad_magic = fs_ebpf_manager_load (bad_magic, sizeof (bad_magic), &error);
+	CHECK (mgr_bad_magic == NULL && error != NULL, "ebpf manager correctly rejects invalid ELF magic");
 	g_clear_error (&error);
 }
 

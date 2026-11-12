@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # Regression test for the Windows event pipeline: the spawn (no console
 # window, a timeout), the worker thread, and the Security-log reader
 # end to end against a fake wevtutil.exe answering for a log of
@@ -39,11 +39,11 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 cc "$HERE/test-winlog.c" \
    -DFS_TOOLPATH_TESTING=1 \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
    -o "$BUILD_DIR/test-winlog" \
    src/core/*.c \
    src/platform/windows/fs-trust-win.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) -lws2_32 -lole32 -loleaut32 -liphlpapi -lwintrust -lcrypt32 -ladvapi32 -lshell32
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) -lws2_32 -lole32 -loleaut32 -liphlpapi -lwintrust -lcrypt32 -ladvapi32 -lshell32
 
 # The end-to-end test needs a fake wevtutil.exe beside the test
 # binary: the test build runs a tool from $STOCKFW_TEST_TOOL_DIR, which
@@ -66,3 +66,4 @@ if [ "$probe_rc" -ne 0 ]; then
   echo "spawn-probe exited $probe_rc"
   exit "$probe_rc"
 fi
+

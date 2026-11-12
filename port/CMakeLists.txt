@@ -1,6 +1,6 @@
-cmake_minimum_required(VERSION 3.16)
+﻿cmake_minimum_required(VERSION 3.16)
 project(stockfw
-        VERSION 1.0.8
+        VERSION 1.0.9
         DESCRIPTION "Firewall configuration tool (Windows + Linux port)"
         LANGUAGES C)
 
@@ -11,7 +11,9 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
 endif()
 
-add_compile_options(-Wall -Wextra -Wno-unused-parameter)
+if(NOT MSVC)
+  add_compile_options(-Wall -Wextra -Wno-unused-parameter)
+endif()
 
 # ---------------------------------------------------------------- platform
 if(WIN32)
@@ -99,7 +101,9 @@ add_library(fs-core STATIC
   src/core/fs-quantum.c
   src/core/fs-playbook.c
   src/core/fs-kev.c
+  src/core/fs-feed-sync.c
   src/core/fs-ebpf.c
+  src/core/fs-quarantine.c
 )
 target_include_directories(fs-core PUBLIC src resources)
 pkg_check_modules(GLIBONLY REQUIRED IMPORTED_TARGET glib-2.0 gio-2.0)
@@ -117,7 +121,7 @@ target_compile_definitions(fs-core PRIVATE FS_VERSION="${PROJECT_VERSION}")
 get_target_property(FS_CORE_SOURCES fs-core SOURCES)
 add_library(fs-core-nogui STATIC EXCLUDE_FROM_ALL ${FS_CORE_SOURCES})
 target_include_directories(fs-core-nogui PUBLIC src resources)
-target_link_libraries(fs-core-nogui PUBLIC PkgConfig::GLIBONLY PkgConfig::GEODB)
+target_link_libraries(fs-core-nogui PUBLIC PkgConfig::GLIBONLY PkgConfig::GEODB PkgConfig::JSONGLIB)
 target_compile_definitions(fs-core-nogui PRIVATE
                            FS_VERSION="${PROJECT_VERSION}")
 if(WIN32)
@@ -224,6 +228,7 @@ add_executable(StockFW
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
   src/ui/fs-intelview.c
+  src/ui/fs-nexora.c
   src/ui/fs-tray.c
   src/ui/fs-icons.c
   ${FS_BACKEND_SOURCES}
@@ -236,7 +241,7 @@ target_compile_definitions(StockFW PRIVATE
 )
 
 # Set output name and add icon on Windows
-if(WIN32)
+if(WIN32 AND FALSE)
   set_target_properties(StockFW PROPERTIES
     OUTPUT_NAME "StockFW"
     WIN32_EXECUTABLE TRUE
@@ -261,6 +266,10 @@ if(FS_BACKEND_LIBS)
   target_link_libraries(StockFW PRIVATE ${FS_BACKEND_LIBS})
 endif()
 
+if(WIN32)
+  target_link_options(StockFW PRIVATE "-mwindows")
+endif()
+
 # Windows resolves a program's dependencies from the directory holding
 # the .exe, so build/StockFW.exe only starts if the GTK/GLib DLLs sit
 # beside it.  Without this the app runs from an MSYS2 shell -- where
@@ -273,8 +282,7 @@ if(WIN32)
   find_program(FS_BASH bash)
   if(FS_BASH)
     add_custom_command(TARGET StockFW POST_BUILD
-      COMMAND "${FS_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/stage-runtime-dlls.sh"
-              "$<TARGET_FILE_DIR:StockFW>"
+      COMMAND "C:/msys64/usr/bin/bash.exe" --login -c ". /c/Users/H3xCore/StockFW/port/tools/stage-runtime-dlls.sh /c/Users/H3xCore/StockFW/port/build-win"
       COMMENT "Staging GTK runtime DLLs next to StockFW.exe"
       VERBATIM)
   endif()
@@ -428,6 +436,7 @@ set(FS_UI_ONLY_SOURCES
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
   src/ui/fs-intelview.c
+  src/ui/fs-nexora.c
   src/ui/fs-tray.c
   src/ui/fs-icons.c
 )
@@ -810,6 +819,8 @@ target_compile_definitions(fs-intelset-driver PRIVATE FS_TOOLPATH_TESTING=1)
 # Feeds: catalog, formats, guards, the update judge (pure).
 add_executable(fs-feed-test EXCLUDE_FROM_ALL tests/test-feed.c)
 target_link_libraries(fs-feed-test PRIVATE fs-core-nogui)
+  add_executable(fs-feed-sync-test EXCLUDE_FROM_ALL tests/test-feed-sync.c)
+  target_link_libraries(fs-feed-sync-test PRIVATE fs-core-nogui)
 # Downloads, against a local HTTPS server (tests/test-fetch.sh).  Built
 # with its own copy of fs-fetch.c compiled with FS_FETCH_TESTING, the
 # only build that reads STOCKFW_TEST_CURL / STOCKFW_TEST_CACERT; the
@@ -967,3 +978,7 @@ add_executable(fs-intel-geo-test EXCLUDE_FROM_ALL
 target_include_directories(fs-intel-geo-test PRIVATE tests)
 target_link_libraries(fs-intel-geo-test PRIVATE fs-core-nogui)
 target_compile_definitions(fs-intel-geo-test PRIVATE FS_GEODB_TESTING=1)
+
+
+
+

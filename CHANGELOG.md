@@ -13,6 +13,11 @@ into `/usr/local/share/doc/stockfw/`.
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-11-12
+
+### Packaging & Windows
+- Built StockFW-1.0.9-Setup.exe installer with NSIS including complete GTK3 runtime and dependencies.
+
 ### Command line (stockfw)
 
 - **Options are read the way you meant them.** The word after an option

@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # End-to-end Linux event-monitor test: a real STOCKFW-DROP kernel line
 # must travel fork -> tail -F -> pipe -> poll -> parse -> callback and
 # arrive as a populated FsHit; a foreign line must not.
@@ -43,10 +43,11 @@ cd "$PORT"
 
 cc "$HERE/test-logstart-events.c" \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
    -o "$BUILD_DIR/test-logstart-events" \
    src/platform/linux/fs-backend-linux.c \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto)
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0)
 
 "$BUILD_DIR/test-logstart-events"
+

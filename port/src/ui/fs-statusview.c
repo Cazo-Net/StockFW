@@ -39,6 +39,7 @@
 #include "core/fs-i18n.h"
 
 #include <string.h>
+#include <gdk-pixbuf/gdk-pixbuf.h>
 
 /* How often the live panels are resampled.  Interface counters are
  * cheap; enumerating sockets is dearer, so it runs less often. */
@@ -210,6 +211,7 @@ on_sparkline_draw (GtkWidget *widget, cairo_t *cr, gpointer data)
 /* Open connections. */
 enum
 {
+	CONN_COL_ICON,
 	CONN_COL_PROGRAM,
 	CONN_COL_REMOTE,
 	CONN_COL_PORT,
@@ -1235,7 +1237,7 @@ on_adapters_toggle (GtkButton *button, gpointer data)
  * across refreshes, which clear-and-refill would throw away every
  * couple of seconds. */
 static void
-conn_set_nth (gint n, const gchar *program, const gchar *remote,
+conn_set_nth (gint n, GdkPixbuf *icon, const gchar *program, const gchar *remote,
               const gchar *port, const gchar *service,
               const gchar *direction, gboolean local)
 {
@@ -1246,6 +1248,7 @@ conn_set_nth (gint n, const gchar *program, const gchar *remote,
 		gtk_list_store_append (conn_store, &iter);
 
 	gtk_list_store_set (conn_store, &iter,
+	                    CONN_COL_ICON, icon,
 	                    CONN_COL_PROGRAM, program,
 	                    CONN_COL_REMOTE, remote,
 	                    CONN_COL_PORT, port,
@@ -1358,6 +1361,7 @@ refresh_connections (void)
 		                    fs_util_is_loopback_address (c->destination);
 
 		conn_set_nth ((gint) row,
+			              NULL,
 		              c->program != NULL ? c->program : "",
 		              remote != NULL ? remote : "",
 		              c->port != NULL ? c->port : "",
@@ -1921,6 +1925,8 @@ build_header (void)
 	GtkWidget *header = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
 	GtkWidget *titles = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
 
+	add_class (header, "page-head");
+
 	gtk_box_pack_start (GTK_BOX (titles),
 	                    label_new (_("Overview"), "page-title", 0.0),
 	                    FALSE, FALSE, 0);
@@ -2148,6 +2154,19 @@ build_totals (void)
 }
 
 static GtkTreeViewColumn *
+conn_icon_column (GtkWidget *view, gint col)
+{
+	GtkCellRenderer *renderer = gtk_cell_renderer_pixbuf_new ();
+	GtkTreeViewColumn *column;
+
+	g_object_set (renderer, "ypad", 6, "xpad", 6, NULL);
+	column = gtk_tree_view_column_new_with_attributes ("", renderer,
+	                                                   "pixbuf", col, NULL);
+	gtk_tree_view_append_column (GTK_TREE_VIEW (view), column);
+	return column;
+}
+
+static GtkTreeViewColumn *
 conn_column (GtkWidget *view, const gchar *title, gint col,
              const gchar *klass)
 {
@@ -2194,10 +2213,10 @@ build_connections (void)
 	gtk_box_pack_start (GTK_BOX (head), conn_search, FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (connections_card), head, FALSE, FALSE, 0);
 
-	conn_store = gtk_list_store_new (CONN_N_COLS, G_TYPE_STRING,
+	conn_store = gtk_list_store_new (CONN_N_COLS, GDK_TYPE_PIXBUF,
 	                                 G_TYPE_STRING, G_TYPE_STRING,
 	                                 G_TYPE_STRING, G_TYPE_STRING,
-	                                 G_TYPE_BOOLEAN);
+	                                 G_TYPE_STRING, G_TYPE_BOOLEAN);
 	conn_filter = gtk_tree_model_filter_new (GTK_TREE_MODEL (conn_store),
 	                                         NULL);
 	gtk_tree_model_filter_set_visible_func (GTK_TREE_MODEL_FILTER (conn_filter),
@@ -2208,6 +2227,7 @@ build_connections (void)
 	g_object_unref (sorted);
 	add_class (view, "overview-grid");
 	gtk_tree_view_set_enable_search (GTK_TREE_VIEW (view), FALSE);
+	conn_icon_column (view, CONN_COL_ICON);
 	conn_column (view, _("Program"), CONN_COL_PROGRAM, "bold");
 	conn_column (view, _("Remote address"), CONN_COL_REMOTE, "mono");
 	conn_column (view, _("Port"), CONN_COL_PORT, "mono");

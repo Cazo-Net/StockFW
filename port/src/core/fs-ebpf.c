@@ -1,15 +1,16 @@
 /*---[ fs-ebpf.c ]-------------------------------------------------------
  * Native eBPF TracingPolicy & Kernel Enforcement Implementation
- * Integrated with Rust `aya` eBPF bytecode loader and map management (`stockfw-ebpf-loader`).
+ * Integrated with Rust `aya` eBPF bytecode loader and map management (`stockfw-ebpf-loader` & `stockfw-ebpf-kernel`).
  *--------------------------------------------------------------------*/
 
 #include "core/fs-ebpf.h"
 #include <string.h>
+#include <gio/gio.h>
 
 struct _FsEbpfManager {
 	gboolean loaded;
 	gchar *attached_interface;
-	GHashTable *block_map; /* Tracks O(1) map entries: key (uint64 packed addr/prefix) -> value (uint8 action) */
+	GHashTable *block_map; /* Tracks O(1) map entries matching stockfw-ebpf-common IpBlockKey (uint64 packed addr/prefix) -> value (uint8 action) */
 };
 
 gchar *
@@ -46,13 +47,13 @@ gchar *
 fs_ebpf_generate_map_config (void)
 {
 	return g_strdup (
-		"// StockFW eBPF O(1) Hash Map Configuration\n"
+		"// StockFW eBPF O(1) Hash Map Configuration (stockfw-ebpf-kernel STOCKFW_IP_BLOCKMAP)\n"
 		"struct {\n"
 		"    __uint(type, BPF_MAP_TYPE_HASH);\n"
 		"    __uint(max_entries, 65536);\n"
-		"    __type(key, __u32);\n"
+		"    __type(key, IpBlockKey);\n"
 		"    __type(value, __u8);\n"
-		"} stockfw_ip_blockmap SEC(\".maps\");\n"
+		"} STOCKFW_IP_BLOCKMAP SEC(\".maps\");\n"
 	);
 }
 
@@ -65,7 +66,7 @@ fs_ebpf_generate_socket_filter_program (const gchar *binary_path, FsRuleAction a
 	const gchar *action_code = (action == FS_ACTION_BLOCK) ? "/* DROP */ TC_ACT_SHOT" : "/* PASS */ TC_ACT_OK";
 
 	return g_strdup_printf (
-		"// StockFW Native Linux eBPF Socket Filter / Traffic Control Program\n"
+		"// StockFW Native Linux eBPF Socket Filter / Traffic Control Program (stockfw_tc_egress)\n"
 		"// Target Binary: %s\n"
 		"// Enforcement Action: %s\n"
 		"#include <linux/bpf.h>\n"
@@ -73,7 +74,7 @@ fs_ebpf_generate_socket_filter_program (const gchar *binary_path, FsRuleAction a
 		"#include <bpf/bpf_helpers.h>\n"
 		"\n"
 		"SEC(\"tc\")\n"
-		"int stockfw_egress_filter(struct __sk_buff *ctx) {\n"
+		"int stockfw_tc_egress(struct __sk_buff *ctx) {\n"
 		"    // Check process cgroup / binary context and enforce policy\n"
 		"    return %s;\n"
 		"}\n"
@@ -82,21 +83,26 @@ fs_ebpf_generate_socket_filter_program (const gchar *binary_path, FsRuleAction a
 	);
 }
 
-/* ------------------------------------------------------------------ aya eBPF Loader & Map Management Integration */
-
 FsEbpfManager *
 fs_ebpf_manager_load (const guint8 *object_code, gsize len, GError **error)
 {
 	if (!object_code || len == 0) {
 		g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-		             "Invalid or empty eBPF bytecode object code provided for aya loader");
+			     "Invalid or empty eBPF bytecode object code provided for stockfw-ebpf-loader");
 		return NULL;
 	}
 
-	/* Validate ELF / BPF magic or minimum header size */
-	if (len < 4) {
+	/* Validate ELF header size minimum (64 bytes for ELF64) */
+	if (len < 64) {
 		g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-		             "eBPF object code buffer too small");
+			     "eBPF object code buffer too small for ELF header (< 64 bytes)");
+		return NULL;
+	}
+
+	/* Validate ELF magic: \x7f E L F */
+	if (object_code[0] != 0x7f || object_code[1] != 'E' || object_code[2] != 'L' || object_code[3] != 'F') {
+		g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+			     "Invalid ELF magic bytes in eBPF object code");
 		return NULL;
 	}
 
@@ -112,13 +118,13 @@ fs_ebpf_manager_attach (FsEbpfManager *manager, const gchar *interface, GError *
 {
 	if (!manager || !manager->loaded) {
 		g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_INITIALIZED,
-		             "eBPF manager not initialized or loaded");
+			     "eBPF manager not initialized or loaded");
 		return FALSE;
 	}
 
 	if (!interface || *interface == '\0') {
 		g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-		             "Network interface name cannot be empty for eBPF attachment");
+			     "Network interface name cannot be empty for eBPF attachment");
 		return FALSE;
 	}
 
@@ -133,11 +139,11 @@ fs_ebpf_manager_update_block_rule (FsEbpfManager *manager, guint32 ipv4_addr, gu
 {
 	if (!manager || !manager->loaded) {
 		g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_INITIALIZED,
-		             "eBPF manager not initialized or loaded");
+			     "eBPF manager not initialized or loaded");
 		return FALSE;
 	}
 
-	/* Pack key (ipv4_addr and prefix_len) into a 64-bit unique ID for tracking / O(1) map management */
+	/* Pack key (ipv4_addr and prefix_len) into a 64-bit unique ID matching stockfw-ebpf-common IpBlockKey structure */
 	guint64 map_key = ((guint64) ipv4_addr << 32) | prefix_len;
 	guint8 *val_ptr = g_new (guint8, 1);
 	*val_ptr = action;

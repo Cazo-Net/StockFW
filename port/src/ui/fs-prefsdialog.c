@@ -1055,6 +1055,12 @@ build_general (PrefsWin *win, GtkWidget *nav)
 	set_blocked (tray, !fs_tray_supported ());
 	set_blocked (minimize, !fs_tray_supported ());
 
+	card = card_new (cards, _("Appearance"));
+	add_switch (win, card, FS_PREFS_DARK_MODE,
+		_("Dark mode"),
+		_("Use a dark color palette for the StockFW window and dialogs."),
+		NULL);
+
 	card = card_new (cards, _("Firewall"));
 	add_switch (win, card, FS_PREFS_START_ON_GUI,
 		_("Start the firewall when StockFW opens"),

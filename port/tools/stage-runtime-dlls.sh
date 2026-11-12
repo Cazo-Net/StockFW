@@ -26,8 +26,23 @@ if [ -d /ucrt64/bin ]; then
   export PATH="/ucrt64/bin:$PATH"
 fi
 
-PORT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD="${1:-$PORT/build}"
+# Locate script directory reliably even when invoked with Windows path
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PORT="$(cd "$SCRIPT_DIR/.." && pwd)"
+TARGET_DIR="${1:-$PORT/build}"
+case "$TARGET_DIR" in
+  [A-Za-z]:*)
+    if command -v cygpath >/dev/null 2>&1; then
+      BUILD_ARG="$(cygpath -u "$TARGET_DIR")"
+    else
+      BUILD_ARG="$(echo "$TARGET_DIR" | sed 's|^\([A-Za-z]\):/\?|/\1/|;s|\\|/|g')"
+    fi
+    ;;
+  *)
+    BUILD_ARG="$TARGET_DIR"
+    ;;
+esac
+BUILD="$BUILD_ARG"
 
 # Where the toolchain actually lives.  ldd reports it as /ucrt64/bin
 # from inside MSYS2 and as /c/msys64/ucrt64/bin otherwise, so the

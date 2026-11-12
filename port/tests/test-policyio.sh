@@ -111,7 +111,7 @@ if [ "${OS:-}" = "Windows_NT" ] || [ -d /ucrt64 ]; then
 fi
 # shellcheck disable=SC2086
 cc "$TMP/test-policyio.c" -I src \
-  $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+  $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
   -o "$TMP/test-policyio" src/core/*.c \
-  $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+  $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
 "$TMP/test-policyio"

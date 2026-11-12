@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # The What-If engine's Linux model against the kernel (1.0.7).
 #
 # A differential test: the same policy is loaded through the real Linux
@@ -272,8 +272,8 @@ main (int argc, char **argv)
 }
 CEOF
 
-CF="$(pkg-config --cflags glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto)"
-LF="$(pkg-config --libs glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto)"
+CF="$(pkg-config --cflags glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto json-glib-1.0)"
+LF="$(pkg-config --libs glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto json-glib-1.0)"
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} -o "$BUILD_DIR/whatif-live" -I "$PORT/src" $CF \
 	"$BUILD_DIR/whatif-live.c" "$PORT/src/platform/linux/fs-backend-linux.c" \
@@ -624,3 +624,4 @@ CHECK $([ "$checked" -ge 30 ]; echo $?) \
 printf '\n%s: %d failure(s)\n' "$([ "$failures" -eq 0 ] && echo PASSED || echo FAILED)" \
 	"$failures"
 [ "$failures" -eq 0 ]
+

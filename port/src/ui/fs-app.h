@@ -27,6 +27,7 @@ typedef enum
 	FS_PAGE_INTEL,
 	FS_PAGE_COPILOT,
 	FS_PAGE_TRUST,
+	FS_PAGE_NEXORA,
 	FS_PAGE_COUNT
 } FsAppPage;
 
@@ -94,6 +95,11 @@ FsApplyOutcome *fs_app_apply_settings (FsPolicy *under,
                                        const FsSettings *previous,
                                        const gchar *hold,
                                        GError **error);
+
+/* Floating notification toast overlay for XDR playbooks and AI alerts */
+void fs_app_show_toast (const gchar *title, const gchar *message, gboolean is_error);
+void fs_app_show_xdr_toast (const gchar *playbook_name, const gchar *action_summary);
+void fs_app_show_ai_alert_toast (const gchar *alert_title, const gchar *details, guint risk_score);
 
 #ifdef FS_PREFS_FAKE_BACKEND
 /* tests/ui-prefs-smoke.c only -- compiled into the fake-backend smoke,

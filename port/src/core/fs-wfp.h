@@ -8,6 +8,8 @@
 #ifndef FS_WFP_H
 #define FS_WFP_H
 
+#ifdef G_OS_WIN32
+
 #include <glib.h>
 #include "core/fs-fwrule.h"
 
@@ -23,5 +25,7 @@ gchar *fs_wfp_rule_to_powershell (const FsFwRule *rule, const gchar *executable_
 gchar *fs_wfp_generate_ale_egress_policy (const gchar *executable_path, FsRuleAction action);
 
 G_END_DECLS
+
+#endif /* G_OS_WIN32 */
 
 #endif /* FS_WFP_H */
