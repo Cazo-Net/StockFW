@@ -1,0 +1,225 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.7)'
+        required: true
+        type: string
+
+jobs:
+  # ============================================================================
+  # Build Release Artifacts
+  # ============================================================================
+  build-windows:
+    name: Build Windows Release
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: UCRT64
+        update: true
+        install: >-
+          git
+          base-devel
+          mingw-w64-ucrt-x86_64-toolchain
+          mingw-w64-ucrt-x86_64-gtk3
+          mingw-w64-ucrt-x86_64-pkgconf
+          mingw-w64-ucrt-x86_64-ninja
+          mingw-w64-ucrt-x86_64-cmake
+          mingw-w64-ucrt-x86_64-nsis
+
+    - name: Configure CMake (Release)
+      run: |
+        cd port
+        cmake -S . -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build
+      run: |
+        cd port
+        cmake --build build
+
+    - name: Run Full Test Suite
+      run: |
+        cd port
+        bash tests/full-suite.sh
+
+    - name: Build Installer
+      run: |
+        cd port
+        bash installer/build_installer.sh
+
+    - name: Calculate Checksums
+      run: |
+        cd port/installer/nsis
+        sha256sum StockFW-*-Setup.exe > checksums-windows.txt
+        cat checksums-windows.txt
+
+    - name: Upload Release Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: stockfw-windows-release
+        path: |
+          port/installer/nsis/StockFW-*-Setup.exe
+          port/installer/nsis/checksums-windows.txt
+        retention-days: 90
+
+  build-linux:
+    name: Build Linux Release
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          libgtk-3-dev \
+          pkg-config
+
+    - name: Configure CMake (Release)
+      run: |
+        cd port
+        cmake -S . -B build-linux -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build
+      run: |
+        cd port
+        cmake --build build-linux
+
+    - name: Run Full Test Suite
+      run: |
+        cd port
+        bash tests/full-suite.sh
+
+    - name: Package Binaries
+      run: |
+        cd port/build-linux
+        tar -czf stockfw-linux-x86_64.tar.gz StockFW stockfw
+        sha256sum stockfw-linux-x86_64.tar.gz > checksums-linux.txt
+
+    - name: Upload Release Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: stockfw-linux-release
+        path: |
+          port/build-linux/stockfw-linux-x86_64.tar.gz
+          port/build-linux/checksums-linux.txt
+        retention-days: 90
+
+  # ============================================================================
+  # Create GitHub Release
+  # ============================================================================
+  create-release:
+    name: Create GitHub Release
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download Windows Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: stockfw-windows-release
+        path: release-windows
+
+    - name: Download Linux Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: stockfw-linux-release
+        path: release-linux
+
+    - name: Extract Version Info
+      id: version
+      run: |
+        VERSION=${GITHUB_REF#refs/tags/}
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Version: $VERSION"
+
+    - name: Generate Release Notes
+      run: |
+        cat > RELEASE_NOTES.md << 'EOF'
+        ## StockFW ${{ steps.version.outputs.version }}
+
+        **Smart firewall configuration tool with a local AI copilot.**
+
+        ### Platforms
+
+        - **Windows**: MSYS2 UCRT64 build with GTK3 runtime
+        - **Linux**: Ubuntu/Debian compatible build
+
+        ### Installation
+
+        **Windows:**
+        1. Download `StockFW-Setup-*.exe`
+        2. Run the installer
+        3. Launch from Start Menu or Desktop
+
+        **Linux:**
+        1. Download `stockfw-linux-x86_64.tar.gz`
+        2. Extract: `tar -xzf stockfw-linux-x86_64.tar.gz`
+        3. Run: `./StockFW` (GUI) or `./stockfw` (CLI)
+
+        ### Verification
+
+        All binaries include SHA-256 checksums. Verify with:
+        - Windows: `certutil -hashfile <file> SHA256`
+        - Linux: `sha256sum -c checksums-linux.txt`
+
+        ### Notes
+
+        - This is an **unsigned release**. SmartScreen may show warnings on Windows.
+        - Linux CLI requires `sudo` for firewall operations.
+        - Full documentation: [docs/ARCHITECTURE-AND-SECURITY.md](docs/ARCHITECTURE-AND-SECURITY.md)
+
+        ### What's Changed
+
+        See commit history for detailed changes.
+
+        ---
+
+        **Built with GitHub Actions**
+        - All tests passed before release
+        - Reproducible builds
+        - Open source: https://github.com/Cazo-Net/StockFW
+        EOF
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          release-windows/StockFW-*-Setup.exe
+          release-windows/checksums-windows.txt
+          release-linux/*.tar.gz
+          release-linux/checksums-linux.txt
+        body_path: RELEASE_NOTES.md
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

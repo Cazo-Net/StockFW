@@ -1,0 +1,141 @@
+name: Nightly Build
+
+on:
+  schedule:
+    # Run every day at 02:00 UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  nightly-windows:
+    name: Nightly Windows Build
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: main
+
+    - name: Setup MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: UCRT64
+        update: true
+        install: >-
+          git
+          base-devel
+          mingw-w64-ucrt-x86_64-toolchain
+          mingw-w64-ucrt-x86_64-gtk3
+          mingw-w64-ucrt-x86_64-pkgconf
+          mingw-w64-ucrt-x86_64-ninja
+          mingw-w64-ucrt-x86_64-cmake
+          mingw-w64-ucrt-x86_64-nsis
+
+    - name: Configure and Build
+      run: |
+        cd port
+        cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+        cmake --build build
+
+    - name: Run Full Test Suite
+      run: |
+        cd port
+        bash tests/full-suite.sh
+
+    - name: Build Installer
+      run: |
+        cd port
+        bash installer/build_installer.sh
+
+    - name: Upload Nightly Build
+      uses: actions/upload-artifact@v4
+      with:
+        name: stockfw-nightly-windows-${{ github.run_number }}
+        path: |
+          port/build/StockFW.exe
+          port/installer/nsis/StockFW-*-Setup.exe
+        retention-days: 7
+
+  nightly-linux:
+    name: Nightly Linux Build
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: main
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake ninja-build libgtk-3-dev
+
+    - name: Configure and Build
+      run: |
+        cd port
+        cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+        cmake --build build-linux
+
+    - name: Run Full Test Suite
+      run: |
+        cd port
+        bash tests/full-suite.sh
+
+    - name: Upload Nightly Build
+      uses: actions/upload-artifact@v4
+      with:
+        name: stockfw-nightly-linux-${{ github.run_number }}
+        path: |
+          port/build-linux/StockFW
+          port/build-linux/stockfw
+        retention-days: 7
+
+  nightly-report:
+    name: Generate Nightly Report
+    needs: [nightly-windows, nightly-linux]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Generate Build Report
+      run: |
+        cat > nightly-report.md << EOF
+        # StockFW Nightly Build Report
+        **Date:** $(date -u +"%Y-%m-%d %H:%M UTC")
+        **Build:** #${{ github.run_number }}
+        **Branch:** main
+
+        ## Build Status
+
+        - Windows Build: ${{ needs.nightly-windows.result }}
+        - Linux Build: ${{ needs.nightly-linux.result }}
+
+        ## Artifacts
+
+        Nightly builds are available for 7 days in the Actions artifacts.
+
+        ## Next Steps
+
+        - Review test results if any builds failed
+        - Check logs for warnings or issues
+        - Update roadmap based on test coverage
+
+        ---
+        *Automated nightly build from GitHub Actions*
+        EOF
+        cat nightly-report.md
+
+    - name: Upload Report
+      uses: actions/upload-artifact@v4
+      with:
+        name: nightly-report-${{ github.run_number }}
+        path: nightly-report.md
+        retention-days: 30
