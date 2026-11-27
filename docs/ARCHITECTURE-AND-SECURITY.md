@@ -38,6 +38,10 @@
 
 **Chapter 15: After 1.0.7 (unreleased)** · 15.1 Wayland and WSL: No Tray Icon, and Words the Window App Does Not Take · 15.2 The command line made truthful · 15.3 Dashboard hardening · 15.4 Terminal control: settings and policy editing · 15.5 Terminal actions: Copilot, Sentinel, Trust, Help and About · 15.6 What-If start respects audit-only (H12) · 15.7 The Sentinel engine moves to core
 
+**Chapter 16: Roadmap After 1.0.9 (plans, not features)**
+
+**Chapter 17: 1.0.9 Addendum** · 17.1 What changed for users · 17.2 Experimental modules (not compiled into the programs) · 17.3 Build and test repairs
+
 ---
 
 ## Chapter 1: Executive Summary & Introduction
@@ -1022,97 +1026,6 @@ Sentinel answers the rogue-agent case: a compromised or malicious process must b
 - The Copilot's *Apply Selected Rule* parses with the insight's own `rule_kind` (11.3) instead of the hardcoded service-allow kind, and rolls the store back with the same kind on save failure.
 - Version markers moved 1.0.3 → 1.0.4 in every site the build, About dialog, installer, and `.rc` read from (CMake, `main.c`, `fs-dialogs.c`, NSIS, `build_installer.sh`, `stockfw.rc.in`, `configure.in`).
 - Honest gaps unchanged from Chapter 10: still unsigned, still no CI runner, no CSV import UI — the roadmap items remain roadmap items (the tray icon shipped later, in 1.0.5, 12.7).
-
----
-
-## Chapter 16: The Guinness-Level Sovereign Roadmap (Phase v1.1 to v3.0)
-
-*This chapter documents the ultimate evolution of StockFW into the world's first sovereign, kernel-aware, local AI security fabric, ensuring absolute superiority over traditional cloud-tethered EDRs and blind L3/L4 firewalls.*
-
-### 16.1 Phase v1.1 — The Proactive Shield
-- **CISA KEV Local Feed Parser**: Offline ingestion and daily caching of the CISA Known Exploited Vulnerabilities JSON feed (`fs-feed.c`), cross-referencing installed software on Windows/Linux to alert users of active threats before exploitation occurs.
-- **Windows WFP Per-Process Rules**: Exposing robust per-application and path-aware egress controls via native Windows Filtering Platform (WFP) ALE APIs in the StockFW UI.
-- **Linux Tetragon / eBPF TracingPolicy Generation**: Automated compilation of StockFW rules into high-performance eBPF tracing policies for kernel-level process network isolation on Linux.
-
-### 16.2 Phase v1.2 — The Neural Sentinel
-- **Embedded INT8 Tree-Ensemble (TinyML) Engine**: Integration of a quantized gradient-boosted decision-tree model, trained offline by a script in `port/tools/ml/` and exported to `core/fs-ml-model.h`, directly into the Copilot's event-feed path for zero-day port scans, lateral movement, brute-force login attempts, and C2 beacon detection in microseconds per event. Integer-only tree walks, zero telemetry, absolute offline sovereignty.
-- **Advanced Behavioral Copilot UI**: Real-time confidence scores, behavioral anomaly explanations, and one-click auto-blocking with 10-minute timeboxes and instant undo.
-
-### 16.3 Phase v1.3 — The L7 & AI Governor
-- **Native DNS & SNI Inspection**: eBPF-based inspection of DNS queries and TLS ClientHello SNI headers to detect DNS tunneling and block C2 domains by name without proxy overhead.
-- **LLM & MCP Gateway Rules**: Specialized policy templates and governance rules to police local AI agents, Model Context Protocol (MCP) servers, and LLM API endpoints against data exfiltration.
-
-### 16.4 Phase v2.0 — The Autonomous Sovereign Fabric
-- **Native Rust eBPF Datapath (`aya`)**: Replacing external helper daemons with a fully embedded Rust eBPF engine inside StockFW for sub-microsecond packet and syscall termination (`SIGKILL`).
-- **Graph-Based What-If Simulation 2.0**: Advanced reachability analysis simulating multi-rule precedence conflicts across IPv4, IPv6, and process ancestry trees.
-
-### 16.5 Phase v3.0 — The Guinness Standard: Local Sovereign Mesh
-- **P2P Encrypted Local Fleet Mesh**: Peer-to-peer synchronization of threat intelligence and adaptive isolation rules across local subnet nodes over encrypted WireGuard tunnels without any centralized cloud controller or SaaS dependency.
-- **Hardware TPM Attestation**: Cryptographic signing of host firewall policies via motherboard TPM 2.0 chips for absolute hardware-backed zero-trust integrity.
-
-
----
-
-## Chapter 17: StockFW 1.0.9 Nexora Addendum (AEGIS-ML & Autonomous XDR)
-
-*This chapter records what shipped in StockFW 1.0.9 (November 2026). It documents the realization of the Nexora intelligence engine, AEGIS-ML continuous active learning, automated XDR playbooks, the interactive network topology graph, tamper-evident audit ledgers, and post-quantum ZTNA stubs.*
-
-### 17.1 Nexora AEGIS-ML Active Learning Engine (`fs-ml.c`, `fs-ml-monitor.c`)
-- **Sliding-Window Feature Extraction**: Aggregates `FsHit` event streams into 13 behavioral features per host over sliding time windows.
-- **PSI Drift Monitoring**: Implements Population Stability Index (PSI) drift detection against training distributions (arXiv 2607.17336) with 200-sample minimum gates, quantile binning, Welford running variance confidence tracking, and strict 50-label validation requirements before triggering GBDT retraining.
-- **Model Hot-Reloading**: Automatically compiles and hot-swaps quantized integer decision-tree C headers (`core/fs-ml-model.h`) for sub-millisecond inference with zero cloud dependency.
-
-### 17.2 Autonomous XDR Playbooks & Incident Reporting (`fs-playbook.c`)
-- **Self-Healing Response Rules**: Automatically triggers containment actions (`FS_XDR_ACTION_BLOCK_IP`, `FS_XDR_ACTION_ISOLATE_HOST`, `FS_XDR_ACTION_REVOKE_TRUST`) upon detecting AEGIS-ML anomalies, brute-force attacks, C2 beacons, or CISA KEV vulnerability matches.
-- **JSON Incident Serialization**: Structures security incidents and dispatches structured logs for SIEM and forensic analysis.
-
-### 17.3 Interactive Network Topology Graph (`fs-topology.c`)
-- **Cairo-Rendered Node Graph**: A force-directed visualizer mapping active processes, remote ASNs, and live connections in real time on a dedicated GTK3 view.
-
-### 17.4 Tamper-Evident Audit Ledger & Post-Quantum ZTNA (`fs-audit-ledger.c`, `fs-quantum.c`)
-- **Cryptographic Hash-Chaining**: SHA-256 block hashing of every policy modification, rule application, and Sentinel auto-block into an immutable forensic log (`audit.log`).
-- **Post-Quantum Cryptography Stubs**: CRYSTALS-Kyber key encapsulation and CRYSTALS-Dilithium signature stubs for future-proof zero-trust session security.
-
----
-
-## Chapter 18: Cryptographic Agentic Zero-Trust (CAZT) Runtime Fabric (`fs-zero-trust.c`)
-
-*This chapter documents the architecture of CAZT, StockFW Nexora 2.0.0's breakthrough security primitive designed to protect hosts against autonomous AI agent swarms, compromised Model Context Protocol (MCP) servers, and malicious LLM plugins.*
-
-### 18.1 Cryptographic Agentic Identity Tokens (CAIT)
-- **Per-Process HMAC Session Minting**: When an AI agent or tool process spawns, CAZT mints an ephemeral HMAC-SHA256 session token bound directly to its process ID (PID) and timestamp.
-- **Constant-Time Verification**: Zero-trust socket connect/bind system calls verify agent identity tokens in constant time (<0.02ms) to prevent timing attacks.
-
-### 18.2 Agentic Capability Manifests & MCP Tool Grants
-- **Strict Tool-Gating**: AI frameworks and local LLMs must present cryptographically signed capability manifests specifying authorized target domains and payload size limits (e.g., max 2MB outbound).
-- **Autonomous Containment**: If AEGIS-ML detects adversarial drift or unauthorized data exfiltration, CAZT instantly revokes the agent's identity token, severing active socket connections and vaulting the binary into quarantine (`fs-quarantine.c`).
-
-### 18.3 Audit Ledger Integration
-- **Forensic Traceability**: Every token mint, verification success, egress permission, and containment event is automatically recorded into the SHA-256 hash-chained audit ledger (`fs-audit-ledger.c`).
-
----
-
-## Chapter 19: StockFW Nexora 2.0.0 Complete Engineering Specification & Test Architecture
-
-*This chapter provides the definitive architectural specification for StockFW Nexora 2.0.0, covering all core C modules, Rust eBPF loaders, active-learning machine learning pipelines, automated test harnesses, and UI views.*
-
-### 19.1 Subsystem Directory & Component Mapping
-- **AEGIS-ML TinyML & Drift Monitor**: `port/src/core/fs-ml.c`, `port/src/core/fs-ml-monitor.c`, `port/tools/ml/train_sentinel.py` (Quantized GBDT, PSI drift detection, confidence variance tracking).
-- **Cryptographic Agentic Zero-Trust (CAZT)**: `port/src/core/fs-zero-trust.c`, `port/src/core/fs-zero-trust.h` (CAIT session minting, capability manifests, MCP tool-gating, automated socket containment).
-- **Universal Kernel Fabric**: `port/src/core/fs-ebpf.c`, `port/src/core/fs-wfp.c`, `port/src/ebpf/` (Rust `aya` `no_std` BPF kernel bytecode, `STOCKFW_IP_BLOCKMAP`, Windows WFP BFE COM API client sessions).
-- **Tamper-Evident Audit Ledger**: `port/src/core/fs-audit-ledger.c` (SHA-256 block hashing, Merkle root verification).
-- **Autonomous XDR Playbooks & Threat Intel**: `port/src/core/fs-playbook.c`, `port/src/core/fs-kev.c`, `port/src/core/fs-feed-sync.c`, `port/src/core/fs-quarantine.c` (Self-healing response rules, CISA KEV auto-reconciliation, encrypted quarantine vault).
-- **Interactive UI & Visualizers**: `port/src/ui/fs-nexora.c`, `port/src/ui/fs-topology.c`, `port/src/ui/fs-app.c`, `port/src/ui/fs-theme.css` (CAZT dashboard, Cairo network flow graph, masterclass card layout, notification toasts).
-
-### 19.2 Automated Test Suites & Verification Architecture
-- **AEGIS-ML PSI Drift Test**: `port/tests/test-nexora-ml.c` (Validates sliding window extraction and 200-sample PSI thresholds).
-- **Cryptographic Audit Ledger Test**: `port/tests/test-audit-ledger-standalone.c` (Verifies SHA-256 hash chaining and chain integrity).
-- **CAZT Room A / Room B Integration Test**: `port/tests/test-cazt-rooms.c` (Simulates active AI agent cluster node issuing signed CAIT tokens in Room A and peer swarm node receiving WireGuard mesh revocation packets to sever sockets in Room B).
-- **eBPF & FFI Map Sync Test**: `port/tests/test-ebpf.c` (Verifies BPF hash map population and kernel ring buffer event polling).
-- **Headless UI Smoke Test**: `port/tests/ui-smoke-all.c` (Instantiates all 9 application pages without display server assertion errors).
-
-### 19.3 Build & Packaging Pipeline
-- **Windows NSIS Installer**: Configured via `port/installer/nsis/StockFW.nsi` and compiled via `makensis.exe`, packaging `StockFW-1.0.9-Setup.exe` with zero console popup (`-mwindows`) and immediate foreground focus (`gtk_window_present`).
 
 ---
 
@@ -2592,6 +2505,51 @@ Not fixed here: the app's launch-time lift of rows that expired while it was clo
 **Teeth.** Each was patched into `core/fs-sentinel.c`, rebuilt and run, then copied back and checked with `cmp`; every one fails the test: the push at stage applying the policy file, the old path (3 `unapplied` checks fail: the allow goes live, the plan's own teeth); the expiry's push applying the policy file (1); no first apply without a journal (2 `nojournal` checks); the restore resetting the clock to the restart (2: the block lifts late); expiry `>` for `>=` (8); retire without the cooldown (8); the push ignoring the hold hook (3). From the review: the settings hook never called (4 `settings` checks); Undo applying the policy file (1 `undo` check: the allow goes live); a lift with no journal going to lift_live (3 `nolift` checks); the "not on record as live" line renamed (1).
 
 **Not verified.** Nothing here was run on Windows. All 43 `fs-core` sources (with `fs-sentinel.c`), the app's sources with the changed `ui/fs-copilot.c`, and the Windows backend were compiled with MinGW against Windows GLib and GTK headers with `-Wall -Wextra` and no warning; `StockFW.exe` and `fs-sentinel-test.exe` link. Windows CI runs the test through `full-suite.sh`.
+
+---
+
+## Chapter 16: Roadmap After 1.0.9 (plans, not features)
+
+*Nothing in this chapter is in a release. It lists directions the project wants to explore. Where code for an idea exists, it is an unfinished experiment under `port/src/experimental/`, described in Chapter 17 and in that folder's `README.md`.*
+
+- **Known-exploited-vulnerability feed.** Read the CISA KEV catalogue and tell the user when installed software is on it.
+- **Per-program rules on Windows.** Path-aware outbound rules through the Windows Filtering Platform.
+- **Kernel-level enforcement on Linux.** Generate eBPF tracing policies from StockFW rules; later, an embedded Rust (`aya`) loader.
+- **Anomaly scoring.** A small tree-ensemble model that scores a host's recent events, shown beside the Copilot's fixed rules, with drift monitoring before any retraining.
+- **Names, not only addresses.** DNS and TLS SNI inspection, and rules for programs that call model or tool servers.
+- **Response playbooks.** Named sets of actions (block an address, isolate, revoke trust) run on a detection, each recorded as an incident.
+- **A tamper-evident audit log.** Hash-chain the audit lines so an edit shows.
+- **A local mesh.** Share blocklists between machines on one network without a cloud service; TPM-signed policies; post-quantum key exchange once a reviewed library is chosen.
+
+---
+
+## Chapter 17: 1.0.9 Addendum
+
+*This chapter records what the 1.0.9 tree contains (November 2026) and corrects the first version of this chapter, which described the modules below as shipped features. They were not: nothing in the desktop app or in `stockfw` called them.*
+
+### 17.1 What changed for users
+
+- The command-line work listed under 1.0.9 in `CHANGELOG.md` (Chapter 15 has the evidence).
+- A **Dark mode** switch in Preferences > General. As published in 1.0.9 it only asked GTK for its dark variant, and the StockFW stylesheet had no dark palette of its own, so most of the window stayed light. The release after 1.0.9 (2.0.0) rewrites the stylesheet on named colours with a dark palette (the default) and a light one laid over it when the switch is off (`port/src/ui/fs-theme.css`, `fs-theme-light.h`); cairo drawing reads the same names through `ui/fs-themecolor.h`. The same release adds a command palette (`Ctrl+K`) and `Ctrl+1` to `Ctrl+9` page shortcuts.
+- Two **preview pages**, Topology and Nexora. Both are layouts filled with fixed sample data and say so on the page. The Nexora page shows no measurement of this computer, and the Topology page does not draw this computer's network. As first published, 1.0.9 presented both as live: the Nexora figures were redrawn from random numbers every three seconds under a "Telemetry Active" badge. That was corrected after the release.
+
+### 17.2 Experimental modules (not compiled into the programs)
+
+The 1.0.9 work added a set of C modules for the roadmap in Chapter 16. They are kept in `port/src/experimental/`, are built only with `-DFS_EXPERIMENTAL=ON` (`fs-wfp.c` and `fs-ml-engine.c` not even then), and are in neither installer. That folder's `README.md` gives the state of each one. In short:
+
+| Module | State |
+|---|---|
+| `fs-quantum` | Placeholder. It contains no post-quantum cryptography; the key and signature functions refuse every call. The cipher-suite check reads a suite's name only. |
+| `fs-ml`, `fs-ml-monitor` | The scorer does not work as described (input scaling does not match the model, the confidence is a constant), was trained on synthetic data, and writes past the end of an array on every call; no test calls it. The drift arithmetic has a failing test. |
+| `fs-quarantine` | Unsafe: restore writes back the encrypted bytes. |
+| `fs-mesh`, `fs-l7` | Placeholders (no signatures, no transport, no protocol parser; the inspection functions do not read the packet). |
+| `fs-ebpf`, `fs-wfp` | Generate policy or command text; load and run nothing. The Rust code in `port/src/ebpf/` is not built. |
+| `fs-playbook`, `fs-audit-ledger`, `fs-zero-trust` | Data structures and helpers with unit tests, not connected to the program. The playbook and zero-trust code writes audit-log lines, and one zero-trust function kills a process. |
+| `fs-kev`, `fs-feed-sync` | KEV JSON reader and refresh timer. The reader has no unit test; the one feed-sync test starts a real download and is not run. |
+
+### 17.3 Build and test repairs
+
+1.0.9 did not build on Linux as published, and the Windows build ran a script from one developer's home folder. The repairs: `json-glib` is needed only by the experimental build; `libm` is linked where `fmod` is used; the Windows post-build step and the executable's icon and version resource are restored; byte-order marks that had been added in front of `#!/bin/bash` in sixteen test scripts are removed; the What-If golden-table test target (`fs-whatif-test`), which had been replaced, is back; and an event-history test that could only pass within 30 days of a fixed date now keeps its events for ten years.
 
 ---
 

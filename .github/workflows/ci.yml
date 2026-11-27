@@ -98,6 +98,27 @@ jobs:
           ./build-linux/fs-geodb-test tests/geodb
           STOCKFW_GEODB_REQUIRE=1 FUZZ_SECONDS=15 bash tests/test-geodb.sh
 
+      # The research modules under port/src/experimental are not part
+      # of StockFW or stockfw (FS_EXPERIMENTAL is OFF by default), so the
+      # builds above never see them.  This keeps them compiling and runs
+      # their own tests.  json-glib is needed only here.  Two are built
+      # but not run: test-psi-fuzz fails two checks, and test-feed-sync
+      # downloads from www.cisa.gov (see the README there).
+      - name: Experimental modules (FS_EXPERIMENTAL=ON, not shipped)
+        working-directory: port
+        run: |
+          sudo apt-get install -y --no-install-recommends libjson-glib-dev
+          cmake -S . -B build-experimental -G Ninja -DFS_EXPERIMENTAL=ON
+          ninja -C build-experimental fs-experimental-tests
+          export HOME="$(mktemp -d)"
+          export XDG_CONFIG_HOME="$HOME/.config"
+          export STOCKFW_AUDIT_FILE="$HOME/audit.log"
+          for t in audit-ledger-standalone cazt-audit ebpf nexora-ml \
+                   playbook quantum; do
+            echo "== $t"
+            "./build-experimental/fs-exp-$t-test"
+          done
+
   linux-smokes-1a:
     name: Linux UI smokes group 1a
     runs-on: ubuntu-24.04

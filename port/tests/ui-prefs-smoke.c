@@ -2231,9 +2231,13 @@ static void
 check_about_and_theme (void)
 {
 	const gchar * const *credits = fs_dialogs_about_credits ();
+	/* The names every rule (and the light palette, and the drawing
+	 * code through ui/fs-themecolor.h) is written against. */
 	static const gchar *const tokens[] = {
-		"#f4f5f7", "#14161b", "#16181d", "#2a2f39", "#eaf0fb",
-		"#ffebee", "#b71c1c", "#f9f9f9",
+		"@define-color fs_bg ", "@define-color fs_bg_side ",
+		"@define-color fs_surface ", "@define-color fs_border ",
+		"@define-color fs_text_strong ", "@define-color fs_text_weak ",
+		"@define-color fs_primary ", "@define-color fs_bad ",
 	};
 	static const gchar *const forbidden[] = { ":focused", ":insensitive" };
 	GtkCssProvider *provider = gtk_css_provider_new ();

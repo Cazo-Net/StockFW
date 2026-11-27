@@ -13,6 +13,80 @@ into `/usr/local/share/doc/stockfw/`.
 
 ## [Unreleased]
 
+## [2.0.0] - Unreleased
+
+A new look for the window, and repairs to 1.0.9. Chapter 17 of the
+architecture document has the detail.
+
+### Added
+
+- **A dark theme, on by default.** The window is redrawn flat: no
+  gradients or shadows, thin borders, compact type, and a fixed-width
+  font for addresses, counts and versions. Turn Dark mode off in
+  Preferences > General for the light version; the change applies as
+  soon as Preferences is saved. Charts, the What-If diagram and the
+  Events list follow the theme. (A settings file first written by 1.0.9
+  holds its "off" default and stays light until the switch is turned
+  on.)
+- **A command palette.** `Ctrl+K` or `Ctrl+Shift+P` opens a search box
+  that goes to any page, starts or stops the firewall, and opens
+  Preferences, Help or About. Stopping the firewall still asks first.
+- **Page shortcuts.** `Ctrl+1` to `Ctrl+9` switch pages in sidebar
+  order. The sidebar groups its pages under Monitor, Protect and Assist
+  and shows each shortcut.
+
+### Fixed
+
+- **The Nexora page no longer shows made-up readings.** In 1.0.9 it
+  redrew a "confidence score", a drift index and a traffic chart from
+  random numbers every three seconds under a "Telemetry Active" badge.
+  No model runs in StockFW, so the page now shows fixed sample figures
+  and says on every card that they are samples.
+- **The Topology page says it is an example.** Its computers, addresses
+  and rates are a fixed sample diagram, not this computer's network, and
+  the dots that travelled along its lines like live traffic no longer
+  move.
+- **1.0.9 builds on Linux again.** It needed `json-glib` without saying
+  so and did not link the maths library. The programs no longer need
+  `json-glib` at all.
+- **The Windows build no longer depends on one developer's folder.** The
+  step that copies the GTK DLLs beside `StockFW.exe` ran a script from a
+  fixed path under `C:\Users`, so it failed everywhere else. The
+  executable's icon and version details, switched off in 1.0.9, are
+  back.
+- **Sixteen test scripts start again.** A byte-order mark in front of
+  `#!/bin/bash` had been added to each.
+- **A background start stays in the tray again.** 1.0.9 opened the
+  window at sign-in and with `--background`.
+- **F1 opens the right Help topic again.** Since 1.0.9 added two pages,
+  Help on Policy, Threat Intel, Copilot and Trust opened a neighbouring
+  topic.
+- **The Dark mode switch works.** In 1.0.9 it had no styles behind it,
+  so most of the window stayed light.
+- An event-history test failed on any day after 25 November 2026.
+- The Windows installer build stops again when `strip` is missing,
+  instead of shipping a much larger `StockFW.exe` with a warning.
+
+### Changed
+
+- **Unfinished 1.0.9 modules are no longer compiled into the programs.**
+  The anomaly scorer, playbooks, mesh, quarantine, KEV reader, eBPF
+  generator, audit ledger and the "post-quantum" module were never
+  called by the app or by `stockfw`. They now live in
+  `port/src/experimental/`, with the WFP generator and the zero-trust
+  helpers that 1.0.9 added but never compiled, and are built only with
+  `-DFS_EXPERIMENTAL=ON`. Its `README.md` says what each one really
+  does.
+- **The "post-quantum" functions refuse every call.** They contained no
+  cryptography: keys were random bytes, and any signature of the right
+  length verified whatever the key or the message.
+
+### Removed
+
+- Build output and empty scratch files that had been committed
+  (`build-win/`, `build-win-test/`, `err.txt`, `out.txt`, `test.c` and
+  others), and a desktop-shortcut script with a personal path in it.
+
 ## [1.0.9] - 2026-11-12
 
 ### Packaging & Windows

@@ -1,6 +1,6 @@
 /*---[ fs-nexora.h ]-----------------------------------------------------
- * AEGIS-ML confidence scores, PSI drift gauges, 15-minute sliding window stats,
- * and active label counters for StockFW / Nexora.
+ * The Nexora page: a preview with fixed sample figures.  No model runs
+ * and nothing is measured on this computer (fs-nexora.c).
  *--------------------------------------------------------------------*/
 #ifndef FS_NEXORA_H
 #define FS_NEXORA_H
@@ -9,7 +9,7 @@
 
 G_BEGIN_DECLS
 
-/* Create the Nexora AI & ML Intelligence / Trust Dashboard page */
+/* The Nexora page: a preview with fixed sample figures (fs-nexora.c). */
 GtkWidget *fs_nexora_page (void);
 
 /* Smoke test / introspection helpers */

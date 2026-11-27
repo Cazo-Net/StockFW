@@ -1,9 +1,10 @@
 /*---[ test-quantum.c ]--------------------------------------------------
- * Post-Quantum Cryptography & TLS Cipher Suite Auditing Unit Test
+ * Experimental (FS_EXPERIMENTAL=ON): the placeholders refuse, and the
+ * cipher-suite name lookup classifies.
  *--------------------------------------------------------------------*/
 #include <glib.h>
 #include <string.h>
-#include "core/fs-quantum.h"
+#include "experimental/fs-quantum.h"
 
 static guint failures = 0;
 
@@ -24,40 +25,26 @@ main (int argc, char **argv)
 
 	g_print ("---[ Running Post-Quantum TLS Audit & Vulnerability Tests ]---\n");
 
-	/* Test Keypair Generation */
-	FsQuantumKeyPair kp;
-	gboolean kp_ok = fs_quantum_generate_keypair (&kp);
-	CHECK (kp_ok, "Kyber keypair generation succeeds");
+	/* The key and signature functions are placeholders with no
+	 * cryptography behind them: every one must refuse. */
+	{
+		FsQuantumKeyPair kp;
+		FsQuantumSignKeyPair sig_kp;
+		guint8 ciphertext[1568] = { 0 };
+		guint8 secret[32] = { 0 };
+		guint8 signature[3293] = { 0 };
+		gsize sig_len = sizeof (signature);
+		const guint8 msg[] = "message";
 
-	/* Test Encapsulation & Decapsulation */
-	guint8 ciphertext[1568];
-	guint8 shared_secret_enc[32];
-	guint8 shared_secret_dec[32];
-
-	gboolean enc_ok = fs_quantum_encapsulate (kp.public_key, ciphertext, shared_secret_enc);
-	CHECK (enc_ok, "Kyber encapsulation succeeds");
-
-	/* In decapsulation stub, simulate matching secret derivation */
-	memcpy (shared_secret_dec, shared_secret_enc, 32);
-	gboolean dec_ok = TRUE;
-	CHECK (dec_ok, "Kyber decapsulation succeeds");
-
-	gboolean match = (memcmp (shared_secret_enc, shared_secret_dec, 32) == 0);
-	CHECK (match, "Encapsulated and decapsulated shared secrets match");
-
-	/* Test Signature Keypair & Signing */
-	FsQuantumSignKeyPair sig_kp;
-	gboolean sign_kp_ok = fs_quantum_sign_generate_keypair (&sig_kp);
-	CHECK (sign_kp_ok, "Dilithium signature keypair generation succeeds");
-
-	const gchar *test_msg = "StockFW Post-Quantum TLS Session Handshake";
-	guint8 signature[3293];
-	gsize sig_len = sizeof (signature);
-	gboolean sign_ok = fs_quantum_sign (sig_kp.sign_key, (const guint8 *)test_msg, strlen (test_msg), signature, &sig_len);
-	CHECK (sign_ok && sig_len == 3293, "Dilithium message signing succeeds");
-
-	gboolean verify_ok = fs_quantum_verify (sig_kp.verify_key, (const guint8 *)test_msg, strlen (test_msg), signature, sig_len);
-	CHECK (verify_ok, "Dilithium signature verification succeeds");
+		memset (&kp, 0, sizeof kp);
+		memset (&sig_kp, 0, sizeof sig_kp);
+		CHECK (!fs_quantum_generate_keypair (&kp), "placeholder: key generation refuses");
+		CHECK (!fs_quantum_encapsulate (kp.public_key, ciphertext, secret), "placeholder: encapsulation refuses");
+		CHECK (!fs_quantum_decapsulate (kp.secret_key, ciphertext, secret), "placeholder: decapsulation refuses");
+		CHECK (!fs_quantum_sign_generate_keypair (&sig_kp), "placeholder: signing key generation refuses");
+		CHECK (!fs_quantum_sign (sig_kp.sign_key, msg, sizeof msg, signature, &sig_len), "placeholder: signing refuses");
+		CHECK (!fs_quantum_verify (sig_kp.verify_key, msg, sizeof msg, signature, sizeof signature), "placeholder: verification accepts nothing");
+	}
 
 	/* Test PQC TLS Cipher Suite Auditing */
 	FsQuantumCipherAuditResult audit_pqc = fs_quantum_audit_cipher_suite ("TLS_KYBER_1024_WITH_AES_256_GCM_SHA384");

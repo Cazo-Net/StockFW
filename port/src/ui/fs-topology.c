@@ -1,9 +1,9 @@
 /*---[ fs-topology.c ]--------------------------------------------------
- * Interactive Cairo-rendered network flow graph and topology visualizer.
- *
- * Renders network nodes (This Computer, LAN Gateway, Internet, Mesh Peers,
- * Firewall Security Wall) and live flow edges with Cairo, animated packet
- * pulses, throughput counters, node inspection, and graph/table switching.
+ * The Topology page: a PREVIEW.  It draws a fixed example diagram (the
+ * nodes, addresses and rates built in ensure_topology_data), as a graph
+ * or a table, and says so on the page.  Nothing here is read from this
+ * computer's network, and nothing moves: 1.0.9 ran dots along the lines
+ * ten times a second, which read as traffic being shown as it happened.
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-topology.h"
@@ -14,6 +14,8 @@
 #include <string.h>
 #include <math.h>
 
+#include "ui/fs-themecolor.h"
+
 typedef struct
 {
 	gdouble r, g, b;
@@ -21,12 +23,32 @@ typedef struct
 
 static const TopoRgb TOPO_COLOR_ALLOWED  = { 0x2a / 255.0, 0x78 / 255.0, 0xd6 / 255.0 };
 static const TopoRgb TOPO_COLOR_BLOCKED  = { 0xe3 / 255.0, 0x49 / 255.0, 0x48 / 255.0 };
-static const TopoRgb TOPO_COLOR_MESH     = { 0x10 / 255.0, 0xb9 / 255.0, 0x81 / 255.0 };
-static const TopoRgb TOPO_COLOR_GATEWAY  = { 0xf5 / 255.0, 0x9e / 255.0, 0x0b / 255.0 };
-static const TopoRgb TOPO_INK_PRIMARY    = { 0x21 / 255.0, 0x21 / 255.0, 0x21 / 255.0 };
-static const TopoRgb TOPO_INK_MUTED      = { 0x6b / 255.0, 0x72 / 255.0, 0x80 / 255.0 };
-static const TopoRgb TOPO_GRID           = { 0xe8 / 255.0, 0xea / 255.0, 0xed / 255.0 };
-static const TopoRgb TOPO_SURFACE        = { 1.0, 1.0, 1.0 };
+/* Canvas, grid, card and ink come from the theme (fs-theme.css), read
+ * at every draw so the graph follows Dark mode. */
+static TopoRgb TOPO_INK_PRIMARY, TOPO_INK_MUTED, TOPO_GRID, TOPO_SURFACE,
+               TOPO_CANVAS, TOPO_CARD_EDGE;
+
+static void
+topo_rgb (TopoRgb *into, const gchar *name, const gchar *fallback)
+{
+	GdkRGBA c;
+
+	fs_theme_color (name, fallback, &c);
+	into->r = c.red;
+	into->g = c.green;
+	into->b = c.blue;
+}
+
+static void
+topo_palette_refresh (void)
+{
+	topo_rgb (&TOPO_INK_PRIMARY, "fs_text_strong",   "#fdfcfc");
+	topo_rgb (&TOPO_INK_MUTED,   "fs_text_weak",     "#a8a4a4");
+	topo_rgb (&TOPO_GRID,        "fs_border",        "#2f2b2b");
+	topo_rgb (&TOPO_SURFACE,     "fs_surface",       "#211e1e");
+	topo_rgb (&TOPO_CANVAS,      "fs_code_bg",       "#131010");
+	topo_rgb (&TOPO_CARD_EDGE,   "fs_border_strong", "#4a4545");
+}
 
 typedef struct
 {
@@ -57,7 +79,6 @@ static gboolean   table_view = FALSE;
 static GtkWidget *drawing_area = NULL;
 static GtkWidget *stack = NULL;
 static GtkListStore *list_store = NULL;
-static guint      anim_timer_id = 0;
 static gdouble    anim_t = 0.0;
 
 static void
@@ -207,14 +228,6 @@ fs_topology_sample (void)
 }
 
 static gboolean
-on_anim_tick (gpointer data)
-{
-	(void) data;
-	fs_topology_sample ();
-	return G_SOURCE_CONTINUE;
-}
-
-static gboolean
 on_draw_graph (GtkWidget *widget, cairo_t *cr, gpointer data)
 {
 	guint width = gtk_widget_get_allocated_width (widget);
@@ -223,8 +236,10 @@ on_draw_graph (GtkWidget *widget, cairo_t *cr, gpointer data)
 	(void) data;
 	ensure_topology_data ();
 
+	topo_palette_refresh ();
+
 	/* Background */
-	cairo_set_source_rgb (cr, TOPO_SURFACE.r, TOPO_SURFACE.g, TOPO_SURFACE.b);
+	cairo_set_source_rgb (cr, TOPO_CANVAS.r, TOPO_CANVAS.g, TOPO_CANVAS.b);
 	cairo_paint (cr);
 
 	/* Grid lines */
@@ -275,7 +290,8 @@ on_draw_graph (GtkWidget *widget, cairo_t *cr, gpointer data)
 			cairo_stroke (cr);
 			cairo_set_dash (cr, NULL, 0, 0);
 
-			/* Animated packet pulse along edge */
+			/* A marker on the line.  It stays where it is unless
+			 * something calls fs_topology_sample (see the header). */
 			gdouble pt = fmod (anim_t + (gdouble)i * 0.3, 1.0);
 			gdouble px = x1 + (x2 - x1) * pt;
 			gdouble py = y1 + (y2 - y1) * pt;
@@ -293,8 +309,8 @@ on_draw_graph (GtkWidget *widget, cairo_t *cr, gpointer data)
 		gboolean is_selected = ((gint) i == selected_node_index);
 
 		/* Node card shadow / border */
-		cairo_set_source_rgb (cr, 0.9, 0.92, 0.95);
-		cairo_rectangle (cr, nx - 65, ny - 32, 130, 64);
+		cairo_set_source_rgb (cr, TOPO_CARD_EDGE.r, TOPO_CARD_EDGE.g, TOPO_CARD_EDGE.b);
+		cairo_rectangle (cr, nx - 64, ny - 31, 128, 62);
 		cairo_fill (cr);
 
 		if (is_selected) {
@@ -371,6 +387,21 @@ fs_topology_page (void)
 	gtk_box_pack_end (GTK_BOX (toolbar), toggle_table, FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (box), toolbar, FALSE, FALSE, 0);
 
+	/* The nodes, addresses and rates are the fixed example built in
+	 * ensure_topology_data: nothing here is read from this computer's
+	 * network, and the page has to say so. */
+	{
+		GtkWidget *notice = gtk_label_new (
+			_("Preview: this is a fixed example diagram, not your network. "
+			  "The computers, addresses and rates shown are samples. "
+			  "For real traffic, see Events and Activity."));
+		gtk_label_set_xalign (GTK_LABEL (notice), 0.0);
+		gtk_label_set_line_wrap (GTK_LABEL (notice), TRUE);
+		gtk_widget_set_name (notice, "topology-sample-notice");
+		gtk_style_context_add_class (gtk_widget_get_style_context (notice), "muted");
+		gtk_box_pack_start (GTK_BOX (box), notice, FALSE, FALSE, 0);
+	}
+
 	stack = gtk_stack_new ();
 	gtk_widget_set_hexpand (stack, TRUE);
 	gtk_widget_set_vexpand (stack, TRUE);
@@ -405,8 +436,8 @@ fs_topology_page (void)
 
 	gtk_box_pack_start (GTK_BOX (box), stack, TRUE, TRUE, 0);
 
-	if (anim_timer_id == 0)
-		anim_timer_id = g_timeout_add (100, on_anim_tick, NULL);
+	/* No timer: the diagram is a fixed example and must not look live.
+	 * fs_topology_sample stays for whoever connects real data. */
 
 	return box;
 }

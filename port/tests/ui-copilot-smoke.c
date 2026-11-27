@@ -61,6 +61,7 @@
 #endif
 #include <gtk/gtk.h>
 #include <string.h>
+#include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
 
@@ -1780,16 +1781,40 @@ test_page (FsPolicy *policy, FsCopilot *copilot)
 	fs_prefs_set_string ("/apps/stockfw/client/sentinel/mode", "auto");
 }
 
-/* Dark theme: the page stays light like the rest of the app (it used
- * to turn dark on its own).  Run in a child with Adwaita's dark
- * variant, as fs-simviz-smoke does. */
+/* A dark desktop theme: the page wears the app's palette like the rest
+ * of the app, never a mix of the app's cards and the desktop theme's
+ * text (it used to turn dark on its own while everything else stayed
+ * light).  Whatever the palette's values, text must read on the card
+ * it sits on.  Run in a child with Adwaita's dark variant, as
+ * fs-simviz-smoke does. */
+static gdouble
+rel_luminance (const GdkRGBA *c)
+{
+	gdouble v[3] = { c->red, c->green, c->blue };
+
+	for (guint i = 0; i < 3; i++)
+		v[i] = v[i] <= 0.03928 ? v[i] / 12.92
+		                       : pow ((v[i] + 0.055) / 1.055, 2.4);
+	return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+}
+
+static gdouble
+contrast (const GdkRGBA *a, const GdkRGBA *b)
+{
+	gdouble la = rel_luminance (a), lb = rel_luminance (b);
+
+	return (MAX (la, lb) + 0.05) / (MIN (la, lb) + 0.05);
+}
+
 static void
 test_dark (void)
 {
 	FsPolicy *policy = fs_policy_new ();
 	FsCopilot *copilot = fs_copilot_new ();
 	GtkWidget *page, *top, *row, *title;
-	GdkRGBA fg;
+	GdkRGBA fg = { 0, 0, 0, 1 }, card_bg = { 0, 0, 0, 1 };
+	GdkRGBA surface = { 0, 0, 0, 1 }, ink = { 0, 0, 0, 1 };
+	gboolean have_palette;
 	gint malformed = 0;
 
 	whatif_isolate ();
@@ -1803,13 +1828,40 @@ test_dark (void)
 	fs_copilot_view_refresh ();
 	pump (60);
 
-	/* The rest of the app keeps its light cards under a dark desktop
-	 * theme; the Copilot page did not, and was the one dark page. */
+	/* The page takes no palette of its own: the stylesheet's named
+	 * colours decide, as they do for every other page. */
 	CHECK (!gtk_style_context_has_class (gtk_widget_get_style_context (page),
 	                                     "cp-dark") &&
 	       !gtk_style_context_has_class (gtk_widget_get_style_context (page),
 	                                     "fs-wi-dark"),
-	       "dark: the page stays light like the rest of the app");
+	       "dark: the page carries no dark class of its own");
+	have_palette =
+		gtk_style_context_lookup_color (
+			gtk_widget_get_style_context (page), "fs_surface",
+			&surface) &&
+		gtk_style_context_lookup_color (
+			gtk_widget_get_style_context (page), "fs_text_strong",
+			&ink);
+	CHECK (have_palette, "dark: the app palette is installed");
+	{
+		GtkWidget *card = named (page, "tile-health");
+		GdkRGBA *bg = NULL;
+
+		if (card != NULL) {
+			GtkStyleContext *sc = gtk_widget_get_style_context (card);
+
+			gtk_style_context_get (sc, gtk_style_context_get_state (sc),
+			                       "background-color", &bg, NULL);
+		}
+		if (bg != NULL)
+			card_bg = *bg;
+		CHECK (bg != NULL && have_palette &&
+		       contrast (bg, &surface) < 1.05,
+		       "dark: the cards are the palette's surface, not the "
+		       "desktop theme's");
+		if (bg != NULL)
+			gdk_rgba_free (bg);
+	}
 	row = list_row (page, "findings-list", 0);
 	if (row != NULL) {
 		g_signal_emit_by_name (named (page, "findings-list"), "row-activated",
@@ -1823,16 +1875,17 @@ test_dark (void)
 		gtk_style_context_get_color (sc, gtk_style_context_get_state (sc),
 		                             &fg);
 	}
-	CHECK (title != NULL &&
-	       0.2126 * fg.red + 0.7152 * fg.green + 0.0722 * fg.blue < 0.4,
-	       "dark: a finding's title is dark text on the light card");
+	CHECK (title != NULL && contrast (&fg, &card_bg) >= 4.5,
+	       "dark: a finding's title reads on the card (%.2f:1)",
+	       title != NULL ? contrast (&fg, &card_bg) : 0.0);
 	{
 		/* Every evidence cell too: a label with no colour of its own
-		 * takes the dark theme's white text. */
+		 * takes the desktop theme's text colour, which need not read
+		 * on the app's card. */
 		GtkWidget *ev = row != NULL ? named (row, "cp-evidence") : NULL;
 		GList *cells = ev != NULL
 			? gtk_container_get_children (GTK_CONTAINER (ev)) : NULL;
-		guint light = 0, n = 0;
+		guint faint = 0, n = 0;
 
 		for (GList *c = cells; c != NULL; c = c->next) {
 			GtkStyleContext *sc = gtk_widget_get_style_context (c->data);
@@ -1841,31 +1894,13 @@ test_dark (void)
 			gtk_style_context_get_color (sc,
 				gtk_style_context_get_state (sc), &cf);
 			n++;
-			if (0.2126 * cf.red + 0.7152 * cf.green + 0.0722 * cf.blue
-			    > 0.6)
-				light++;
+			if (contrast (&cf, &card_bg) < 4.5)
+				faint++;
 		}
 		g_list_free (cells);
-		CHECK (n > 6 && light == 0,
-		       "dark: the evidence cells are dark text on the light card "
-		       "(%u of %u light)", light, n);
-	}
-	{
-		GtkWidget *card = named (page, "tile-health");
-		GdkRGBA *bg = NULL;
-
-		if (card != NULL) {
-			GtkStyleContext *sc = gtk_widget_get_style_context (card);
-
-			gtk_style_context_get (sc, gtk_style_context_get_state (sc),
-			                       "background-color", &bg, NULL);
-		}
-		CHECK (bg != NULL &&
-		       0.2126 * bg->red + 0.7152 * bg->green + 0.0722 * bg->blue
-		       > 0.8,
-		       "dark: the cards keep their light background");
-		if (bg != NULL)
-			gdk_rgba_free (bg);
+		CHECK (n > 6 && faint == 0,
+		       "dark: the evidence cells read on the card "
+		       "(%u of %u below 4.5:1)", faint, n);
 	}
 	CHECK (row != NULL && named (row, "cp-pill") != NULL &&
 	       gtk_revealer_get_reveal_child (GTK_REVEALER (named (row,

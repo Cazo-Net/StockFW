@@ -692,6 +692,34 @@ dismiss_message_windows (void)
 	pump ();
 }
 
+/* [ answering Export's message box ]
+ * Export reports its outcome through fs_dialogs_info() or
+ * fs_dialogs_error(), which run a modal box in a main loop of their own
+ * and return only when it is answered.  The dialog responder above
+ * stands in for the file chooser only, so without this timer the test
+ * stopped inside the first box for good: the smokes job it runs in could
+ * only end by its time limit.  The timer runs inside the box's loop and
+ * presses OK, as the user would. */
+static guint boxes_answered = 0;
+
+static gboolean
+answer_message_boxes (gpointer data)
+{
+	GList *tops = gtk_window_list_toplevels ();
+	GList *l;
+
+	(void) data;
+	for (l = tops; l != NULL; l = l->next) {
+		if (GTK_IS_MESSAGE_DIALOG (l->data)
+		    && gtk_widget_get_visible (GTK_WIDGET (l->data))) {
+			boxes_answered++;
+			gtk_dialog_response (GTK_DIALOG (l->data), GTK_RESPONSE_OK);
+		}
+	}
+	g_list_free (tops);
+	return G_SOURCE_CONTINUE;
+}
+
 /* A realistic spread: 5,000 hosts, a few dozen ports, a fifth blocked,
  * a third inbound.  Times one every 10 ms from 2026-11-02 08:00 UTC. */
 static void
@@ -1126,7 +1154,9 @@ check_scale (GtkWidget *page)
 			gchar *want = g_build_filename (dirp, "chosen.csv", NULL);
 			GtkWidget *export = find_named (page, "events-export");
 			guint shown = fs_hitview_visible_count ();
+			guint answer = g_timeout_add (20, answer_message_boxes, NULL);
 
+			boxes_answered = 0;
 			memset (&fake, 0, sizeof (fake));
 			fake.want = want;
 			fs_hitview_set_dialog_responder (export_responder, &fake);
@@ -1151,8 +1181,13 @@ check_scale (GtkWidget *page)
 			CHECK (fake.accepted && g_file_test (want, G_FILE_TEST_EXISTS),
 			       "Export writes the file the chooser returned");
 
-			/* Export reports through a modal message box, which nothing
-			 * has dismissed at this point. */
+			/* Each of the two exports above ended in a message box (the
+			 * first may be the error one: an unshown chooser has no file
+			 * name to give).  Both were answered by the timer. */
+			g_source_remove (answer);
+			CHECK (boxes_answered == 2,
+			       "Export tells the user the outcome each time "
+			       "(%u message boxes)", boxes_answered);
 			dismiss_message_windows ();
 
 			fs_hitview_set_dialog_responder (NULL, NULL);

@@ -1,6 +1,6 @@
-﻿cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.16)
 project(stockfw
-        VERSION 1.0.9
+        VERSION 2.0.0
         DESCRIPTION "Firewall configuration tool (Windows + Linux port)"
         LANGUAGES C)
 
@@ -44,7 +44,6 @@ pkg_check_modules(GETTEXT IMPORTED_TARGET glib-2.0)
 # signature.  Windows (MSYS2 UCRT64): mingw-w64-ucrt-x86_64-xz and
 # mingw-w64-ucrt-x86_64-openssl; the DLLs are staged beside the exe.
 pkg_check_modules(GEODB REQUIRED IMPORTED_TARGET liblzma libcrypto)
-pkg_check_modules(JSONGLIB REQUIRED IMPORTED_TARGET json-glib-1.0)
 
 # ------------------------------------------------------------------ core
 # Portable: no OS headers, no GTK. Shared by both backends and the UI.
@@ -63,7 +62,6 @@ add_library(fs-core STATIC
   src/core/fs-health.c
   src/core/fs-eventrule.c
   src/core/fs-audit.c
-  src/core/fs-audit-ledger.c
   src/core/fs-trust.c
   src/core/fs-apply.c
   src/core/fs-netparse.c
@@ -77,9 +75,6 @@ add_library(fs-core STATIC
   src/core/fs-winevt.c
   src/core/fs-autoblock.c
   src/core/fs-sentinel.c
-  src/core/fs-ml.c
-  src/core/fs-ml-monitor.c
-  src/core/fs-l7.c
   src/core/fs-instance.c
   src/core/fs-autostart.c
   src/core/fs-blocktally.c
@@ -97,20 +92,18 @@ add_library(fs-core STATIC
   src/core/fs-verdict.c
   src/core/fs-eventfilter.c
   src/core/fs-helpcontent.c
-  src/core/fs-mesh.c
-  src/core/fs-quantum.c
-  src/core/fs-playbook.c
-  src/core/fs-kev.c
-  src/core/fs-feed-sync.c
-  src/core/fs-ebpf.c
-  src/core/fs-quarantine.c
 )
 target_include_directories(fs-core PUBLIC src resources)
 pkg_check_modules(GLIBONLY REQUIRED IMPORTED_TARGET glib-2.0 gio-2.0)
 if(FS_BUILD_GUI)
-  target_link_libraries(fs-core PUBLIC PkgConfig::GTK3 PkgConfig::GEODB PkgConfig::JSONGLIB)
+  target_link_libraries(fs-core PUBLIC PkgConfig::GTK3 PkgConfig::GEODB)
 else()
-  target_link_libraries(fs-core PUBLIC PkgConfig::GLIBONLY PkgConfig::GEODB PkgConfig::JSONGLIB)
+  target_link_libraries(fs-core PUBLIC PkgConfig::GLIBONLY PkgConfig::GEODB)
+endif()
+# The topology view uses libm (fmod), which glibc keeps in a library of
+# its own.
+if(UNIX)
+  target_link_libraries(fs-core PUBLIC m)
 endif()
 # The engine names itself to feed servers ("StockFW/<version>").
 target_compile_definitions(fs-core PRIVATE FS_VERSION="${PROJECT_VERSION}")
@@ -121,7 +114,10 @@ target_compile_definitions(fs-core PRIVATE FS_VERSION="${PROJECT_VERSION}")
 get_target_property(FS_CORE_SOURCES fs-core SOURCES)
 add_library(fs-core-nogui STATIC EXCLUDE_FROM_ALL ${FS_CORE_SOURCES})
 target_include_directories(fs-core-nogui PUBLIC src resources)
-target_link_libraries(fs-core-nogui PUBLIC PkgConfig::GLIBONLY PkgConfig::GEODB PkgConfig::JSONGLIB)
+target_link_libraries(fs-core-nogui PUBLIC PkgConfig::GLIBONLY PkgConfig::GEODB)
+if(UNIX)
+  target_link_libraries(fs-core-nogui PUBLIC m)
+endif()
 target_compile_definitions(fs-core-nogui PRIVATE
                            FS_VERSION="${PROJECT_VERSION}")
 if(WIN32)
@@ -241,7 +237,7 @@ target_compile_definitions(StockFW PRIVATE
 )
 
 # Set output name and add icon on Windows
-if(WIN32 AND FALSE)
+if(WIN32)
   set_target_properties(StockFW PROPERTIES
     OUTPUT_NAME "StockFW"
     WIN32_EXECUTABLE TRUE
@@ -266,10 +262,6 @@ if(FS_BACKEND_LIBS)
   target_link_libraries(StockFW PRIVATE ${FS_BACKEND_LIBS})
 endif()
 
-if(WIN32)
-  target_link_options(StockFW PRIVATE "-mwindows")
-endif()
-
 # Windows resolves a program's dependencies from the directory holding
 # the .exe, so build/StockFW.exe only starts if the GTK/GLib DLLs sit
 # beside it.  Without this the app runs from an MSYS2 shell -- where
@@ -282,7 +274,8 @@ if(WIN32)
   find_program(FS_BASH bash)
   if(FS_BASH)
     add_custom_command(TARGET StockFW POST_BUILD
-      COMMAND "C:/msys64/usr/bin/bash.exe" --login -c ". /c/Users/H3xCore/StockFW/port/tools/stage-runtime-dlls.sh /c/Users/H3xCore/StockFW/port/build-win"
+      COMMAND "${FS_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/stage-runtime-dlls.sh"
+              "$<TARGET_FILE_DIR:StockFW>"
       COMMENT "Staging GTK runtime DLLs next to StockFW.exe"
       VERBATIM)
   endif()
@@ -645,10 +638,6 @@ endif() # FS_BUILD_GUI
 # anywhere the core builds.  `ninja fs-intel-test'.
 add_executable(fs-intel-test EXCLUDE_FROM_ALL tests/test-intel.c)
 target_link_libraries(fs-intel-test PRIVATE fs-core-nogui)
-
-# eBPF loader and map integration test
-add_executable(test-ebpf EXCLUDE_FROM_ALL tests/test-ebpf.c)
-target_link_libraries(test-ebpf PRIVATE fs-core-nogui)
 # Threat intel on the real Windows Firewall (Round 3, design 11): the
 # Windows backend's intel slots, every rule read back through
 # INetFwRules.  Needs an elevated shell (prints SKIP otherwise).
@@ -682,8 +671,8 @@ target_link_libraries(fs-netplace-test PRIVATE fs-core-nogui)
 # The What-If engine's golden table: the reading of a line, both firewall
 # models, the Linux model pinned to the generator's chains, and the
 # fixes it offers (test-whatif.c; test-core.sh runs it too).  GLib only.
-add_executable(fs-nexora-test EXCLUDE_FROM_ALL tests/test-nexora-ml.c)
-target_link_libraries(fs-nexora-test PRIVATE fs-core-nogui)
+add_executable(fs-whatif-test EXCLUDE_FROM_ALL tests/test-whatif.c)
+target_link_libraries(fs-whatif-test PRIVATE fs-core-nogui)
 # The Copilot's policy health check: exact coverage, the golden table on
 # both platform models, and every fix verified by the What-If engine
 # (test-health.c; test-core.sh runs it too).  GLib only.
@@ -819,8 +808,6 @@ target_compile_definitions(fs-intelset-driver PRIVATE FS_TOOLPATH_TESTING=1)
 # Feeds: catalog, formats, guards, the update judge (pure).
 add_executable(fs-feed-test EXCLUDE_FROM_ALL tests/test-feed.c)
 target_link_libraries(fs-feed-test PRIVATE fs-core-nogui)
-  add_executable(fs-feed-sync-test EXCLUDE_FROM_ALL tests/test-feed-sync.c)
-  target_link_libraries(fs-feed-sync-test PRIVATE fs-core-nogui)
 # Downloads, against a local HTTPS server (tests/test-fetch.sh).  Built
 # with its own copy of fs-fetch.c compiled with FS_FETCH_TESTING, the
 # only build that reads STOCKFW_TEST_CURL / STOCKFW_TEST_CACERT; the
@@ -979,6 +966,40 @@ target_include_directories(fs-intel-geo-test PRIVATE tests)
 target_link_libraries(fs-intel-geo-test PRIVATE fs-core-nogui)
 target_compile_definitions(fs-intel-geo-test PRIVATE FS_GEODB_TESTING=1)
 
-
-
-
+# ----------------------------------------------------------- experimental
+# The research modules that came in with 1.0.9 (src/experimental/README.md).
+# Nothing in StockFW or `stockfw' calls them, several are placeholders,
+# and none is part of a release, so they are built only on request:
+#
+#   cmake -S port -B port/build-exp -G Ninja -DFS_EXPERIMENTAL=ON
+#   ninja -C port/build-exp fs-experimental-tests
+#
+# CI does this so they keep compiling.  json-glib (libjson-glib-dev) is
+# needed for the KEV catalogue reader, and only here.
+option(FS_EXPERIMENTAL "Build the unfinished research modules (not shipped)" OFF)
+if(FS_EXPERIMENTAL)
+  pkg_check_modules(JSONGLIB REQUIRED IMPORTED_TARGET json-glib-1.0)
+  add_library(fs-experimental STATIC EXCLUDE_FROM_ALL
+    src/experimental/fs-audit-ledger.c
+    src/experimental/fs-ebpf.c
+    src/experimental/fs-feed-sync.c
+    src/experimental/fs-kev.c
+    src/experimental/fs-l7.c
+    src/experimental/fs-mesh.c
+    src/experimental/fs-ml.c
+    src/experimental/fs-ml-monitor.c
+    src/experimental/fs-playbook.c
+    src/experimental/fs-quantum.c
+    src/experimental/fs-quarantine.c
+    src/experimental/fs-zero-trust.c
+  )
+  target_link_libraries(fs-experimental PUBLIC fs-core-nogui PkgConfig::JSONGLIB)
+  set(FS_EXPERIMENTAL_TESTS)
+  foreach(t audit-ledger-standalone cazt-audit ebpf feed-sync nexora-ml
+            playbook psi-fuzz quantum)
+    add_executable(fs-exp-${t}-test EXCLUDE_FROM_ALL tests/test-${t}.c)
+    target_link_libraries(fs-exp-${t}-test PRIVATE fs-experimental)
+    list(APPEND FS_EXPERIMENTAL_TESTS fs-exp-${t}-test)
+  endforeach()
+  add_custom_target(fs-experimental-tests DEPENDS ${FS_EXPERIMENTAL_TESTS})
+endif()

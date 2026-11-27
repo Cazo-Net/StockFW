@@ -1167,7 +1167,12 @@ main (int argc, char **argv)
 		       "changed after query-end");
 	if (g_strcmp0 (scenario, "history") == 0) {
 		gchar *dir = in_scratch ("events");
-		FsEventLog *next = fs_eventlog_open (dir, 30, 0, NULL);
+		/* Ten years, not 30 days: feed_burst stamps the events with
+		 * the fixed day 2026-11-02, and opening the folder prunes
+		 * what is older than the limit.  With 30 days this check
+		 * found 0 lines from 3 December 2026 on (the same fault as
+		 * in test-eventstore.c). */
+		FsEventLog *next = fs_eventlog_open (dir, 3650, 0, NULL);
 
 		CHECK (history_lines () == 4010,
 		       "history: the ten events queued at the quit were written "

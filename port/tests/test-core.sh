@@ -44,7 +44,6 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-autoblock.h"
 #include "core/fs-autostart.h"
 #include "core/fs-blocktally.h"
-#include "core/fs-playbook.h"
 #include <glib/gstdio.h>
 #include <stdlib.h>
 #ifndef G_OS_WIN32
@@ -11870,32 +11869,6 @@ int main (void)
 	test_policy_load_report ();
 	test_apply_while_stopped ();
 	test_lockout_check ();
-	{
-		FsPlaybook *pb = fs_playbook_new ("pb-1", "Test Playbook", "Description",
-		                                  FS_PLAYBOOK_TRIGGER_ML_ANOMALY, 50);
-		FsXdrIncident *inc;
-		gchar *json;
-
-		CHECK (pb != NULL && g_strcmp0 (pb->id, "pb-1") == 0, "playbook created successfully");
-		fs_playbook_add_action (pb, FS_XDR_ACTION_BLOCK_IP);
-		fs_playbook_add_action (pb, FS_XDR_ACTION_AUDIT_LOG);
-
-		CHECK (fs_playbook_execute (pb, "Malicious beacon detected", 80, NULL, NULL),
-		       "playbook executes when risk score >= min_risk_score");
-		CHECK (!fs_playbook_execute (pb, "Low risk event", 20, NULL, NULL),
-		       "playbook skips execution when risk score < min_risk_score");
-
-		inc = fs_xdr_incident_new ("pb-1", "Malicious beacon detected", 80, TRUE, "Blocked IP 203.0.113.9");
-		CHECK (inc != NULL && g_strcmp0 (inc->playbook_id, "pb-1") == 0, "xdr incident created");
-
-		json = fs_xdr_incident_to_json (inc);
-		CHECK (json != NULL && strstr (json, "pb-1") != NULL && strstr (json, "80") != NULL,
-		       "xdr incident serializes to JSON correctly");
-
-		g_free (json);
-		fs_xdr_incident_free (inc);
-		fs_playbook_free (pb);
-	}
 	/* === end WP-B === */
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
@@ -11917,10 +11890,10 @@ fi
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} "$BUILD_DIR/test-core.c" \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
    -o "$BUILD_DIR/test-core" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
 
 # Keep rule files out of the real rules directory.
 export STOCKFW_RULES_DIR="$BUILD_DIR/rules"
@@ -11934,10 +11907,10 @@ core_rc=0
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} -DFS_GEODB_TESTING=1 tests/test-geodb.c \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
    -o "$BUILD_DIR/test-geodb" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
 geodb_rc=0
 "$BUILD_DIR/test-geodb" tests/geodb > "$BUILD_DIR/geodb.log" 2>&1 || geodb_rc=$?
 grep -E '^(FAIL|SKIP)|checks,|test-geodb:' "$BUILD_DIR/geodb.log" || true
@@ -11948,10 +11921,10 @@ grep -E '^(FAIL|SKIP)|checks,|test-geodb:' "$BUILD_DIR/geodb.log" || true
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} -DFS_GEODB_TESTING=1 tests/test-intel-geo.c \
    -I src -I tests \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
    -o "$BUILD_DIR/test-intel-geo" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
 intelgeo_rc=0
 "$BUILD_DIR/test-intel-geo" > "$BUILD_DIR/intel-geo.log" 2>&1 || intelgeo_rc=$?
 grep -E '^(FAIL|SKIP)|checks,|test-intel-geo:' "$BUILD_DIR/intel-geo.log" || true
@@ -11962,10 +11935,10 @@ grep -E '^(FAIL|SKIP)|checks,|test-intel-geo:' "$BUILD_DIR/intel-geo.log" || tru
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} tests/test-whatif.c \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
    -o "$BUILD_DIR/test-whatif" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
 whatif_rc=0
 "$BUILD_DIR/test-whatif" || whatif_rc=$?
 
@@ -11975,10 +11948,10 @@ whatif_rc=0
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} tests/test-health.c \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
    -o "$BUILD_DIR/test-health" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
 health_rc=0
 "$BUILD_DIR/test-health" || health_rc=$?
 
@@ -11990,10 +11963,10 @@ health_rc=0
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} tests/test-pr3-core.c \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
    -o "$BUILD_DIR/test-pr3-core" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
 pr3_rc=0
 TMPDIR="$BUILD_DIR" "$BUILD_DIR/test-pr3-core" || pr3_rc=$?
 
@@ -12004,10 +11977,10 @@ TMPDIR="$BUILD_DIR" "$BUILD_DIR/test-pr3-core" || pr3_rc=$?
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} tests/test-pr4-core.c \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
    -o "$BUILD_DIR/test-pr4-core" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
 pr4_rc=0
 TMPDIR="$BUILD_DIR" "$BUILD_DIR/test-pr4-core" || pr4_rc=$?
 
@@ -12172,10 +12145,10 @@ echo "ok:   cli guard: fs_cli_take_opt options and the option tables agree"
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} tests/test-sockets.c \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
    -o "$BUILD_DIR/test-sockets" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto json-glib-1.0) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
 if ! "$BUILD_DIR/test-sockets"; then
   exit 1
 fi

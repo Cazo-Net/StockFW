@@ -23,6 +23,7 @@
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-helpwindow.h"
+#include "ui/fs-app.h"
 #include "core/fs-helpcontent.h"
 #include "ui/fs-icons.h"
 #include "core/fs-i18n.h"
@@ -30,7 +31,7 @@
 #include <string.h>
 
 #ifndef FS_VERSION
-#define FS_VERSION "1.0.8"
+#define FS_VERSION "2.0.0"
 #endif
 
 #define HELP_WIDTH   980
@@ -1587,16 +1588,25 @@ fs_help_show (GtkWidget *parent, const gchar *topic)
 const gchar *
 fs_help_topic_for_page (gint page)
 {
-	/* FsAppPage order: Overview, Events, Activity, Policy, Threat
-	 * Intel, Copilot, Trust. */
-	static const gchar *const ids[] = {
-		"overview", "events", "activity", "policy", "threat-intel",
-		"copilot", "trust"
-	};
-
-	if (page < 0 || page >= (gint) G_N_ELEMENTS (ids))
+	/* By name, not by position: a table indexed by page number went
+	 * one page out for everything after Activity when Topology was
+	 * added to FsAppPage, and F1 on Policy opened Threat Intel's
+	 * topic.  Topology and Nexora have no topic of their own yet and
+	 * open the start page. */
+	switch ((FsAppPage) page) {
+	case FS_PAGE_OVERVIEW: return "overview";
+	case FS_PAGE_EVENTS:   return "events";
+	case FS_PAGE_ACTIVITY: return "activity";
+	case FS_PAGE_POLICY:   return "policy";
+	case FS_PAGE_INTEL:    return "threat-intel";
+	case FS_PAGE_COPILOT:  return "copilot";
+	case FS_PAGE_TRUST:    return "trust";
+	case FS_PAGE_TOPOLOGY:
+	case FS_PAGE_NEXORA:
+	case FS_PAGE_COUNT:
+	default:
 		return FS_HELP_TOPIC_START;
-	return ids[page];
+	}
 }
 
 const gchar *

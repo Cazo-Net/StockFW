@@ -928,7 +928,9 @@ test_log_roundtrip (const gchar *tmp)
 	gboolean same = TRUE;
 	Ev e;
 
-	log = fs_eventlog_open (dir, 30, 0, &error);
+	/* Ten years, as in test_log_partial_and_perms below: the events
+	 * carry fixed times, which a short limit would age out. */
+	log = fs_eventlog_open (dir, 3650, 0, &error);
 	CHECK (log != NULL, "the history folder opens (%s)",
 	       error ? error->message : "ok");
 	if (log == NULL)
@@ -1015,7 +1017,11 @@ test_log_partial_and_perms (const gchar *tmp)
 	g_chmod (dir, 0755);
 #endif
 
-	log = fs_eventlog_open (dir, 30, 0, NULL);
+	/* Kept for ten years, not 30 days: the events here carry fixed
+	 * ticks of 26 October 2026, so a 30-day limit deleted the file
+	 * (and failed the two checks after the cut line) from 26 November
+	 * 2026 on. */
+	log = fs_eventlog_open (dir, 3650, 0, NULL);
 	for (guint n = 0; n < 10; n++) {
 		ev_make (&e, n);
 		fs_eventlog_append (log, &e.hit, 17930000000000000LL + n * 10000000LL);
@@ -1064,7 +1070,7 @@ test_log_partial_and_perms (const gchar *tmp)
 	       st.loaded, st.bad_lines);
 
 	/* The next session writes after it: its first line is whole. */
-	log = fs_eventlog_open (dir, 30, 0, NULL);
+	log = fs_eventlog_open (dir, 3650, 0, NULL);
 	ev_make (&e, 50);
 	fs_eventlog_append (log, &e.hit, 17930000000000000LL + 50 * 10000000LL);
 	fs_eventlog_close (log);

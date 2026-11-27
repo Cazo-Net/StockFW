@@ -3,7 +3,7 @@
 StockFW Neural Sentinel: Offline TinyML Model Trainer & C Header Exporter
 Trains a lightweight gradient-boosted decision tree ensemble on simulated host-window
 network features (FsHit event stream aggregations) and exports pure integer C arrays
-and threshold comparison rules to port/src/core/fs-ml-model.h.
+and threshold comparison rules to port/src/experimental/fs-ml-model.h.
 """
 
 import os
@@ -122,7 +122,7 @@ def train_and_export():
     print(classification_report(y_test, preds, target_names=["NORMAL", "SCAN", "BRUTE", "BEACON"]))
 
     # Export to C Header
-    header_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../port/src/core/fs-ml-model.h"))
+    header_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../src/experimental/fs-ml-model.h"))
     os.makedirs(os.path.dirname(header_path), exist_ok=True)
 
     with open(header_path, "w") as f:

@@ -1,19 +1,23 @@
 /*---[ fs-nexora.c ]---------------------------------------------------
- * AEGIS-ML confidence scores, PSI drift gauges, 15-minute sliding window stats,
- * and active label counters.
+ * The Nexora page: a PREVIEW of a layout, filled with fixed sample
+ * figures.
  *
- * Designed with a clean, high-density telemetry layout matching StockFW's
- * aesthetic standards (dark/light theme awareness, clean widgets, custom drawing areas,
- * micro-elevated card depths, and glowing status pills).
+ * No anomaly model runs in StockFW (the scorer is unfinished and lives
+ * in src/experimental/), so nothing on this page is measured on this
+ * computer.  The page says so in its header badge, on every card and in
+ * its footer, and the figures do not move: 1.0.9 redrew them with
+ * random numbers every three seconds under a "Telemetry Active" badge,
+ * which read as live readings of the machine.  When a real engine is
+ * connected, feed it in here and drop the sample wording.
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-nexora.h"
 #include "ui/fs-icons.h"
 #include "core/fs-i18n.h"
 #include "core/fs-util.h"
+#include "ui/fs-themecolor.h"
 
 #include <string.h>
-#include <math.h>
 
 typedef struct
 {
@@ -28,19 +32,18 @@ static GtkWidget *counter_label = NULL;
 static GtkWidget *status_label = NULL;
 static GtkWidget *chart_area = NULL;
 
-static guint update_timer_id = 0;
 static gboolean is_busy = FALSE;
 
-static gdouble current_confidence = 0.984; /* 98.4% */
-static gdouble current_psi = 0.042;        /* Population Stability Index */
-static guint active_labels_count = 1248;
+/* Fixed sample figures, not readings. */
+static const gdouble current_confidence = 0.984;
+static const gdouble current_psi = 0.042;
+static const guint active_labels_count = 1248;
 
-/* 15-minute sliding window stats history (e.g. 15 points representing minutes) */
 #define WINDOW_POINTS 15
-static guint window_requests[WINDOW_POINTS] = {
+static const guint window_requests[WINDOW_POINTS] = {
 	120, 145, 132, 160, 189, 210, 195, 240, 265, 250, 280, 310, 295, 330, 355
 };
-static guint window_threats[WINDOW_POINTS] = {
+static const guint window_threats[WINDOW_POINTS] = {
 	2, 1, 3, 0, 4, 2, 5, 1, 2, 0, 3, 1, 2, 4, 1
 };
 
@@ -86,11 +89,11 @@ on_chart_draw (GtkWidget *widget, cairo_t *cr, gpointer user_data)
 	height = alloc.height;
 
 	/* Background */
-	cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
+	fs_theme_source (cr, "fs_surface", "#211e1e", 1.0);
 	cairo_paint (cr);
 
 	/* Gridlines */
-	cairo_set_source_rgb (cr, 0.90, 0.92, 0.95);
+	fs_theme_source (cr, "fs_border", "#2f2b2b", 1.0);
 	cairo_set_line_width (cr, 1.0);
 	for (i = 1; i <= 4; i++) {
 		gdouble y = (height - 30) * (i / 4.0);
@@ -133,54 +136,6 @@ on_chart_draw (GtkWidget *widget, cairo_t *cr, gpointer user_data)
 	return FALSE;
 }
 
-static gboolean
-refresh_telemetry (gpointer user_data)
-{
-	(void) user_data;
-
-	/* Simulate slight live fluctuations */
-	current_confidence = 0.980 + (g_random_double_range (-0.005, 0.008));
-	if (current_confidence > 0.999) current_confidence = 0.999;
-	if (current_confidence < 0.900) current_confidence = 0.900;
-
-	current_psi = 0.040 + (g_random_double_range (-0.003, 0.004));
-	if (current_psi < 0.010) current_psi = 0.010;
-
-	active_labels_count += g_random_int_range (-3, 5);
-
-	/* Shift window stats */
-	for (int i = 0; i < WINDOW_POINTS - 1; i++) {
-		window_requests[i] = window_requests[i + 1];
-		window_threats[i] = window_threats[i + 1];
-	}
-	window_requests[WINDOW_POINTS - 1] = 250 + g_random_int_range (-50, 100);
-	window_threats[WINDOW_POINTS - 1] = g_random_int_range (0, 3);
-
-	if (confidence_label != NULL) {
-		gchar *buf = g_strdup_printf ("%.1f%%", current_confidence * 100.0);
-		gtk_label_set_text (GTK_LABEL (confidence_label), buf);
-		g_free (buf);
-	}
-
-	if (psi_label != NULL) {
-		gchar *buf = g_strdup_printf ("%.3f", current_psi);
-		gtk_label_set_text (GTK_LABEL (psi_label), buf);
-		g_free (buf);
-	}
-
-	if (counter_label != NULL) {
-		gchar *buf = g_strdup_printf ("%u", active_labels_count);
-		gtk_label_set_text (GTK_LABEL (counter_label), buf);
-		g_free (buf);
-	}
-
-	if (chart_area != NULL) {
-		gtk_widget_queue_draw (chart_area);
-	}
-
-	return TRUE; /* keep timer running */
-}
-
 static GtkWidget *
 build_header (void)
 {
@@ -191,14 +146,14 @@ build_header (void)
 	add_class (header, "page-head");
 
 	gtk_box_pack_start (GTK_BOX (titles),
-	                    label_new (_("AEGIS-ML & Nexora Intelligence"), "page-title", 0.0),
+	                    label_new (_("Nexora"), "page-title", 0.0),
 	                    FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (titles),
-	                    label_new (_("Real-time model confidence, population drift monitoring, and active counter telemetry"), "page-subtitle", 0.0),
+	                    label_new (_("Preview of a planned page. The figures below are fixed samples, not measurements from this computer."), "page-subtitle", 0.0),
 	                    FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (header), titles, TRUE, TRUE, 0);
 
-	badge = label_new (_("Telemetry Active"), "nexora-badge-ok", 0.5);
+	badge = label_new (_("Preview: sample data"), "nexora-badge-warn", 0.5);
 	gtk_widget_set_valign (badge, GTK_ALIGN_CENTER);
 	gtk_box_pack_start (GTK_BOX (header), badge, FALSE, FALSE, 0);
 
@@ -255,22 +210,22 @@ fs_nexora_page (void)
 	gtk_widget_set_hexpand (grid, TRUE);
 	gtk_box_pack_start (GTK_BOX (box), grid, FALSE, FALSE, 0);
 
-	/* 1. AEGIS-ML Confidence Card */
-	card = stat_card_new (_("AEGIS-ML CONFIDENCE SCORE"), &confidence_label,
-	                      _("Stable"), "nexora-badge-ok",
-	                      "<span font='28' weight='900' foreground='#2a78d6'>98.4%</span>");
+	/* 1. "Confidence" card (a sample figure; no model runs) */
+	card = stat_card_new (_("MODEL CONFIDENCE"), &confidence_label,
+	                      _("Sample"), "nexora-badge-warn",
+	                      "98.4%");
 	gtk_grid_attach (GTK_GRID (grid), card, 0, 0, 1, 1);
 
 	/* 2. PSI Drift Gauge Card */
 	card = stat_card_new (_("POPULATION STABILITY INDEX (PSI)"), &psi_label,
-	                      _("Nominal"), "nexora-badge-ok",
-	                      "<span font='28' weight='900' foreground='#059669'>0.042</span>");
+	                      _("Sample"), "nexora-badge-warn",
+	                      "0.042");
 	gtk_grid_attach (GTK_GRID (grid), card, 1, 0, 1, 1);
 
 	/* 3. Active Label Counters Card */
-	card = stat_card_new (_("ACTIVE LABEL COUNTER"), &counter_label,
-	                      _("Live"), "nexora-badge-warn",
-	                      "<span font='28' weight='900' foreground='#d97706'>1,248</span>");
+	card = stat_card_new (_("LABELLED EVENTS"), &counter_label,
+	                      _("Sample"), "nexora-badge-warn",
+	                      "1,248");
 	gtk_grid_attach (GTK_GRID (grid), card, 2, 0, 1, 1);
 
 	/* 15-minute Sliding Window Chart Card */
@@ -279,7 +234,7 @@ fs_nexora_page (void)
 	{
 		GtkWidget *head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
 		gtk_box_pack_start (GTK_BOX (head),
-		                    label_new (_("15-Minute Sliding Window Telemetry"), "card-heading", 0.0),
+		                    label_new (_("15-minute window (sample)"), "card-heading", 0.0),
 		                    TRUE, TRUE, 0);
 		gtk_box_pack_start (GTK_BOX (card), head, FALSE, FALSE, 0);
 
@@ -288,14 +243,14 @@ fs_nexora_page (void)
 		g_signal_connect (G_OBJECT (chart_area), "draw", G_CALLBACK (on_chart_draw), NULL);
 		gtk_box_pack_start (GTK_BOX (card), chart_area, TRUE, TRUE, 0);
 
-		window_stats_label = label_new (_("Sliding window monitoring active (15 one-minute slots). Blue bars: Request Volume, Red line: Threat Index."), "muted", 0.0);
+		window_stats_label = label_new (_("Sample chart of 15 one-minute slots. Blue bars: connections, red line: flagged connections."), "muted", 0.0);
 		gtk_label_set_line_wrap (GTK_LABEL (window_stats_label), TRUE);
 		gtk_box_pack_start (GTK_BOX (card), window_stats_label, FALSE, FALSE, 0);
 	}
 	gtk_box_pack_start (GTK_BOX (box), card, TRUE, TRUE, 0);
 
 	/* Status bar at bottom */
-	status_label = label_new (_("Nexora telemetry feed synchronized and active."), "muted", 0.0);
+	status_label = label_new (_("Nothing on this page is connected to the firewall yet. For what is really happening, see Events and Activity."), "muted", 0.0);
 	gtk_box_pack_start (GTK_BOX (box), status_label, FALSE, FALSE, 0);
 
 	scroll = gtk_scrolled_window_new (NULL, NULL);
@@ -303,11 +258,6 @@ fs_nexora_page (void)
 	                                GTK_POLICY_AUTOMATIC,
 	                                GTK_POLICY_AUTOMATIC);
 	gtk_container_add (GTK_CONTAINER (scroll), box);
-
-	/* Start live update timer if not already running */
-	if (update_timer_id == 0) {
-		update_timer_id = g_timeout_add_seconds (3, refresh_telemetry, NULL);
-	}
 
 	gtk_widget_show_all (scroll);
 	return scroll;

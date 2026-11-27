@@ -369,6 +369,8 @@ rule_kind_words (gint kind)
     }
 }
 
+static void on_output_style_updated (GtkWidget *view, gpointer data);
+
 /* =====================================================================
  * Helper: create a styled text view for output (the What-If log)
  * ===================================================================== */
@@ -392,6 +394,8 @@ make_output_view (void)
     gtk_text_view_set_right_margin (GTK_TEXT_VIEW (view), 8);
     gtk_text_view_set_top_margin (GTK_TEXT_VIEW (view), 6);
     gtk_text_view_set_bottom_margin (GTK_TEXT_VIEW (view), 6);
+    g_signal_connect (view, "style-updated",
+                      G_CALLBACK (on_output_style_updated), NULL);
 
     gtk_container_add (GTK_CONTAINER (scrolled), view);
     return scrolled;
@@ -409,6 +413,56 @@ tone_color (GtkWidget *w, const gchar *tone, GdkRGBA *out)
     gtk_style_context_add_class (sc, tone);
     gtk_style_context_get_color (sc, gtk_style_context_get_state (sc), out);
     gtk_style_context_restore (sc);
+}
+
+/* The log's tags and the tone class each takes its colour from. */
+static const struct {
+    const gchar *tag;
+    const gchar *tone;
+} output_tones[] = {
+    { "green",  "tone-ok" },
+    { "red",    "tone-bad" },
+    { "orange", "tone-warn" },
+    { "blue",   "tone-info" },
+    { "dim",    "tone-dim" },
+};
+
+static const gchar *
+output_tone_for (const gchar *tag)
+{
+    for (guint i = 0; i < G_N_ELEMENTS (output_tones); i++)
+        if (g_strcmp0 (tag, output_tones[i].tag) == 0)
+            return output_tones[i].tone;
+    return NULL;
+}
+
+/* A tag holds a colour, not a class, so what is already in the log
+ * would keep the old palette when Dark mode is switched while the app
+ * runs (light-mode amber on the dark surface, and the reverse).  Give
+ * the tags that exist the theme's colours again. */
+static void
+on_output_style_updated (GtkWidget *view, gpointer data)
+{
+    GtkTextTagTable *table = gtk_text_buffer_get_tag_table (
+        gtk_text_view_get_buffer (GTK_TEXT_VIEW (view)));
+
+    (void) data;
+
+    for (guint i = 0; i < G_N_ELEMENTS (output_tones); i++) {
+        GtkTextTag *t = gtk_text_tag_table_lookup (table,
+                                                   output_tones[i].tag);
+        GdkRGBA now, *had = NULL;
+
+        if (t == NULL)
+            continue;
+        tone_color (view, output_tones[i].tone, &now);
+        g_object_get (t, "foreground-rgba", &had, NULL);
+        /* Only on a change: setting a tag redraws the view. */
+        if (had == NULL || !gdk_rgba_equal (had, &now))
+            g_object_set (t, "foreground-rgba", &now, NULL);
+        if (had != NULL)
+            gdk_rgba_free (had);
+    }
 }
 
 /* =====================================================================
@@ -431,7 +485,7 @@ text_view_append (GtkWidget *scrolled, const gchar *text, const gchar *tag)
         GtkTextTag *t = gtk_text_tag_table_lookup (
             gtk_text_buffer_get_tag_table (buf), tag);
         if (!t) {
-            const gchar *tone = NULL;
+            const gchar *tone = output_tone_for (tag);
 
             t = gtk_text_tag_new (tag);
             if (g_strcmp0 (tag, "bold") == 0)
@@ -439,16 +493,6 @@ text_view_append (GtkWidget *scrolled, const gchar *text, const gchar *tag)
             else if (g_strcmp0 (tag, "title") == 0)
                 g_object_set (t, "weight", PANGO_WEIGHT_BOLD,
                               "scale", 1.15, NULL);
-            else if (g_strcmp0 (tag, "green") == 0)
-                tone = "tone-ok";
-            else if (g_strcmp0 (tag, "red") == 0)
-                tone = "tone-bad";
-            else if (g_strcmp0 (tag, "orange") == 0)
-                tone = "tone-warn";
-            else if (g_strcmp0 (tag, "blue") == 0)
-                tone = "tone-info";
-            else if (g_strcmp0 (tag, "dim") == 0)
-                tone = "tone-dim";
             if (tone != NULL) {
                 GdkRGBA c;
 

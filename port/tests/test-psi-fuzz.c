@@ -5,8 +5,8 @@
  * adversarial/benign/insufficient drift state machines.
  *--------------------------------------------------------------------*/
 
-#include "core/fs-ml.h"
-#include "core/fs-ml-monitor.h"
+#include "experimental/fs-ml.h"
+#include "experimental/fs-ml-monitor.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
