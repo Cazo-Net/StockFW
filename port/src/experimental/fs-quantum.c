@@ -14,7 +14,8 @@
 /* None of the six functions below does any cryptography, so each one
  * refuses (returns FALSE) and writes nothing.  The 1.0.9 versions
  * "succeeded" with random bytes for keys, an XOR for the shared secret
- * and a verify that accepted every signature; code that trusted them
+ * and a verify that accepted any signature of the right length without
+ * looking at the key or the message; code that trusted them
  * would have had no protection at all.  A real implementation should
  * call a reviewed library (liboqs, or OpenSSL 3.5's ML-KEM / ML-DSA). */
 

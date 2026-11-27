@@ -146,7 +146,6 @@ def export_model_header(clf, f1_score_val, header_path):
 
 def run_learning_loop(max_iterations=5):
     header_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../src/experimental/fs-ml-model.h"))
-    build_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../build-win"))
 
     print(f"Starting TinyML Active Learning Loop (Total Iterations: {max_iterations})...")
 
@@ -175,7 +174,7 @@ def run_learning_loop(max_iterations=5):
     print(f"\nLearning loop completed successfully. Best F1: {best_f1:.4f}")
 
     print("Verifying compilation readiness of fs-ml.c...")
-    if os.path.exists(os.path.join(os.path.dirname(__file__), "../../port/src/core/fs-ml.c")):
+    if os.path.exists(os.path.join(os.path.dirname(__file__), "../../src/experimental/fs-ml.c")):
         print("Header and source files verified successfully. Ready for embedding.")
 
 if __name__ == "__main__":

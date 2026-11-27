@@ -1310,15 +1310,20 @@ fs_app_activate (GtkApplication *app)
 	            "whether it has changed since you attested it."),
 	          fs_trustview_page (), FALSE);
 
-	add_page (_("Nexora"), _("Preview of a planned page. It shows fixed sample figures, not measurements from this computer."), fs_nexora_page (), TRUE);
+	/* No subtitle: the Nexora page draws its own header, which carries
+	 * the "Preview: sample data" badge.  With one here too the page
+	 * showed its title and its preview sentence twice. */
+	add_page (_("Nexora"), NULL, fs_nexora_page (), FALSE);
 	/* Policy loaded, Sentinel reconciled: now the firewall may start. */
 	start_at_launch (due);
 	fs_policy_free (due);
 
 	/* Everything inside the window is shown now; the window itself
-	 * only below, once it is known whether it may stay hidden. */
-	gtk_widget_show (fsapp.window);
-		gtk_widget_show_all (fsapp.window);
+	 * only below, once it is known whether it may stay hidden.
+	 * 1.0.9 showed the window here, so a background start (sign-in,
+	 * --background) opened it on screen instead of staying in the
+	 * tray.  The window's child is the overlay that holds the pages. */
+	gtk_widget_show_all (gtk_bin_get_child (GTK_BIN (fsapp.window)));
 	sync_nav ((guint) gtk_notebook_get_current_page (
 		GTK_NOTEBOOK (fsapp.notebook)));
 

@@ -1,9 +1,9 @@
 /*---[ fs-topology.c ]--------------------------------------------------
- * Interactive Cairo-rendered network flow graph and topology visualizer.
- *
- * Renders network nodes (This Computer, LAN Gateway, Internet, Mesh Peers,
- * Firewall Security Wall) and live flow edges with Cairo, animated packet
- * pulses, throughput counters, node inspection, and graph/table switching.
+ * The Topology page: a PREVIEW.  It draws a fixed example diagram (the
+ * nodes, addresses and rates built in ensure_topology_data), as a graph
+ * or a table, and says so on the page.  Nothing here is read from this
+ * computer's network, and nothing moves: 1.0.9 ran dots along the lines
+ * ten times a second, which read as traffic being shown as it happened.
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-topology.h"
@@ -55,7 +55,6 @@ static gboolean   table_view = FALSE;
 static GtkWidget *drawing_area = NULL;
 static GtkWidget *stack = NULL;
 static GtkListStore *list_store = NULL;
-static guint      anim_timer_id = 0;
 static gdouble    anim_t = 0.0;
 
 static void
@@ -205,14 +204,6 @@ fs_topology_sample (void)
 }
 
 static gboolean
-on_anim_tick (gpointer data)
-{
-	(void) data;
-	fs_topology_sample ();
-	return G_SOURCE_CONTINUE;
-}
-
-static gboolean
 on_draw_graph (GtkWidget *widget, cairo_t *cr, gpointer data)
 {
 	guint width = gtk_widget_get_allocated_width (widget);
@@ -273,7 +264,8 @@ on_draw_graph (GtkWidget *widget, cairo_t *cr, gpointer data)
 			cairo_stroke (cr);
 			cairo_set_dash (cr, NULL, 0, 0);
 
-			/* Animated packet pulse along edge */
+			/* A marker on the line.  It stays where it is unless
+			 * something calls fs_topology_sample (see the header). */
 			gdouble pt = fmod (anim_t + (gdouble)i * 0.3, 1.0);
 			gdouble px = x1 + (x2 - x1) * pt;
 			gdouble py = y1 + (y2 - y1) * pt;
@@ -418,8 +410,8 @@ fs_topology_page (void)
 
 	gtk_box_pack_start (GTK_BOX (box), stack, TRUE, TRUE, 0);
 
-	if (anim_timer_id == 0)
-		anim_timer_id = g_timeout_add (100, on_anim_tick, NULL);
+	/* No timer: the diagram is a fixed example and must not look live.
+	 * fs_topology_sample stays for whoever connects real data. */
 
 	return box;
 }

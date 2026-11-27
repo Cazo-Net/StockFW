@@ -1029,50 +1029,6 @@ Sentinel answers the rogue-agent case: a compromised or malicious process must b
 
 ---
 
-## Chapter 16: Roadmap After 1.0.9 (plans, not features)
-
-*Nothing in this chapter is in a release. It lists directions the project wants to explore. Where code for an idea exists, it is an unfinished experiment under `port/src/experimental/`, described in Chapter 17 and in that folder's `README.md`.*
-
-- **Known-exploited-vulnerability feed.** Read the CISA KEV catalogue and tell the user when installed software is on it.
-- **Per-program rules on Windows.** Path-aware outbound rules through the Windows Filtering Platform.
-- **Kernel-level enforcement on Linux.** Generate eBPF tracing policies from StockFW rules; later, an embedded Rust (`aya`) loader.
-- **Anomaly scoring.** A small tree-ensemble model that scores a host's recent events, shown beside the Copilot's fixed rules, with drift monitoring before any retraining.
-- **Names, not only addresses.** DNS and TLS SNI inspection, and rules for programs that call model or tool servers.
-- **Response playbooks.** Named sets of actions (block an address, isolate, revoke trust) run on a detection, each recorded as an incident.
-- **A tamper-evident audit log.** Hash-chain the audit lines so an edit shows.
-- **A local mesh.** Share blocklists between machines on one network without a cloud service; TPM-signed policies; post-quantum key exchange once a reviewed library is chosen.
-
----
-
-## Chapter 17: 1.0.9 Addendum
-
-*This chapter records what the 1.0.9 tree contains (November 2026) and corrects the first version of this chapter, which described the modules below as shipped features. They were not: nothing in the desktop app or in `stockfw` called them.*
-
-### 17.1 What changed for users
-
-- The command-line work listed under 1.0.9 in `CHANGELOG.md` (Chapter 15 has the evidence).
-- A **Dark mode** switch in Preferences > General. It asks GTK for its dark variant; the StockFW stylesheet has no dark palette of its own yet, so most of the window stays light. A restyled light theme.
-- Two **preview pages**, Topology and Nexora. Both are layouts filled with fixed sample data and say so on the page. The Nexora page shows no measurement of this computer, and the Topology page does not draw this computer's network. As first published, 1.0.9 presented both as live: the Nexora figures were redrawn from random numbers every three seconds under a "Telemetry Active" badge. That was corrected after the release.
-
-### 17.2 Experimental modules (not compiled into the programs)
-
-The 1.0.9 work added a set of C modules for the roadmap in Chapter 16. They are kept in `port/src/experimental/`, are built only with `-DFS_EXPERIMENTAL=ON`, and are in neither installer. That folder's `README.md` gives the state of each one. In short:
-
-| Module | State |
-|---|---|
-| `fs-quantum` | Placeholder. It contains no post-quantum cryptography; the key and signature functions refuse every call. The cipher-suite check reads a suite's name only. |
-| `fs-ml`, `fs-ml-monitor` | The scorer does not work as described (input scaling does not match the model, the confidence is a constant) and was trained on synthetic data. The drift arithmetic has a failing test. |
-| `fs-quarantine` | Unsafe: restore writes back the encrypted bytes. |
-| `fs-mesh`, `fs-l7` | Placeholders (no signatures, no transport, no protocol parser). |
-| `fs-ebpf`, `fs-wfp` | Generate policy or command text; load and run nothing. The Rust code in `port/src/ebpf/` is not built. |
-| `fs-kev`, `fs-feed-sync`, `fs-playbook`, `fs-audit-ledger`, `fs-zero-trust` | Data structures and helpers with unit tests, not connected to the program. |
-
-### 17.3 Build and test repairs
-
-1.0.9 did not build on Linux as published, and the Windows build ran a script from one developer's home folder. The repairs: `json-glib` is needed only by the experimental build; `libm` is linked where `fmod` is used; the Windows post-build step and the executable's icon and version resource are restored; byte-order marks that had been added in front of `#!/bin/bash` in sixteen test scripts are removed; the What-If golden-table test target (`fs-whatif-test`), which had been replaced, is back; and an event-history test that could only pass within 30 days of a fixed date no longer depends on the date.
-
----
-
 ## Chapter 12: 1.0.5 Addendum
 
 *This chapter records what shipped in StockFW 1.0.5 (October 2026). Chapters 1–10 carry the 1.0.3 base text and Chapter 11 the 1.0.4 additions; where this chapter restates an earlier claim, it is authoritative. Every feature below is teeth-tested by the suites named in Chapter 8.*
@@ -2549,6 +2505,51 @@ Not fixed here: the app's launch-time lift of rows that expired while it was clo
 **Teeth.** Each was patched into `core/fs-sentinel.c`, rebuilt and run, then copied back and checked with `cmp`; every one fails the test: the push at stage applying the policy file, the old path (3 `unapplied` checks fail: the allow goes live, the plan's own teeth); the expiry's push applying the policy file (1); no first apply without a journal (2 `nojournal` checks); the restore resetting the clock to the restart (2: the block lifts late); expiry `>` for `>=` (8); retire without the cooldown (8); the push ignoring the hold hook (3). From the review: the settings hook never called (4 `settings` checks); Undo applying the policy file (1 `undo` check: the allow goes live); a lift with no journal going to lift_live (3 `nolift` checks); the "not on record as live" line renamed (1).
 
 **Not verified.** Nothing here was run on Windows. All 43 `fs-core` sources (with `fs-sentinel.c`), the app's sources with the changed `ui/fs-copilot.c`, and the Windows backend were compiled with MinGW against Windows GLib and GTK headers with `-Wall -Wextra` and no warning; `StockFW.exe` and `fs-sentinel-test.exe` link. Windows CI runs the test through `full-suite.sh`.
+
+---
+
+## Chapter 16: Roadmap After 1.0.9 (plans, not features)
+
+*Nothing in this chapter is in a release. It lists directions the project wants to explore. Where code for an idea exists, it is an unfinished experiment under `port/src/experimental/`, described in Chapter 17 and in that folder's `README.md`.*
+
+- **Known-exploited-vulnerability feed.** Read the CISA KEV catalogue and tell the user when installed software is on it.
+- **Per-program rules on Windows.** Path-aware outbound rules through the Windows Filtering Platform.
+- **Kernel-level enforcement on Linux.** Generate eBPF tracing policies from StockFW rules; later, an embedded Rust (`aya`) loader.
+- **Anomaly scoring.** A small tree-ensemble model that scores a host's recent events, shown beside the Copilot's fixed rules, with drift monitoring before any retraining.
+- **Names, not only addresses.** DNS and TLS SNI inspection, and rules for programs that call model or tool servers.
+- **Response playbooks.** Named sets of actions (block an address, isolate, revoke trust) run on a detection, each recorded as an incident.
+- **A tamper-evident audit log.** Hash-chain the audit lines so an edit shows.
+- **A local mesh.** Share blocklists between machines on one network without a cloud service; TPM-signed policies; post-quantum key exchange once a reviewed library is chosen.
+
+---
+
+## Chapter 17: 1.0.9 Addendum
+
+*This chapter records what the 1.0.9 tree contains (November 2026) and corrects the first version of this chapter, which described the modules below as shipped features. They were not: nothing in the desktop app or in `stockfw` called them.*
+
+### 17.1 What changed for users
+
+- The command-line work listed under 1.0.9 in `CHANGELOG.md` (Chapter 15 has the evidence).
+- A **Dark mode** switch in Preferences > General. It asks GTK for its dark variant; the StockFW stylesheet has no dark palette of its own yet, so most of the window stays light. A restyled light theme.
+- Two **preview pages**, Topology and Nexora. Both are layouts filled with fixed sample data and say so on the page. The Nexora page shows no measurement of this computer, and the Topology page does not draw this computer's network. As first published, 1.0.9 presented both as live: the Nexora figures were redrawn from random numbers every three seconds under a "Telemetry Active" badge. That was corrected after the release.
+
+### 17.2 Experimental modules (not compiled into the programs)
+
+The 1.0.9 work added a set of C modules for the roadmap in Chapter 16. They are kept in `port/src/experimental/`, are built only with `-DFS_EXPERIMENTAL=ON` (`fs-wfp.c` and `fs-ml-engine.c` not even then), and are in neither installer. That folder's `README.md` gives the state of each one. In short:
+
+| Module | State |
+|---|---|
+| `fs-quantum` | Placeholder. It contains no post-quantum cryptography; the key and signature functions refuse every call. The cipher-suite check reads a suite's name only. |
+| `fs-ml`, `fs-ml-monitor` | The scorer does not work as described (input scaling does not match the model, the confidence is a constant), was trained on synthetic data, and writes past the end of an array on every call; no test calls it. The drift arithmetic has a failing test. |
+| `fs-quarantine` | Unsafe: restore writes back the encrypted bytes. |
+| `fs-mesh`, `fs-l7` | Placeholders (no signatures, no transport, no protocol parser; the inspection functions do not read the packet). |
+| `fs-ebpf`, `fs-wfp` | Generate policy or command text; load and run nothing. The Rust code in `port/src/ebpf/` is not built. |
+| `fs-playbook`, `fs-audit-ledger`, `fs-zero-trust` | Data structures and helpers with unit tests, not connected to the program. The playbook and zero-trust code writes audit-log lines, and one zero-trust function kills a process. |
+| `fs-kev`, `fs-feed-sync` | KEV JSON reader and refresh timer. The reader has no unit test; the one feed-sync test starts a real download and is not run. |
+
+### 17.3 Build and test repairs
+
+1.0.9 did not build on Linux as published, and the Windows build ran a script from one developer's home folder. The repairs: `json-glib` is needed only by the experimental build; `libm` is linked where `fmod` is used; the Windows post-build step and the executable's icon and version resource are restored; byte-order marks that had been added in front of `#!/bin/bash` in sixteen test scripts are removed; the What-If golden-table test target (`fs-whatif-test`), which had been replaced, is back; and an event-history test that could only pass within 30 days of a fixed date now keeps its events for ten years.
 
 ---
 

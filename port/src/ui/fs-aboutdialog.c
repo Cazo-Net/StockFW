@@ -23,7 +23,7 @@
 #include <gdk-pixbuf/gdk-pixbuf.h>
 
 #ifndef FS_VERSION
-#define FS_VERSION "1.0.8"
+#define FS_VERSION "2.0.0"
 #endif
 #ifndef FS_PLATFORM_NAME
 #define FS_PLATFORM_NAME "unknown"

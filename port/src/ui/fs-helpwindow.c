@@ -30,7 +30,7 @@
 #include <string.h>
 
 #ifndef FS_VERSION
-#define FS_VERSION "1.0.8"
+#define FS_VERSION "2.0.0"
 #endif
 
 #define HELP_WIDTH   980

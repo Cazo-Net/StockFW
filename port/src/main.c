@@ -43,7 +43,7 @@
 #include "ui/fs-dialogs.h"
 
 #ifndef FS_VERSION
-#define FS_VERSION "1.0.8"
+#define FS_VERSION "2.0.0"
 #endif
 
 static gboolean opt_version = FALSE;

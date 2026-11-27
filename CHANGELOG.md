@@ -13,6 +13,8 @@ into `/usr/local/share/doc/stockfw/`.
 
 ## [Unreleased]
 
+## [2.0.0] - Unreleased
+
 Repairs to 1.0.9. Chapter 17 of the architecture document has the detail.
 
 ### Fixed
@@ -23,7 +25,9 @@ Repairs to 1.0.9. Chapter 17 of the architecture document has the detail.
   No model runs in StockFW, so the page now shows fixed sample figures
   and says on every card that they are samples.
 - **The Topology page says it is an example.** Its computers, addresses
-  and rates are a fixed sample diagram, not this computer's network.
+  and rates are a fixed sample diagram, not this computer's network, and
+  the dots that travelled along its lines like live traffic no longer
+  move.
 - **1.0.9 builds on Linux again.** It needed `json-glib` without saying
   so and did not link the maths library. The programs no longer need
   `json-glib` at all.
@@ -34,6 +38,8 @@ Repairs to 1.0.9. Chapter 17 of the architecture document has the detail.
   back.
 - **Sixteen test scripts start again.** A byte-order mark in front of
   `#!/bin/bash` had been added to each.
+- **A background start stays in the tray again.** 1.0.9 opened the
+  window at sign-in and with `--background`.
 - An event-history test failed on any day after 25 November 2026.
 - The Windows installer build stops again when `strip` is missing,
   instead of shipping a much larger `StockFW.exe` with a warning.
@@ -41,14 +47,16 @@ Repairs to 1.0.9. Chapter 17 of the architecture document has the detail.
 ### Changed
 
 - **Unfinished 1.0.9 modules are no longer compiled into the programs.**
-  The anomaly scorer, playbooks, mesh, quarantine, KEV reader, eBPF and
-  WFP generators, audit ledger and the "post-quantum" module were never
+  The anomaly scorer, playbooks, mesh, quarantine, KEV reader, eBPF
+  generator, audit ledger and the "post-quantum" module were never
   called by the app or by `stockfw`. They now live in
-  `port/src/experimental/` and are built only with
+  `port/src/experimental/`, with the WFP generator and the zero-trust
+  helpers that 1.0.9 added but never compiled, and are built only with
   `-DFS_EXPERIMENTAL=ON`. Its `README.md` says what each one really
   does.
 - **The "post-quantum" functions refuse every call.** They contained no
-  cryptography: keys were random bytes and every signature verified.
+  cryptography: keys were random bytes, and any signature of the right
+  length verified whatever the key or the message.
 
 ### Removed
 

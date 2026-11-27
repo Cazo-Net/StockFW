@@ -209,7 +209,7 @@ fs_nexora_page (void)
 	gtk_widget_set_hexpand (grid, TRUE);
 	gtk_box_pack_start (GTK_BOX (box), grid, FALSE, FALSE, 0);
 
-	/* 1. AEGIS-ML Confidence Card */
+	/* 1. "Confidence" card (a sample figure; no model runs) */
 	card = stat_card_new (_("MODEL CONFIDENCE"), &confidence_label,
 	                      _("Sample"), "nexora-badge-warn",
 	                      "<span font='28' weight='900' foreground='#2a78d6'>98.4%</span>");

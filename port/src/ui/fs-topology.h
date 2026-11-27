@@ -1,9 +1,7 @@
 /*---[ fs-topology.h ]--------------------------------------------------
- * Interactive Cairo-rendered network flow graph and topology visualizer.
- *
- * Displays network nodes (This Computer, LAN Gateway, Internet, Mesh Peers,
- * Firewall Wall) and active network flow edges with Cairo rendering, packet
- * animations, throughput counters, node inspection, filtering, and graph/table view.
+ * The Topology page: a preview that draws a fixed example diagram, as a
+ * graph or a table.  It reads nothing from this computer's network
+ * (fs-topology.c).
  *--------------------------------------------------------------------*/
 #ifndef FS_TOPOLOGY_H
 #define FS_TOPOLOGY_H
@@ -15,7 +13,8 @@ G_BEGIN_DECLS
 /* Builds and returns the Topology page widget. */
 GtkWidget *fs_topology_page (void);
 
-/* Samples or updates network flow and node telemetry. */
+/* Moves the markers one step along the lines and redraws.  Nothing
+ * calls it in the program; it reads no network data. */
 void fs_topology_sample (void);
 
 /* Smoke test and accessor helpers. */
