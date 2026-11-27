@@ -111,6 +111,8 @@ jobs:
           cmake -S . -B build-experimental -G Ninja -DFS_EXPERIMENTAL=ON
           ninja -C build-experimental fs-experimental-tests
           export HOME="$(mktemp -d)"
+          export XDG_CONFIG_HOME="$HOME/.config"
+          export STOCKFW_AUDIT_FILE="$HOME/audit.log"
           for t in audit-ledger-standalone cazt-audit ebpf nexora-ml \
                    playbook quantum; do
             echo "== $t"
