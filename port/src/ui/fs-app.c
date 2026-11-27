@@ -850,6 +850,20 @@ palette_go (gpointer data)
 static void
 palette_firewall (gpointer data)
 {
+	if (!fs_app_can_change_firewall ()) {
+		/* As the Overview button and the tray: no confirmation for
+		 * a change this copy cannot make. */
+#ifdef G_OS_WIN32
+		const gchar *why = _("Needs StockFW running as administrator.");
+#else
+		const gchar *why = _("Needs StockFW started with sudo.");
+#endif
+
+		fs_dialogs_info (fsapp.window,
+		                 _("This copy cannot change the firewall"),
+		                 why);
+		return;
+	}
 	if (GPOINTER_TO_INT (data))
 		fs_statusview_firewall_start (fsapp.window, "palette");
 	else

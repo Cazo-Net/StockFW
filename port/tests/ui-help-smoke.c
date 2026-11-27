@@ -1994,6 +1994,37 @@ check_layout (void)
 
 /* ============================================================ main */
 
+/* Answers every message box with Cancel (which changes nothing: it is
+ * what Escape sends) and keeps the first one's heading. */
+static guint  palette_boxes = 0;
+static gchar *palette_box_text = NULL;
+
+static gboolean
+cancel_message_boxes (gpointer data)
+{
+	GList *tops = gtk_window_list_toplevels ();
+
+	(void) data;
+
+	for (GList *l = tops; l != NULL; l = l->next) {
+		gchar *text = NULL;
+
+		if (!GTK_IS_MESSAGE_DIALOG (l->data)
+		    || !gtk_widget_get_visible (GTK_WIDGET (l->data)))
+			continue;
+		g_object_get (l->data, "text", &text, NULL);
+		palette_boxes++;
+		if (palette_box_text == NULL)
+			palette_box_text = text;
+		else
+			g_free (text);
+		gtk_dialog_response (GTK_DIALOG (l->data),
+		                     GTK_RESPONSE_CANCEL);
+	}
+	g_list_free (tops);
+	return G_SOURCE_CONTINUE;
+}
+
 /* The command palette the Shortcuts topic lists (Ctrl+K, and
  * Ctrl+Shift+P).  While it is up the keyboard belongs to its search
  * field: Tab must not walk into the rows, or into the page and sidebar
@@ -2051,6 +2082,50 @@ check_palette (void)
 	CHECK (!gtk_widget_get_visible (scrim)
 	       && gtk_window_get_focus (GTK_WINDOW (main_window)) == before,
 	       "[P4] Ctrl+K again closes it, the keyboard back where it was");
+
+	/* Stop firewall from the palette.  A copy that may not change the
+	 * firewall says so, as the Overview button and the tray do; it
+	 * does not ask "Pause protection?" first and fail afterwards.  A
+	 * copy that may still asks, and Cancel leaves the firewall alone. */
+	{
+		gboolean may = fs_app_can_change_firewall ();
+		guint answer;
+
+		send_key (main_window, GDK_KEY_k, GDK_CONTROL_MASK);
+		entry = gtk_window_get_focus (GTK_WINDOW (main_window));
+		if (entry == NULL || !GTK_IS_ENTRY (entry)) {
+			CHECK (FALSE, "[P5] (the palette opens for a command)");
+			return;
+		}
+		gtk_entry_set_text (GTK_ENTRY (entry), "stop firewall");
+		pump ();
+		answer = g_timeout_add (20, cancel_message_boxes, NULL);
+		send_key (main_window, GDK_KEY_Return, 0);
+		for (gint i = 0; i < 40 && palette_boxes == 0; i++)
+			pump ();
+		pump ();
+		g_source_remove (answer);
+
+		CHECK (!gtk_widget_get_visible (scrim),
+		       "[P5] running a command closes the palette");
+		CHECK (palette_boxes == 1,
+		       "[P5] Stop firewall brings up one message box (%u)",
+		       palette_boxes);
+		if (may)
+			CHECK (g_strcmp0 (palette_box_text,
+			                  "Pause protection?") == 0,
+			       "[P5] a copy that may change the firewall is "
+			       "asked first (\"%s\")",
+			       palette_box_text ? palette_box_text : "none");
+		else
+			CHECK (g_strcmp0 (palette_box_text,
+			                  "This copy cannot change the "
+			                  "firewall") == 0,
+			       "[P5] a copy that may not change the firewall "
+			       "is told so, with no confirmation (\"%s\")",
+			       palette_box_text ? palette_box_text : "none");
+		g_clear_pointer (&palette_box_text, g_free);
+	}
 }
 
 static gboolean
