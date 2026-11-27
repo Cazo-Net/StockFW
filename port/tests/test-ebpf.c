@@ -3,7 +3,7 @@
  *--------------------------------------------------------------------*/
 #include <glib.h>
 #include <string.h>
-#include "core/fs-ebpf.h"
+#include "experimental/fs-ebpf.h"
 
 static guint failures = 0;
 

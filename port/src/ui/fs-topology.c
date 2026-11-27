@@ -21,8 +21,6 @@ typedef struct
 
 static const TopoRgb TOPO_COLOR_ALLOWED  = { 0x2a / 255.0, 0x78 / 255.0, 0xd6 / 255.0 };
 static const TopoRgb TOPO_COLOR_BLOCKED  = { 0xe3 / 255.0, 0x49 / 255.0, 0x48 / 255.0 };
-static const TopoRgb TOPO_COLOR_MESH     = { 0x10 / 255.0, 0xb9 / 255.0, 0x81 / 255.0 };
-static const TopoRgb TOPO_COLOR_GATEWAY  = { 0xf5 / 255.0, 0x9e / 255.0, 0x0b / 255.0 };
 static const TopoRgb TOPO_INK_PRIMARY    = { 0x21 / 255.0, 0x21 / 255.0, 0x21 / 255.0 };
 static const TopoRgb TOPO_INK_MUTED      = { 0x6b / 255.0, 0x72 / 255.0, 0x80 / 255.0 };
 static const TopoRgb TOPO_GRID           = { 0xe8 / 255.0, 0xea / 255.0, 0xed / 255.0 };
@@ -370,6 +368,21 @@ fs_topology_page (void)
 	gtk_box_pack_start (GTK_BOX (toolbar), btn_out, FALSE, FALSE, 0);
 	gtk_box_pack_end (GTK_BOX (toolbar), toggle_table, FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (box), toolbar, FALSE, FALSE, 0);
+
+	/* The nodes, addresses and rates are the fixed example built in
+	 * ensure_topology_data: nothing here is read from this computer's
+	 * network, and the page has to say so. */
+	{
+		GtkWidget *notice = gtk_label_new (
+			_("Preview: this is a fixed example diagram, not your network. "
+			  "The computers, addresses and rates shown are samples. "
+			  "For real traffic, see Events and Activity."));
+		gtk_label_set_xalign (GTK_LABEL (notice), 0.0);
+		gtk_label_set_line_wrap (GTK_LABEL (notice), TRUE);
+		gtk_widget_set_name (notice, "topology-sample-notice");
+		gtk_style_context_add_class (gtk_widget_get_style_context (notice), "muted");
+		gtk_box_pack_start (GTK_BOX (box), notice, FALSE, FALSE, 0);
+	}
 
 	stack = gtk_stack_new ();
 	gtk_widget_set_hexpand (stack, TRUE);

@@ -4,8 +4,8 @@
  * Welford running confidence stats, and 50-label retraining triggers.
  *--------------------------------------------------------------------*/
 
-#include "core/fs-ml.h"
-#include "core/fs-ml-monitor.h"
+#include "experimental/fs-ml.h"
+#include "experimental/fs-ml-monitor.h"
 #include <assert.h>
 #include <stdio.h>
 #include <math.h>

@@ -501,7 +501,7 @@ build_sidebar (void)
 		{ FS_ICON_SHIELD_X,     N_("Threat Intel") },
 		{ FS_ICON_CHAT,         N_("Copilot") },
 		{ FS_ICON_CHECK_CIRCLE, N_("Trust") },
-		{ FS_ICON_SHIELD,       N_("Nexora AI") },
+		{ FS_ICON_SHIELD,       N_("Nexora") },
 	};
 
 	GtkWidget *bar, *brand, *tile, *names, *label, *spacer, *footer, *row;
@@ -669,8 +669,6 @@ install_theme (void)
 		gdk_screen_get_default (),
 		GTK_STYLE_PROVIDER (provider),
 		GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-
-	g_print ("StockFW Nexora theme successfully installed!\n");
 
 	g_object_unref (provider);
 }
@@ -1061,7 +1059,7 @@ session_safety_begin (GtkApplication *app)
 }
 
 
-/* --- Floating Notification Toast Overlay (XDR Playbooks & AI Alerts) --- */
+/* --- Floating notification toast overlay --- */
 static GtkWidget *toast_box = NULL;
 
 static gboolean
@@ -1145,24 +1143,6 @@ fs_app_show_toast (const gchar *title, const gchar *message, gboolean is_error)
 	gtk_box_pack_start (GTK_BOX (toast_box), card, FALSE, FALSE, 0);
 	gtk_widget_show_all (toast_box);
 }
-
-void
-fs_app_show_xdr_toast (const gchar *playbook_name, const gchar *action_summary)
-{
-	gchar *title = g_strdup_printf (_("XDR Playbook Triggered: %s"), playbook_name ? playbook_name : "Security Playbook");
-	fs_app_show_toast (title, action_summary ? action_summary : _("Automated incident response action executed successfully."), FALSE);
-	g_free (title);
-}
-
-void
-fs_app_show_ai_alert_toast (const gchar *alert_title, const gchar *details, guint risk_score)
-{
-	gchar *title = g_strdup_printf (_("AI Alert (Risk Score: %u): %s"), risk_score, alert_title ? alert_title : "Anomaly Detected");
-	gboolean is_high = (risk_score >= 70);
-	fs_app_show_toast (title, details ? details : _("AEGIS-ML threat engine flagged abnormal network behavior."), is_high);
-	g_free (title);
-}
-
 
 void
 fs_app_activate (GtkApplication *app)
@@ -1259,7 +1239,7 @@ fs_app_activate (GtkApplication *app)
 	            "time."),
 	          fs_activityview_page (), TRUE);
 
-	add_page (_("Topology"), _("Interactive network flow graph and topology visualizer."), fs_topology_page (), TRUE);
+	add_page (_("Topology"), _("Preview of a planned page. It shows a fixed example diagram, not your network."), fs_topology_page (), TRUE);
 	policy = fs_policy_new ();
 
 	/* The Events page was built above (before there was a policy to
@@ -1330,7 +1310,7 @@ fs_app_activate (GtkApplication *app)
 	            "whether it has changed since you attested it."),
 	          fs_trustview_page (), FALSE);
 
-	add_page (_("Nexora AI"), _("AEGIS-ML confidence scores, PSI drift monitoring, and active learning dashboard."), fs_nexora_page (), TRUE);
+	add_page (_("Nexora"), _("Preview of a planned page. It shows fixed sample figures, not measurements from this computer."), fs_nexora_page (), TRUE);
 	/* Policy loaded, Sentinel reconciled: now the firewall may start. */
 	start_at_launch (due);
 	fs_policy_free (due);

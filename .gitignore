@@ -1,5 +1,6 @@
 # Build directories
 build/
+/build-*
 port/build/
 # No trailing slash: a build directory may be a symbolic link.
 port/build-*
@@ -78,3 +79,11 @@ __pycache__/
 node_modules/
 npm-debug.log
 yarn-error.log
+
+# Scratch output from local builds and tests
+/*err*.txt
+/out.txt
+/preprocessed.txt
+/test.c
+port/*err*.txt
+Testing/Temporary/

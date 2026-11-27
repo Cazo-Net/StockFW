@@ -3,7 +3,7 @@
 StockFW Neural Sentinel: TinyML Iterative Learning Loop
 Continuously evolves the GBDT model by generating adaptive training datasets,
 optimizing hyperparameters/estimators, evaluating F1 scores, exporting to
-port/src/core/fs-ml-model.h, and verifying C compilation readiness.
+port/src/experimental/fs-ml-model.h, and verifying C compilation readiness.
 """
 
 import os
@@ -145,7 +145,7 @@ def export_model_header(clf, f1_score_val, header_path):
         f.write("#endif /* FS_ML_MODEL_H */\n")
 
 def run_learning_loop(max_iterations=5):
-    header_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../port/src/core/fs-ml-model.h"))
+    header_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../src/experimental/fs-ml-model.h"))
     build_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../build-win"))
 
     print(f"Starting TinyML Active Learning Loop (Total Iterations: {max_iterations})...")

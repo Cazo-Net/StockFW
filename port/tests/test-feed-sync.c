@@ -2,7 +2,7 @@
  * Unit test for fs-feed-sync (24-hour threat intel KEV auto-refresh worker and toast).
  *--------------------------------------------------------------------*/
 
-#include "core/fs-feed-sync.h"
+#include "experimental/fs-feed-sync.h"
 #include <glib.h>
 #include <assert.h>
 #include <stdio.h>

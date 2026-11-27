@@ -1,8 +1,8 @@
 #include <glib.h>
 #include <stdio.h>
 #include <string.h>
-#include "core/fs-audit-ledger.h"
-#include "core/fs-zero-trust.h"
+#include "experimental/fs-audit-ledger.h"
+#include "experimental/fs-zero-trust.h"
 
 int main (void)
 {

@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 # Use-after-free analysis for a single source file.
 #
 # GCC's -fanalyzer follows the free, and g_free() is aliased to free()

@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 # Linux backend integration test: applies a policy through the real
 # backend and then inspects the live iptables state.
 #
@@ -93,7 +93,7 @@ EOF
 if [ -d /ucrt64/bin ]; then export PATH="/ucrt64/bin:$PATH"; fi
 
 CF="$(pkg-config --cflags glib-2.0 gobject-2.0 gio-2.0)"
-LF="$(pkg-config --libs glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto json-glib-1.0)"
+LF="$(pkg-config --libs glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto)"
 
 gcc -o "$BUILD_DIR/test-apply" \
 	-I "$PORT/src" $CF \

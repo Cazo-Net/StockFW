@@ -9,7 +9,7 @@
 
 G_BEGIN_DECLS
 
-/* Create the Nexora AI & ML Intelligence / Trust Dashboard page */
+/* The Nexora page: a preview with fixed sample figures (fs-nexora.c). */
 GtkWidget *fs_nexora_page (void);
 
 /* Smoke test / introspection helpers */

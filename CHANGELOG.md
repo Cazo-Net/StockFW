@@ -13,6 +13,49 @@ into `/usr/local/share/doc/stockfw/`.
 
 ## [Unreleased]
 
+Repairs to 1.0.9. Chapter 17 of the architecture document has the detail.
+
+### Fixed
+
+- **The Nexora page no longer shows made-up readings.** In 1.0.9 it
+  redrew a "confidence score", a drift index and a traffic chart from
+  random numbers every three seconds under a "Telemetry Active" badge.
+  No model runs in StockFW, so the page now shows fixed sample figures
+  and says on every card that they are samples.
+- **The Topology page says it is an example.** Its computers, addresses
+  and rates are a fixed sample diagram, not this computer's network.
+- **1.0.9 builds on Linux again.** It needed `json-glib` without saying
+  so and did not link the maths library. The programs no longer need
+  `json-glib` at all.
+- **The Windows build no longer depends on one developer's folder.** The
+  step that copies the GTK DLLs beside `StockFW.exe` ran a script from a
+  fixed path under `C:\Users`, so it failed everywhere else. The
+  executable's icon and version details, switched off in 1.0.9, are
+  back.
+- **Sixteen test scripts start again.** A byte-order mark in front of
+  `#!/bin/bash` had been added to each.
+- An event-history test failed on any day after 25 November 2026.
+- The Windows installer build stops again when `strip` is missing,
+  instead of shipping a much larger `StockFW.exe` with a warning.
+
+### Changed
+
+- **Unfinished 1.0.9 modules are no longer compiled into the programs.**
+  The anomaly scorer, playbooks, mesh, quarantine, KEV reader, eBPF and
+  WFP generators, audit ledger and the "post-quantum" module were never
+  called by the app or by `stockfw`. They now live in
+  `port/src/experimental/` and are built only with
+  `-DFS_EXPERIMENTAL=ON`. Its `README.md` says what each one really
+  does.
+- **The "post-quantum" functions refuse every call.** They contained no
+  cryptography: keys were random bytes and every signature verified.
+
+### Removed
+
+- Build output and empty scratch files that had been committed
+  (`build-win/`, `build-win-test/`, `err.txt`, `out.txt`, `test.c` and
+  others), and a desktop-shortcut script with a personal path in it.
+
 ## [1.0.9] - 2026-11-12
 
 ### Packaging & Windows
