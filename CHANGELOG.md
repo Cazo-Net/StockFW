@@ -30,7 +30,9 @@ architecture document has the detail.
   on.)
 - **A command palette.** `Ctrl+K` or `Ctrl+Shift+P` opens a search box
   that goes to any page, starts or stops the firewall, and opens
-  Preferences, Help or About. Stopping the firewall still asks first.
+  Preferences, Help or About. Stopping the firewall still asks first,
+  and a copy started without the rights to change the firewall says so
+  instead of asking.
 - **Page shortcuts.** `Ctrl+1` to `Ctrl+9` switch pages in sidebar
   order. The sidebar groups its pages under Monitor, Protect and Assist
   and shows each shortcut.
@@ -59,8 +61,8 @@ architecture document has the detail.
 - **A background start stays in the tray again.** 1.0.9 opened the
   window at sign-in and with `--background`.
 - **F1 opens the right Help topic again.** Since 1.0.9 added two pages,
-  Help on Policy, Threat Intel, Copilot and Trust opened a neighbouring
-  topic.
+  F1 on Topology, Policy, Threat Intel and Copilot opened the next
+  page's topic, and F1 on Trust opened the Help start page.
 - **The Dark mode switch works.** In 1.0.9 it had no styles behind it,
   so most of the window stayed light.
 - An event-history test failed on any day after 25 November 2026.
