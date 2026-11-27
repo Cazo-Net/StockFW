@@ -1496,6 +1496,9 @@ static const FsHelpBlock troubleshooting[] = {
 static const FsHelpBlock shortcuts[] = {
 	{ FS_HELP_HEAD, N_("Main window") },
 	{ FS_HELP_KEYS, N_("F1|Help for the page you are on") },
+	{ FS_HELP_KEYS, N_("Ctrl+K|Search pages and commands") },
+	{ FS_HELP_KEYS, N_("Ctrl+1|Go to the first page in the sidebar; "
+	  "Ctrl+2 to Ctrl+9 for the ones below it") },
 	{ FS_HELP_KEYS, N_("Ctrl+,|Preferences") },
 	{ FS_HELP_KEYS, N_("Ctrl+Q|Quit StockFW") },
 	{ FS_HELP_KEYS, N_("Alt+A|Policy: apply the policy") },

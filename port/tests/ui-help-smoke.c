@@ -1142,6 +1142,9 @@ check_opening (void)
 			{ FS_PAGE_INTEL,    "threat-intel" },
 			{ FS_PAGE_COPILOT,  "copilot" },
 			{ FS_PAGE_TRUST,    "trust" },
+			/* No topic of their own yet: the start page. */
+			{ FS_PAGE_TOPOLOGY, FS_HELP_TOPIC_START },
+			{ FS_PAGE_NEXORA,   FS_HELP_TOPIC_START },
 		};
 
 		CHECK (G_N_ELEMENTS (pages) == FS_PAGE_COUNT,

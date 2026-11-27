@@ -19,6 +19,8 @@
 
 #include <string.h>
 
+#include "ui/fs-themecolor.h"
+
 #define SAMPLE_MS    2000
 #define MAX_POINTS   120
 
@@ -40,11 +42,35 @@ static const Rgb COLOR_RECEIVED = { 0x2a / 255.0, 0x78 / 255.0, 0xd6 / 255.0 };
 static const Rgb COLOR_SENT     = { 0xeb / 255.0, 0x68 / 255.0, 0x34 / 255.0 };
 
 /* Ink, grid and surface, matching fs-theme.css. */
-static const Rgb INK_PRIMARY = { 0x21 / 255.0, 0x21 / 255.0, 0x21 / 255.0 };
-static const Rgb INK_MUTED   = { 0x6b / 255.0, 0x72 / 255.0, 0x80 / 255.0 };
-static const Rgb GRID        = { 0xe8 / 255.0, 0xea / 255.0, 0xed / 255.0 };
-static const Rgb BASELINE    = { 0xc4 / 255.0, 0xc9 / 255.0, 0xcf / 255.0 };
-static const Rgb SURFACE     = { 1.0, 1.0, 1.0 };
+/* Ink, grid and card face come from the theme (fs-theme.css) and are
+ * read again at every draw, so the charts follow Dark mode.  The
+ * series colours above are the same in both modes. */
+static Rgb INK_PRIMARY = { 0xfd / 255.0, 0xfc / 255.0, 0xfc / 255.0 };
+static Rgb INK_MUTED   = { 0xa8 / 255.0, 0xa4 / 255.0, 0xa4 / 255.0 };
+static Rgb GRID        = { 0x2f / 255.0, 0x2b / 255.0, 0x2b / 255.0 };
+static Rgb BASELINE    = { 0x4a / 255.0, 0x45 / 255.0, 0x45 / 255.0 };
+static Rgb SURFACE     = { 0x21 / 255.0, 0x1e / 255.0, 0x1e / 255.0 };
+
+static void
+theme_rgb (Rgb *into, const gchar *name, const gchar *fallback)
+{
+	GdkRGBA c;
+
+	fs_theme_color (name, fallback, &c);
+	into->r = c.red;
+	into->g = c.green;
+	into->b = c.blue;
+}
+
+static void
+palette_refresh (void)
+{
+	theme_rgb (&INK_PRIMARY, "fs_text_strong",   "#fdfcfc");
+	theme_rgb (&INK_MUTED,   "fs_text_weak",     "#a8a4a4");
+	theme_rgb (&GRID,        "fs_border",        "#2f2b2b");
+	theme_rgb (&BASELINE,    "fs_border_strong", "#4a4545");
+	theme_rgb (&SURFACE,     "fs_surface",       "#211e1e");
+}
 
 #define MAX_SERIES 2
 
@@ -493,10 +519,7 @@ draw_tooltip (cairo_t *cr, GtkWidget *w, const Chart *c, gdouble px,
 	if (by + bh > height - M_BOTTOM)
 		by = MAX (2, height - M_BOTTOM - bh);
 
-	/* Card: white, hairline border, a soft shadow. */
-	cairo_set_source_rgba (cr, 0, 0, 0, 0.08);
-	rounded_rect (cr, bx + 1, by + 2, bw, bh, 6);
-	cairo_fill (cr);
+	/* Card: the surface colour and a hairline border, flat. */
 	set_rgb (cr, &SURFACE);
 	rounded_rect (cr, bx, by, bw, bh, 6);
 	cairo_fill_preserve (cr);
@@ -539,6 +562,8 @@ on_chart_draw (GtkWidget *w, cairo_t *cr, gpointer data)
 	if (c->n == 0 || iw < 40 || ih < 30)
 		return FALSE;
 
+	palette_refresh ();
+
 	for (guint i = 0; i < c->n; i++) {
 		if (c->covered[i] == 0)
 			continue;
@@ -559,7 +584,7 @@ on_chart_draw (GtkWidget *w, cairo_t *cr, gpointer data)
 	if (first != 0) {
 		gdouble x1 = first < 0 ? M_LEFT + iw : X (first);
 
-		cairo_set_source_rgba (cr, 0.42, 0.45, 0.50, 0.07);
+		cairo_set_source_rgba (cr, INK_MUTED.r, INK_MUTED.g, INK_MUTED.b, 0.07);
 		cairo_rectangle (cr, M_LEFT, M_TOP, x1 - M_LEFT, ih);
 		cairo_fill (cr);
 		if (x1 - M_LEFT > 70)
@@ -655,7 +680,7 @@ on_chart_draw (GtkWidget *w, cairo_t *cr, gpointer data)
 	if (c->hover >= 0 && c->hover < (gint) c->n) {
 		gdouble hx = pfloor (X (c->hover)) + 0.5;
 
-		cairo_set_source_rgba (cr, 0.42, 0.45, 0.50, 0.7);
+		cairo_set_source_rgba (cr, INK_MUTED.r, INK_MUTED.g, INK_MUTED.b, 0.7);
 		cairo_set_line_width (cr, 1);
 		cairo_move_to (cr, hx, M_TOP);
 		cairo_line_to (cr, hx, M_TOP + ih);

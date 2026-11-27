@@ -35,6 +35,7 @@
 #include "core/fs-eventlog.h"
 #include "core/fs-eventfilter.h"
 #include "core/fs-i18n.h"
+#include "ui/fs-themecolor.h"
 
 #include <string.h>
 
@@ -153,19 +154,19 @@ row_rule (const gchar *color)
  * Paints each row:
  *   - selected   -> left to the theme, so the blue highlight and the
  *                   inverted text are not painted over by cell colours;
- *   - blocked    -> soft pastel alert tint with dark red text, the
- *                   whole row, as the spec has it;
- *   - otherwise  -> alternating white / off-white by visible position
- *                   (position, not append index: the list trims its
- *                   oldest row at the cap, which shifts every row).
- * The colour column is only the blocked flag here. */
+ *   - blocked    -> a faint tint of the theme's alert colour with the
+ *                   alert colour as ink, the whole row;
+ *   - otherwise  -> the list's own surface: the flat look has no
+ *                   zebra stripes.
+ * Both colours are the theme's (fs-theme.css), asked for at each
+ * paint, so the list follows Dark mode.  The colour column is only
+ * the blocked flag here. */
 static void
 color_cell_data (GtkTreeViewColumn *column, GtkCellRenderer *renderer,
                  GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
 {
 	gchar *color = NULL;
-	const gchar *background = NULL;
-	const gchar *foreground = NULL;
+	GdkRGBA bad, tint;
 	gboolean blocked;
 	gboolean selected = FALSE;
 
@@ -183,31 +184,20 @@ color_cell_data (GtkTreeViewColumn *column, GtkCellRenderer *renderer,
 		selected = gtk_tree_selection_iter_is_selected (sel, iter);
 	}
 
-	if (blocked) {
-		background = "#ffebee";
-		foreground = "#b71c1c";
+	if (blocked && !selected) {
+		fs_theme_color ("fs_bad", "#ff6259", &bad);
+		tint = bad;
+		tint.alpha = 0.10;
+		g_object_set (renderer,
+		              "cell-background-rgba", &tint,
+		              "foreground-rgba", &bad,
+		              NULL);
 	} else {
-		GtkTreePath *path = gtk_tree_model_get_path (model, iter);
-
-		if (path != NULL) {
-			gint *indices = gtk_tree_path_get_indices (path);
-
-			if (indices != NULL && indices[0] % 2 == 1)
-				background = "#f9f9f9";
-
-			gtk_tree_path_free (path);
-		}
+		g_object_set (renderer,
+		              "cell-background-rgba", NULL,
+		              "foreground-rgba", NULL,
+		              NULL);
 	}
-
-	if (selected) {
-		background = NULL;
-		foreground = NULL;
-	}
-
-	g_object_set (renderer,
-	              "background", background,
-	              "foreground", foreground,
-	              NULL);
 
 	/* The Service column also names the rule that blocked it. */
 	if (GPOINTER_TO_INT (data) == COL_SERVICE) {

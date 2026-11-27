@@ -14,6 +14,8 @@
 #include <string.h>
 #include <math.h>
 
+#include "ui/fs-themecolor.h"
+
 typedef struct
 {
 	gdouble r, g, b;
@@ -23,10 +25,32 @@ static const TopoRgb TOPO_COLOR_ALLOWED  = { 0x2a / 255.0, 0x78 / 255.0, 0xd6 / 
 static const TopoRgb TOPO_COLOR_BLOCKED  = { 0xe3 / 255.0, 0x49 / 255.0, 0x48 / 255.0 };
 static const TopoRgb TOPO_COLOR_MESH     = { 0x10 / 255.0, 0xb9 / 255.0, 0x81 / 255.0 };
 static const TopoRgb TOPO_COLOR_GATEWAY  = { 0xf5 / 255.0, 0x9e / 255.0, 0x0b / 255.0 };
-static const TopoRgb TOPO_INK_PRIMARY    = { 0x21 / 255.0, 0x21 / 255.0, 0x21 / 255.0 };
-static const TopoRgb TOPO_INK_MUTED      = { 0x6b / 255.0, 0x72 / 255.0, 0x80 / 255.0 };
-static const TopoRgb TOPO_GRID           = { 0xe8 / 255.0, 0xea / 255.0, 0xed / 255.0 };
-static const TopoRgb TOPO_SURFACE        = { 1.0, 1.0, 1.0 };
+/* Canvas, grid, card and ink come from the theme (fs-theme.css), read
+ * at every draw so the graph follows Dark mode. */
+static TopoRgb TOPO_INK_PRIMARY, TOPO_INK_MUTED, TOPO_GRID, TOPO_SURFACE,
+               TOPO_CANVAS, TOPO_CARD_EDGE;
+
+static void
+topo_rgb (TopoRgb *into, const gchar *name, const gchar *fallback)
+{
+	GdkRGBA c;
+
+	fs_theme_color (name, fallback, &c);
+	into->r = c.red;
+	into->g = c.green;
+	into->b = c.blue;
+}
+
+static void
+topo_palette_refresh (void)
+{
+	topo_rgb (&TOPO_INK_PRIMARY, "fs_text_strong",   "#fdfcfc");
+	topo_rgb (&TOPO_INK_MUTED,   "fs_text_weak",     "#a8a4a4");
+	topo_rgb (&TOPO_GRID,        "fs_border",        "#2f2b2b");
+	topo_rgb (&TOPO_SURFACE,     "fs_surface",       "#211e1e");
+	topo_rgb (&TOPO_CANVAS,      "fs_code_bg",       "#131010");
+	topo_rgb (&TOPO_CARD_EDGE,   "fs_border_strong", "#4a4545");
+}
 
 typedef struct
 {
@@ -223,8 +247,10 @@ on_draw_graph (GtkWidget *widget, cairo_t *cr, gpointer data)
 	(void) data;
 	ensure_topology_data ();
 
+	topo_palette_refresh ();
+
 	/* Background */
-	cairo_set_source_rgb (cr, TOPO_SURFACE.r, TOPO_SURFACE.g, TOPO_SURFACE.b);
+	cairo_set_source_rgb (cr, TOPO_CANVAS.r, TOPO_CANVAS.g, TOPO_CANVAS.b);
 	cairo_paint (cr);
 
 	/* Grid lines */
@@ -293,8 +319,8 @@ on_draw_graph (GtkWidget *widget, cairo_t *cr, gpointer data)
 		gboolean is_selected = ((gint) i == selected_node_index);
 
 		/* Node card shadow / border */
-		cairo_set_source_rgb (cr, 0.9, 0.92, 0.95);
-		cairo_rectangle (cr, nx - 65, ny - 32, 130, 64);
+		cairo_set_source_rgb (cr, TOPO_CARD_EDGE.r, TOPO_CARD_EDGE.g, TOPO_CARD_EDGE.b);
+		cairo_rectangle (cr, nx - 64, ny - 31, 128, 62);
 		cairo_fill (cr);
 
 		if (is_selected) {
