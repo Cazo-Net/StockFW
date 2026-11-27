@@ -62,7 +62,7 @@ static const FsHelpBlock getting_started[] = {
 	  "the policy or start the firewall, or you can lock yourself out. "
 	  "See <a href=\"help:troubleshooting\">Troubleshooting</a>.") },
 	{ FS_HELP_HEAD, N_("Finding your way") },
-	{ FS_HELP_PARA, N_("The pages are in the dark sidebar on the left of "
+	{ FS_HELP_PARA, N_("The pages are in the sidebar on the left of "
 	  "the main window. Preferences, Help and About StockFW sit at the "
 	  "bottom, above the firewall's state. Press <b>F1</b> on any page "
 	  "to open the help for that page.") },
@@ -1496,7 +1496,8 @@ static const FsHelpBlock troubleshooting[] = {
 static const FsHelpBlock shortcuts[] = {
 	{ FS_HELP_HEAD, N_("Main window") },
 	{ FS_HELP_KEYS, N_("F1|Help for the page you are on") },
-	{ FS_HELP_KEYS, N_("Ctrl+K|Search pages and commands") },
+	{ FS_HELP_KEYS, N_("Ctrl+K|Search pages and commands; Ctrl+Shift+P "
+	  "does the same") },
 	{ FS_HELP_KEYS, N_("Ctrl+1|Go to the first page in the sidebar; "
 	  "Ctrl+2 to Ctrl+9 for the ones below it") },
 	{ FS_HELP_KEYS, N_("Ctrl+,|Preferences") },

@@ -143,6 +143,15 @@ scrollbar slider {
 scrollbar slider:hover {
 	background-color: @fs_text_weaker;
 }
+/* The overlay indicator (what a scrolled list shows until the pointer
+ * reaches it): the GTK theme draws it at 0.4 opacity, which on the
+ * slider colour above is next to nothing on the canvas. */
+scrollbar.overlay-indicator:not(.dragging):not(.hovering) {
+	opacity: 1;
+}
+scrollbar.overlay-indicator:not(.dragging):not(.hovering) slider {
+	background-color: @fs_text_weaker;
+}
 scrollbar.vertical slider {
 	min-height: 32px;
 }
@@ -286,11 +295,18 @@ button.flat:hover {
 	border-color: @fs_border_strong;
 	box-shadow: none;
 }
-.btn-subtle:active,
-.btn-subtle:checked {
+.btn-subtle:active {
 	background-image: none;
 	background-color: @fs_surface_3;
 	border-color: @fs_border_strong;
+	box-shadow: none;
+}
+/* A toggle that is on (Policy's "Audit-only"): the fill alone is too
+ * close to the hover fill to read as a state, so the border says it. */
+.btn-subtle:checked {
+	background-image: none;
+	background-color: @fs_surface_3;
+	border-color: @fs_text_weak;
 	box-shadow: none;
 }
 .btn-subtle:disabled {
@@ -524,10 +540,13 @@ check:indeterminate {
 	border-color: @fs_accent_fill;
 	color: @fs_on_accent;
 }
+/* A disabled box that is ticked still shows its tick: the white mark
+ * of the checked rule would vanish on the light surfaces. */
 check:disabled,
 radio:disabled {
 	background-color: transparent;
 	border-color: @fs_border;
+	color: @fs_text_weaker;
 }
 checkbutton label,
 radiobutton label {
@@ -756,6 +775,14 @@ list row:hover {
 list row:selected {
 	background-color: @fs_surface_3;
 	color: @fs_text_strong;
+}
+/* The file chooser's places list: its surface comes from the GTK
+ * theme, its text from the rule above, and the two disagree when the
+ * desktop's light/dark variant is not the app's. */
+placessidebar,
+placessidebar list {
+	background-color: @fs_bg_side;
+	color: @fs_text;
 }
 textview,
 textview text {

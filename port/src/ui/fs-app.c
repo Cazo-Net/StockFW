@@ -573,8 +573,10 @@ on_action_page (GSimpleAction *action, GVariant *parameter, gpointer data)
  *
  * A card in the window's overlay, over a scrim: a search entry and the
  * commands it has not filtered out.  The entry keeps the keyboard the
- * whole time; Up/Down move the selection in the list, Enter runs it,
- * Escape (or a click on the scrim) closes.
+ * whole time (Tab is swallowed, the rows take no focus: what is under
+ * the scrim must not be reachable while it is up); Up/Down move the
+ * selection in the list, Enter runs it, Escape (or a click on the
+ * scrim) closes and hands the keyboard back to the widget that had it.
  * ===================================================================== */
 typedef void (*PaletteRun) (gpointer data);
 
@@ -592,14 +594,42 @@ static GtkWidget *palette_entry = NULL;
 static GtkWidget *palette_list = NULL;
 static GtkWidget *palette_scroll = NULL;
 static GtkWidget *palette_empty = NULL;
+/* What had the keyboard when the palette opened; a weak pointer, the
+ * widget may be gone by the time the palette closes. */
+static GtkWidget *palette_prev_focus = NULL;
 
 static void apply_dark_mode (void);
 
 static void
+palette_forget_focus (void)
+{
+	if (palette_prev_focus != NULL)
+		g_object_remove_weak_pointer (G_OBJECT (palette_prev_focus),
+		                              (gpointer *) &palette_prev_focus);
+	palette_prev_focus = NULL;
+}
+
+static void
 palette_close (void)
 {
-	if (palette_scrim != NULL)
-		gtk_widget_hide (palette_scrim);
+	GtkWidget *back = palette_prev_focus;
+
+	if (palette_scrim == NULL || !gtk_widget_get_visible (palette_scrim))
+		return;
+
+	/* Hiding the scrim takes the focus widget with it and leaves
+	 * the window with none: typing and the arrow keys would go
+	 * nowhere until the next click. */
+	palette_forget_focus ();
+	gtk_widget_hide (palette_scrim);
+
+	if (back == NULL || !gtk_widget_get_mapped (back) ||
+	    gtk_widget_get_toplevel (back) != fsapp.window)
+		return;
+	if (GTK_IS_ENTRY (back))
+		gtk_entry_grab_focus_without_selecting (GTK_ENTRY (back));
+	else
+		gtk_widget_grab_focus (back);
 }
 
 /* The rows the filter left on show, in order.  Free with g_list_free. */
@@ -733,6 +763,12 @@ on_palette_key (GtkWidget *widget, GdkEventKey *event, gpointer data)
 	case GDK_KEY_Escape:
 		palette_close ();
 		return TRUE;
+	case GDK_KEY_Tab:
+	case GDK_KEY_KP_Tab:
+	case GDK_KEY_ISO_Left_Tab:
+		/* Focus stays in the entry: past it are the rows, then
+		 * the page and the sidebar under the scrim. */
+		return TRUE;
 	case GDK_KEY_Down:
 	case GDK_KEY_KP_Down:
 		palette_move (1);
@@ -778,6 +814,16 @@ palette_open (void)
 {
 	if (palette_scrim == NULL)
 		return;
+
+	if (!gtk_widget_get_visible (palette_scrim)) {
+		palette_forget_focus ();
+		palette_prev_focus = gtk_window_get_focus (
+			GTK_WINDOW (fsapp.window));
+		if (palette_prev_focus != NULL)
+			g_object_add_weak_pointer (
+				G_OBJECT (palette_prev_focus),
+				(gpointer *) &palette_prev_focus);
+	}
 
 	gtk_entry_set_text (GTK_ENTRY (palette_entry), "");
 	gtk_widget_show (palette_scrim);
@@ -856,6 +902,8 @@ palette_add (const gchar *group, const gchar *title, FsIconKind icon,
 	GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
 	GtkWidget *label;
 	gchar *both = g_strdup_printf ("%s %s", group, title);
+
+	gtk_widget_set_can_focus (row, FALSE);
 
 	cmd->group = group;
 	cmd->title = title;

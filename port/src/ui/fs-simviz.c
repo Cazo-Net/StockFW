@@ -2617,6 +2617,42 @@ win_of (GtkWidget *window)
 	       ? g_object_get_data (G_OBJECT (window), "fs-simviz-win") : NULL;
 }
 
+/* Which diagram palette the window draws with, and the class that
+ * says so to the stylesheet and the tests. */
+static void
+win_set_dark (GtkWidget *window, Win *win, gboolean dark)
+{
+	GtkStyleContext *sc = gtk_widget_get_style_context (window);
+
+	if (dark == win->dark)
+		return;
+	win->dark = dark;
+	if (dark)
+		gtk_style_context_add_class (sc, "fs-wi-dark");
+	else
+		gtk_style_context_remove_class (sc, "fs-wi-dark");
+	gtk_widget_queue_draw (window);
+}
+
+/* Dark mode switched while the window is open (it is not modal): the
+ * cards follow the stylesheet by themselves, the diagram has to be
+ * told.  The window it opened from decides, as when it was presented. */
+static void
+on_window_style_updated (GtkWidget *window, gpointer data)
+{
+	Win *win = win_of (window);
+	GtkWindow *parent;
+
+	(void) data;
+
+	if (win == NULL)
+		return;
+	parent = gtk_window_get_transient_for (GTK_WINDOW (window));
+	win_set_dark (window, win,
+	              theme_is_dark (parent != NULL ? GTK_WIDGET (parent)
+	                                            : window));
+}
+
 /* =====================================================================
  * The window
  * ===================================================================== */
@@ -2673,6 +2709,8 @@ fs_simviz_window_new (FsWhatIfResult *result, const FsWhatIfContext *ctx,
 	win->dark = theme_is_dark (dialog);
 	if (win->dark)
 		add_class (dialog, "fs-wi-dark");
+	g_signal_connect (dialog, "style-updated",
+	                  G_CALLBACK (on_window_style_updated), NULL);
 
 	area = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
 	gtk_box_set_spacing (GTK_BOX (area), 0);
@@ -2816,24 +2854,12 @@ fs_simviz_window_present (GtkWidget *window, GtkWidget *parent)
 		GtkWidget *top = gtk_widget_get_toplevel (parent);
 
 		if (GTK_IS_WINDOW (top)) {
-			gboolean dark = theme_is_dark (top);
-
 			/* The window it opens from says which palette reads:
 			 * the main window may be styled apart from the theme
 			 * a new dialog would get. */
-			if (dark != win->dark) {
-				GtkStyleContext *sc =
-					gtk_widget_get_style_context (window);
-
-				win->dark = dark;
-				if (dark)
-					gtk_style_context_add_class (sc, "fs-wi-dark");
-				else
-					gtk_style_context_remove_class (sc, "fs-wi-dark");
-				gtk_widget_queue_draw (window);
-			}
 			gtk_window_set_transient_for (GTK_WINDOW (window),
 			                              GTK_WINDOW (top));
+			win_set_dark (window, win, theme_is_dark (top));
 			gtk_window_set_destroy_with_parent (GTK_WINDOW (window),
 			                                    TRUE);
 			gtk_window_set_position (GTK_WINDOW (window),
