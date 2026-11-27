@@ -1142,6 +1142,9 @@ check_opening (void)
 			{ FS_PAGE_INTEL,    "threat-intel" },
 			{ FS_PAGE_COPILOT,  "copilot" },
 			{ FS_PAGE_TRUST,    "trust" },
+			/* No topic of their own yet: the start page. */
+			{ FS_PAGE_TOPOLOGY, FS_HELP_TOPIC_START },
+			{ FS_PAGE_NEXORA,   FS_HELP_TOPIC_START },
 		};
 
 		CHECK (G_N_ELEMENTS (pages) == FS_PAGE_COUNT,
@@ -1991,6 +1994,65 @@ check_layout (void)
 
 /* ============================================================ main */
 
+/* The command palette the Shortcuts topic lists (Ctrl+K, and
+ * Ctrl+Shift+P).  While it is up the keyboard belongs to its search
+ * field: Tab must not walk into the rows, or into the page and sidebar
+ * the scrim covers, where Escape would no longer close it.  Closing
+ * gives the keyboard back to whatever had it. */
+static void
+check_palette (void)
+{
+	GtkWidget *main_window =
+		GTK_WIDGET (gtk_application_get_active_window (app));
+	GtkWidget *scrim = find_named (main_window, "fs-palette");
+	GtkWidget *search = find_named (main_window, "nav-search");
+	GtkWidget *before, *entry;
+
+	close_help ();
+	CHECK (scrim != NULL && !gtk_widget_get_visible (scrim),
+	       "[P1] the command palette is built and starts hidden");
+	CHECK (search != NULL, "[P1] the sidebar has its search button");
+	if (scrim == NULL || search == NULL)
+		return;
+
+	gtk_widget_grab_focus (search);
+	pump ();
+	before = gtk_window_get_focus (GTK_WINDOW (main_window));
+	CHECK (before == search, "[P1] (the search button has the keyboard)");
+
+	send_key (main_window, GDK_KEY_k, GDK_CONTROL_MASK);
+	entry = gtk_window_get_focus (GTK_WINDOW (main_window));
+	CHECK (gtk_widget_get_visible (scrim) && entry != NULL
+	       && GTK_IS_ENTRY (entry)
+	       && gtk_widget_is_ancestor (entry, scrim),
+	       "[P1] Ctrl+K opens it with the keyboard in its search field");
+
+	send_key (main_window, GDK_KEY_Tab, 0);
+	CHECK (gtk_window_get_focus (GTK_WINDOW (main_window)) == entry,
+	       "[P2] Tab leaves the keyboard in the search field");
+	send_key (main_window, GDK_KEY_ISO_Left_Tab, GDK_SHIFT_MASK);
+	CHECK (gtk_window_get_focus (GTK_WINDOW (main_window)) == entry,
+	       "[P2] ...and so does Shift+Tab (nothing under the scrim "
+	       "is reachable)");
+	send_key (main_window, GDK_KEY_Down, 0);
+	CHECK (gtk_window_get_focus (GTK_WINDOW (main_window)) == entry,
+	       "[P2] ...and Down, which only moves the selection");
+
+	send_key (main_window, GDK_KEY_Escape, 0);
+	CHECK (!gtk_widget_get_visible (scrim), "[P3] Escape closes it");
+	CHECK (gtk_window_get_focus (GTK_WINDOW (main_window)) == before,
+	       "[P3] ...and the keyboard is back where it was");
+
+	send_key (main_window, GDK_KEY_P,
+	          GDK_CONTROL_MASK | GDK_SHIFT_MASK);
+	CHECK (gtk_widget_get_visible (scrim),
+	       "[P4] Ctrl+Shift+P opens it as well");
+	send_key (main_window, GDK_KEY_k, GDK_CONTROL_MASK);
+	CHECK (!gtk_widget_get_visible (scrim)
+	       && gtk_window_get_focus (GTK_WINDOW (main_window)) == before,
+	       "[P4] Ctrl+K again closes it, the keyboard back where it was");
+}
+
 static gboolean
 run_all (gpointer data)
 {
@@ -2011,6 +2073,7 @@ run_all (gpointer data)
 	STEP (check_about);
 	STEP (check_about_keys);
 	STEP (check_help_keys);
+	STEP (check_palette);
 	STEP (check_layout);
 	STEP (check_theme);
 #undef STEP

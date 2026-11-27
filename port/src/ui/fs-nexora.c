@@ -15,6 +15,7 @@
 #include "ui/fs-icons.h"
 #include "core/fs-i18n.h"
 #include "core/fs-util.h"
+#include "ui/fs-themecolor.h"
 
 #include <string.h>
 
@@ -88,11 +89,11 @@ on_chart_draw (GtkWidget *widget, cairo_t *cr, gpointer user_data)
 	height = alloc.height;
 
 	/* Background */
-	cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
+	fs_theme_source (cr, "fs_surface", "#211e1e", 1.0);
 	cairo_paint (cr);
 
 	/* Gridlines */
-	cairo_set_source_rgb (cr, 0.90, 0.92, 0.95);
+	fs_theme_source (cr, "fs_border", "#2f2b2b", 1.0);
 	cairo_set_line_width (cr, 1.0);
 	for (i = 1; i <= 4; i++) {
 		gdouble y = (height - 30) * (i / 4.0);
@@ -212,19 +213,19 @@ fs_nexora_page (void)
 	/* 1. "Confidence" card (a sample figure; no model runs) */
 	card = stat_card_new (_("MODEL CONFIDENCE"), &confidence_label,
 	                      _("Sample"), "nexora-badge-warn",
-	                      "<span font='28' weight='900' foreground='#2a78d6'>98.4%</span>");
+	                      "98.4%");
 	gtk_grid_attach (GTK_GRID (grid), card, 0, 0, 1, 1);
 
 	/* 2. PSI Drift Gauge Card */
 	card = stat_card_new (_("POPULATION STABILITY INDEX (PSI)"), &psi_label,
 	                      _("Sample"), "nexora-badge-warn",
-	                      "<span font='28' weight='900' foreground='#059669'>0.042</span>");
+	                      "0.042");
 	gtk_grid_attach (GTK_GRID (grid), card, 1, 0, 1, 1);
 
 	/* 3. Active Label Counters Card */
 	card = stat_card_new (_("LABELLED EVENTS"), &counter_label,
 	                      _("Sample"), "nexora-badge-warn",
-	                      "<span font='28' weight='900' foreground='#d97706'>1,248</span>");
+	                      "1,248");
 	gtk_grid_attach (GTK_GRID (grid), card, 2, 0, 1, 1);
 
 	/* 15-minute Sliding Window Chart Card */

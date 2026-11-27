@@ -41,6 +41,8 @@
 #include <string.h>
 #include <gdk-pixbuf/gdk-pixbuf.h>
 
+#include "ui/fs-themecolor.h"
+
 /* How often the live panels are resampled.  Interface counters are
  * cheap; enumerating sockets is dearer, so it runs less often. */
 #define NET_REFRESH_MS    2000
@@ -145,7 +147,7 @@ on_sparkline_draw (GtkWidget *widget, cairo_t *cr, gpointer data)
 	h = (gdouble) alloc.height;
 
 	if (count < 2) {
-		cairo_set_source_rgb (cr, 0.78, 0.80, 0.83);
+		fs_theme_source (cr, "fs_border_strong", "#4a4545", 1.0);
 		cairo_set_line_width (cr, 1.0);
 		cairo_move_to (cr, 0, h - 2);
 		cairo_line_to (cr, w, h - 2);
@@ -196,7 +198,7 @@ on_sparkline_draw (GtkWidget *widget, cairo_t *cr, gpointer data)
 		gdouble norm = (spark_history[which][count - 1] - min_v) / (max_v - min_v);
 		gdouble y = h - 4 - norm * (h - 8);
 
-		cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
+		fs_theme_source (cr, "fs_surface", "#211e1e", 1.0);
 		cairo_arc (cr, x, y, 5.0, 0, 2 * 3.1415926535);
 		cairo_fill (cr);
 
@@ -1001,12 +1003,15 @@ adapter_row (const FsIfaceStat *stat, guint64 rate)
 	                    TRUE, TRUE, 0);
 	gtk_box_pack_start (GTK_BOX (row), tile, FALSE, FALSE, 0);
 
-	if (stat->kind != NULL && *stat->kind != '\0')
-		name = g_markup_printf_escaped ("<b>%s</b><span foreground=\"#5B6472\">"
+	if (stat->kind != NULL && *stat->kind != '\0') {
+		gchar *weak = fs_theme_hex ("fs_text_weak", "#a8a4a4");
+
+		name = g_markup_printf_escaped ("<b>%s</b><span foreground=\"%s\">"
 		                                DOT "%s%s</span>",
-		                                stat->device, stat->kind,
+		                                stat->device, weak, stat->kind,
 		                                stat->up ? "" : _(" (down)"));
-	else
+		g_free (weak);
+	} else
 		name = g_markup_printf_escaped ("<b>%s</b>", stat->device);
 	label = label_new (NULL, "adapter-name", 0.0);
 	gtk_label_set_markup (GTK_LABEL (label), name);
@@ -2166,6 +2171,23 @@ conn_icon_column (GtkWidget *view, gint col)
 	return column;
 }
 
+/* A "muted" column's ink is the theme's secondary text colour, asked
+ * for at each paint so it follows Dark mode. */
+static void
+muted_cell_data (GtkTreeViewColumn *column, GtkCellRenderer *renderer,
+                 GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
+{
+	GdkRGBA weak;
+
+	(void) column;
+	(void) model;
+	(void) iter;
+	(void) data;
+
+	fs_theme_color ("fs_text_weak", "#a8a4a4", &weak);
+	g_object_set (renderer, "foreground-rgba", &weak, NULL);
+}
+
 static GtkTreeViewColumn *
 conn_column (GtkWidget *view, const gchar *title, gint col,
              const gchar *klass)
@@ -2178,11 +2200,13 @@ conn_column (GtkWidget *view, const gchar *title, gint col,
 		g_object_set (renderer, "family", "monospace", NULL);
 	else if (g_strcmp0 (klass, "bold") == 0)
 		g_object_set (renderer, "weight", PANGO_WEIGHT_SEMIBOLD, NULL);
-	else if (g_strcmp0 (klass, "muted") == 0)
-		g_object_set (renderer, "foreground", "#5B6472", NULL);
 
 	column = gtk_tree_view_column_new_with_attributes (title, renderer,
 	                                                   "text", col, NULL);
+	if (g_strcmp0 (klass, "muted") == 0)
+		gtk_tree_view_column_set_cell_data_func (column, renderer,
+		                                         muted_cell_data,
+		                                         NULL, NULL);
 	gtk_tree_view_column_set_resizable (column, TRUE);
 	gtk_tree_view_column_set_sort_column_id (column, col);
 	gtk_tree_view_append_column (GTK_TREE_VIEW (view), column);

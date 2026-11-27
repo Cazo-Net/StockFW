@@ -42,8 +42,11 @@
 #include "stockfw-logo-64.h"
 #include "stockfw-logo-128.h"
 #include "fs-theme-css.h"        /* generated from src/ui/fs-theme.css */
+#include "ui/fs-theme-light.h"   /* the light values of its colours */
 
 #include <gdk-pixbuf/gdk-pixbuf.h>
+#include <gdk/gdkkeysyms.h>
+#include <string.h>
 
 #ifdef G_OS_WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -216,11 +219,24 @@ on_action_help (GSimpleAction *action, GVariant *parameter, gpointer data)
 	show_help ();
 }
 
+static void palette_toggle (void);
+static void on_action_page (GSimpleAction *action, GVariant *parameter,
+                            gpointer data);
+
+static void
+on_action_palette (GSimpleAction *action, GVariant *parameter, gpointer data)
+{
+	(void) action;
+	(void) parameter;
+	(void) data;
+	palette_toggle ();
+}
+
 /* [ register_actions ] */
 static void
 register_actions (void)
 {
-	GSimpleAction *quit, *about, *preferences, *help;
+	GSimpleAction *quit, *about, *preferences, *help, *palette;
 
 	quit = g_simple_action_new ("quit", NULL);
 	g_signal_connect (quit, "activate", G_CALLBACK (on_action_quit), NULL);
@@ -242,9 +258,37 @@ register_actions (void)
 	g_action_map_add_action (G_ACTION_MAP (fsapp.app), G_ACTION (help));
 	g_object_unref (help);
 
+	palette = g_simple_action_new ("palette", NULL);
+	g_signal_connect (palette, "activate", G_CALLBACK (on_action_palette), NULL);
+	g_action_map_add_action (G_ACTION_MAP (fsapp.app), G_ACTION (palette));
+	g_object_unref (palette);
+
+	/* Ctrl+1 .. Ctrl+9: the sidebar's items, top to bottom. */
+	for (guint i = 0; i < FS_PAGE_COUNT && i < 9; i++) {
+		gchar *name = g_strdup_printf ("page%u", i + 1);
+		gchar *detailed = g_strdup_printf ("app.page%u", i + 1);
+		gchar *accel = g_strdup_printf ("<Primary>%u", i + 1);
+		const gchar *keys[] = { accel, NULL };
+		GSimpleAction *go = g_simple_action_new (name, NULL);
+
+		g_signal_connect (go, "activate", G_CALLBACK (on_action_page),
+		                  GUINT_TO_POINTER (i));
+		g_action_map_add_action (G_ACTION_MAP (fsapp.app), G_ACTION (go));
+		gtk_application_set_accels_for_action (fsapp.app, detailed, keys);
+		g_object_unref (go);
+		g_free (accel);
+		g_free (detailed);
+		g_free (name);
+	}
+
 	/* The menubar these used to live in is gone; the shortcuts stay. */
 	{
+		const gchar *palette_keys[] = { "<Primary>k",
+		                                "<Primary><Shift>p", NULL };
 		const gchar *quit_keys[] = { "<Primary>q", NULL };
+
+		gtk_application_set_accels_for_action (fsapp.app, "app.palette",
+		                                       palette_keys);
 		const gchar *pref_keys[] = { "<Primary>comma", NULL };
 		const gchar *help_keys[] = { "F1", NULL };
 
@@ -406,19 +450,29 @@ on_page_switched (GtkNotebook *notebook, GtkWidget *page, guint page_num,
 }
 
 /* [ nav_button ]
- * One sidebar item: a drawn icon and a label in a flat button.  The
- * icon is drawn in the button's CSS colour, so hover and selection
+ * One sidebar item: a drawn icon, a label and (optionally) its
+ * shortcut in quiet monospace at the end of the row, in a flat button.
+ * The icon is drawn in the button's CSS colour, so hover and selection
  * recolour it along with the text. */
 static GtkWidget *
-nav_button (GtkWidget *button, FsIconKind icon, const gchar *text)
+nav_button (GtkWidget *button, FsIconKind icon, const gchar *text,
+            const gchar *keys)
 {
-	GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+	GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
 	GtkWidget *label = gtk_label_new (text);
 
 	gtk_label_set_xalign (GTK_LABEL (label), 0.0);
-	gtk_box_pack_start (GTK_BOX (row), fs_icon_new (icon, 18),
+	gtk_label_set_ellipsize (GTK_LABEL (label), PANGO_ELLIPSIZE_END);
+	gtk_box_pack_start (GTK_BOX (row), fs_icon_new (icon, 16),
 	                    FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (row), label, TRUE, TRUE, 0);
+	if (keys != NULL) {
+		GtkWidget *hint = gtk_label_new (keys);
+
+		gtk_style_context_add_class (
+			gtk_widget_get_style_context (hint), "fs-kbd");
+		gtk_box_pack_end (GTK_BOX (row), hint, FALSE, FALSE, 0);
+	}
 	gtk_container_add (GTK_CONTAINER (button), row);
 
 	gtk_button_set_relief (GTK_BUTTON (button), GTK_RELIEF_NONE);
@@ -482,41 +536,583 @@ sync_sidebar_state (gpointer data)
 		gtk_style_context_add_class (ctx, dot_classes[level]);
 }
 
+/* The sidebar's order, which is also the order of the page shortcuts
+ * (Ctrl+1 is the first item, whatever its FsAppPage number) and of the
+ * command palette's "Go to" entries. */
+static const struct {
+	FsAppPage    page;
+	FsIconKind   icon;
+	const gchar *label;
+	const gchar *group;
+} nav_order[FS_PAGE_COUNT] = {
+	{ FS_PAGE_OVERVIEW, FS_ICON_SHIELD,       N_("Overview"),     N_("Monitor") },
+	{ FS_PAGE_EVENTS,   FS_ICON_LIST,         N_("Events"),       N_("Monitor") },
+	{ FS_PAGE_ACTIVITY, FS_ICON_ACTIVITY,     N_("Activity"),     N_("Monitor") },
+	{ FS_PAGE_TOPOLOGY, FS_ICON_WIFI,         N_("Topology"),     N_("Monitor") },
+	{ FS_PAGE_POLICY,   FS_ICON_SLIDERS,      N_("Policy"),       N_("Protect") },
+	{ FS_PAGE_INTEL,    FS_ICON_SHIELD_X,     N_("Threat Intel"), N_("Protect") },
+	{ FS_PAGE_TRUST,    FS_ICON_CHECK_CIRCLE, N_("Trust"),        N_("Protect") },
+	{ FS_PAGE_COPILOT,  FS_ICON_CHAT,         N_("Copilot"),      N_("Assist") },
+	{ FS_PAGE_NEXORA,   FS_ICON_SHIELD_ALERT, N_("Nexora"),       N_("Assist") },
+};
+
+static void
+on_action_page (GSimpleAction *action, GVariant *parameter, gpointer data)
+{
+	guint at = GPOINTER_TO_UINT (data);
+
+	(void) action;
+	(void) parameter;
+
+	if (at < FS_PAGE_COUNT)
+		fs_app_show_page (nav_order[at].page);
+}
+
+/* =====================================================================
+ * Command palette (Ctrl+K): every page and action, one search away.
+ *
+ * A card in the window's overlay, over a scrim: a search entry and the
+ * commands it has not filtered out.  The entry keeps the keyboard the
+ * whole time (Tab is swallowed, the rows take no focus: what is under
+ * the scrim must not be reachable while it is up); Up/Down move the
+ * selection in the list, Enter runs it, Escape (or a click on the
+ * scrim) closes and hands the keyboard back to the widget that had it.
+ * ===================================================================== */
+typedef void (*PaletteRun) (gpointer data);
+
+typedef struct {
+	const gchar *group;
+	const gchar *title;
+	FsIconKind   icon;
+	const gchar *keys;
+	PaletteRun   run;
+	gpointer     data;
+} PaletteCommand;
+
+static GtkWidget *palette_scrim = NULL;
+static GtkWidget *palette_entry = NULL;
+static GtkWidget *palette_list = NULL;
+static GtkWidget *palette_scroll = NULL;
+static GtkWidget *palette_empty = NULL;
+/* What had the keyboard when the palette opened; a weak pointer, the
+ * widget may be gone by the time the palette closes. */
+static GtkWidget *palette_prev_focus = NULL;
+
+static void apply_dark_mode (void);
+
+static void
+palette_forget_focus (void)
+{
+	if (palette_prev_focus != NULL)
+		g_object_remove_weak_pointer (G_OBJECT (palette_prev_focus),
+		                              (gpointer *) &palette_prev_focus);
+	palette_prev_focus = NULL;
+}
+
+static void
+palette_close (void)
+{
+	GtkWidget *back = palette_prev_focus;
+
+	if (palette_scrim == NULL || !gtk_widget_get_visible (palette_scrim))
+		return;
+
+	/* Hiding the scrim takes the focus widget with it and leaves
+	 * the window with none: typing and the arrow keys would go
+	 * nowhere until the next click. */
+	palette_forget_focus ();
+	gtk_widget_hide (palette_scrim);
+
+	if (back == NULL || !gtk_widget_get_mapped (back) ||
+	    gtk_widget_get_toplevel (back) != fsapp.window)
+		return;
+	if (GTK_IS_ENTRY (back))
+		gtk_entry_grab_focus_without_selecting (GTK_ENTRY (back));
+	else
+		gtk_widget_grab_focus (back);
+}
+
+/* The rows the filter left on show, in order.  Free with g_list_free. */
+static GList *
+palette_visible_rows (void)
+{
+	GList *rows = NULL;
+	GtkListBoxRow *row;
+
+	for (gint i = 0;
+	     (row = gtk_list_box_get_row_at_index (GTK_LIST_BOX (palette_list),
+	                                           i)) != NULL; i++)
+		if (gtk_widget_get_child_visible (GTK_WIDGET (row)))
+			rows = g_list_prepend (rows, row);
+	return g_list_reverse (rows);
+}
+
+/* Select `row' and bring it into view without giving it the focus:
+ * the entry keeps the keyboard. */
+static void
+palette_select (GtkListBoxRow *row)
+{
+	GtkAdjustment *adj;
+	GtkAllocation alloc;
+
+	gtk_list_box_select_row (GTK_LIST_BOX (palette_list), row);
+	if (row == NULL)
+		return;
+
+	gtk_widget_get_allocation (GTK_WIDGET (row), &alloc);
+	adj = gtk_scrolled_window_get_vadjustment (
+		GTK_SCROLLED_WINDOW (palette_scroll));
+	if (alloc.height > 1)
+		gtk_adjustment_clamp_page (adj, alloc.y,
+		                           alloc.y + alloc.height);
+}
+
+static void
+palette_move (gint step)
+{
+	GList *rows = palette_visible_rows ();
+	GtkListBoxRow *current =
+		gtk_list_box_get_selected_row (GTK_LIST_BOX (palette_list));
+	gint n = (gint) g_list_length (rows);
+	gint at = g_list_index (rows, current);
+
+	if (n > 0) {
+		at = at < 0 ? (step > 0 ? 0 : n - 1) : (at + step + n) % n;
+		palette_select (g_list_nth_data (rows, (guint) at));
+	}
+	g_list_free (rows);
+}
+
+/* Every word typed must appear somewhere in "group title". */
+static gboolean
+palette_filter (GtkListBoxRow *row, gpointer data)
+{
+	const gchar *hay = g_object_get_data (G_OBJECT (row), "fs-palette-hay");
+	gchar *needle = g_utf8_casefold (
+		gtk_entry_get_text (GTK_ENTRY (palette_entry)), -1);
+	gchar **words = g_strsplit_set (needle, " \t", -1);
+	gboolean match = TRUE;
+
+	(void) data;
+
+	for (guint i = 0; hay != NULL && words[i] != NULL; i++)
+		if (words[i][0] != '\0' && strstr (hay, words[i]) == NULL)
+			match = FALSE;
+
+	g_strfreev (words);
+	g_free (needle);
+	return match;
+}
+
+static void
+on_palette_changed (GtkEditable *editable, gpointer data)
+{
+	GList *rows;
+
+	(void) editable;
+	(void) data;
+
+	gtk_list_box_invalidate_filter (GTK_LIST_BOX (palette_list));
+	rows = palette_visible_rows ();
+	palette_select (rows != NULL ? rows->data : NULL);
+	gtk_widget_set_visible (palette_empty, rows == NULL);
+	gtk_widget_set_visible (palette_scroll, rows != NULL);
+	g_list_free (rows);
+}
+
+/* The command runs from idle, after the palette has gone: several of
+ * them open a dialog, which must not come up under the scrim. */
+static gboolean
+palette_run_idle (gpointer data)
+{
+	const PaletteCommand *cmd = data;
+
+	cmd->run (cmd->data);
+	return G_SOURCE_REMOVE;
+}
+
+static void
+palette_run_row (GtkListBoxRow *row)
+{
+	PaletteCommand *cmd = row != NULL ?
+		g_object_get_data (G_OBJECT (row), "fs-palette-cmd") : NULL;
+
+	palette_close ();
+	if (cmd != NULL && cmd->run != NULL)
+		g_idle_add (palette_run_idle, cmd);
+}
+
+static void
+on_palette_row_activated (GtkListBox *box, GtkListBoxRow *row, gpointer data)
+{
+	(void) box;
+	(void) data;
+
+	palette_run_row (row);
+}
+
+static gboolean
+on_palette_key (GtkWidget *widget, GdkEventKey *event, gpointer data)
+{
+	gboolean ctrl = (event->state & GDK_CONTROL_MASK) != 0;
+
+	(void) widget;
+	(void) data;
+
+	switch (event->keyval) {
+	case GDK_KEY_Escape:
+		palette_close ();
+		return TRUE;
+	case GDK_KEY_Tab:
+	case GDK_KEY_KP_Tab:
+	case GDK_KEY_ISO_Left_Tab:
+		/* Focus stays in the entry: past it are the rows, then
+		 * the page and the sidebar under the scrim. */
+		return TRUE;
+	case GDK_KEY_Down:
+	case GDK_KEY_KP_Down:
+		palette_move (1);
+		return TRUE;
+	case GDK_KEY_Up:
+	case GDK_KEY_KP_Up:
+		palette_move (-1);
+		return TRUE;
+	case GDK_KEY_n:
+	case GDK_KEY_p:
+		if (!ctrl)
+			return FALSE;
+		palette_move (event->keyval == GDK_KEY_n ? 1 : -1);
+		return TRUE;
+	case GDK_KEY_Return:
+	case GDK_KEY_KP_Enter:
+	case GDK_KEY_ISO_Enter:
+		palette_run_row (gtk_list_box_get_selected_row (
+			GTK_LIST_BOX (palette_list)));
+		return TRUE;
+	default:
+		return FALSE;
+	}
+}
+
+/* A press on the scrim itself closes; a press inside the card (which
+ * has a window of its own) is the card's business. */
+static gboolean
+on_palette_scrim_press (GtkWidget *widget, GdkEventButton *event,
+                        gpointer data)
+{
+	(void) data;
+
+	if (event->window == gtk_widget_get_window (widget)) {
+		palette_close ();
+		return TRUE;
+	}
+	return FALSE;
+}
+
+static void
+palette_open (void)
+{
+	if (palette_scrim == NULL)
+		return;
+
+	if (!gtk_widget_get_visible (palette_scrim)) {
+		palette_forget_focus ();
+		palette_prev_focus = gtk_window_get_focus (
+			GTK_WINDOW (fsapp.window));
+		if (palette_prev_focus != NULL)
+			g_object_add_weak_pointer (
+				G_OBJECT (palette_prev_focus),
+				(gpointer *) &palette_prev_focus);
+	}
+
+	gtk_entry_set_text (GTK_ENTRY (palette_entry), "");
+	gtk_widget_show (palette_scrim);
+	on_palette_changed (NULL, NULL);
+	gtk_widget_grab_focus (palette_entry);
+}
+
+static void
+palette_toggle (void)
+{
+	if (palette_scrim != NULL && gtk_widget_get_visible (palette_scrim))
+		palette_close ();
+	else
+		palette_open ();
+}
+
+/* ---- what the commands do ---- */
+static void
+palette_go (gpointer data)
+{
+	fs_app_show_page ((FsAppPage) GPOINTER_TO_UINT (data));
+}
+
+static void
+palette_firewall (gpointer data)
+{
+	if (GPOINTER_TO_INT (data))
+		fs_statusview_firewall_start (fsapp.window, "palette");
+	else
+		fs_statusview_firewall_stop (fsapp.window, "palette");
+}
+
+static void
+palette_preferences (gpointer data)
+{
+	(void) data;
+	fs_dialogs_preferences (fsapp.window);
+}
+
+static void
+palette_help (gpointer data)
+{
+	(void) data;
+	show_help ();
+}
+
+static void
+palette_about (gpointer data)
+{
+	(void) data;
+	fs_dialogs_about (fsapp.window);
+}
+
+static void
+palette_theme (gpointer data)
+{
+	(void) data;
+	fs_prefs_set_bool (FS_PREFS_DARK_MODE,
+	                   !fs_prefs_bool (FS_PREFS_DARK_MODE));
+	apply_dark_mode ();
+}
+
+static void
+palette_quit (gpointer data)
+{
+	(void) data;
+	fs_app_quit ();
+}
+
+static void
+palette_add (const gchar *group, const gchar *title, FsIconKind icon,
+             const gchar *keys, PaletteRun run, gpointer data)
+{
+	PaletteCommand *cmd = g_new0 (PaletteCommand, 1);
+	GtkWidget *row = gtk_list_box_row_new ();
+	GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
+	GtkWidget *label;
+	gchar *both = g_strdup_printf ("%s %s", group, title);
+
+	gtk_widget_set_can_focus (row, FALSE);
+
+	cmd->group = group;
+	cmd->title = title;
+	cmd->icon = icon;
+	cmd->keys = keys;
+	cmd->run = run;
+	cmd->data = data;
+
+	gtk_box_pack_start (GTK_BOX (box), fs_icon_new (icon, 16),
+	                    FALSE, FALSE, 0);
+	label = gtk_label_new (title);
+	gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+	gtk_style_context_add_class (gtk_widget_get_style_context (label),
+	                             "fs-palette-title");
+	gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+	label = gtk_label_new (group);
+	gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+	gtk_style_context_add_class (gtk_widget_get_style_context (label),
+	                             "fs-palette-group");
+	gtk_box_pack_start (GTK_BOX (box), label, TRUE, TRUE, 0);
+	if (keys != NULL) {
+		label = gtk_label_new (keys);
+		gtk_style_context_add_class (
+			gtk_widget_get_style_context (label), "fs-kbd");
+		gtk_box_pack_end (GTK_BOX (box), label, FALSE, FALSE, 0);
+	}
+	gtk_container_add (GTK_CONTAINER (row), box);
+
+	g_object_set_data_full (G_OBJECT (row), "fs-palette-cmd", cmd, g_free);
+	g_object_set_data_full (G_OBJECT (row), "fs-palette-hay",
+	                        g_utf8_casefold (both, -1), g_free);
+	g_free (both);
+
+	gtk_container_add (GTK_CONTAINER (palette_list), row);
+}
+
+static GtkWidget *
+palette_hint (const gchar *keys, const gchar *what)
+{
+	GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+	GtkWidget *label = gtk_label_new (keys);
+	GtkStyleContext *ctx = gtk_widget_get_style_context (label);
+
+	gtk_style_context_add_class (ctx, "fs-kbd");
+	gtk_style_context_add_class (ctx, "boxed");
+	gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (box), gtk_label_new (what),
+	                    FALSE, FALSE, 0);
+	return box;
+}
+
+/* [ build_palette ] -- the overlay child; hidden until asked for. */
+static GtkWidget *
+build_palette (void)
+{
+	static const gchar *const page_keys[FS_PAGE_COUNT] = {
+		"Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5",
+		"Ctrl+6", "Ctrl+7", "Ctrl+8", "Ctrl+9"
+	};
+	GtkWidget *card_window, *card, *foot;
+
+	palette_scrim = gtk_event_box_new ();
+	gtk_widget_set_name (palette_scrim, "fs-palette");
+	gtk_style_context_add_class (
+		gtk_widget_get_style_context (palette_scrim),
+		"fs-palette-scrim");
+	g_signal_connect (palette_scrim, "button-press-event",
+	                  G_CALLBACK (on_palette_scrim_press), NULL);
+
+	/* The card in a window of its own, so the scrim can tell a press
+	 * on the card from a press beside it. */
+	card_window = gtk_event_box_new ();
+	gtk_widget_set_halign (card_window, GTK_ALIGN_CENTER);
+	gtk_widget_set_valign (card_window, GTK_ALIGN_START);
+	gtk_widget_set_margin_top (card_window, 96);
+	gtk_widget_set_size_request (card_window, 560, -1);
+	gtk_event_box_set_visible_window (GTK_EVENT_BOX (card_window), FALSE);
+	gtk_event_box_set_above_child (GTK_EVENT_BOX (card_window), FALSE);
+	gtk_container_add (GTK_CONTAINER (palette_scrim), card_window);
+
+	card = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+	gtk_style_context_add_class (gtk_widget_get_style_context (card),
+	                             "fs-palette");
+	gtk_container_add (GTK_CONTAINER (card_window), card);
+
+	palette_entry = gtk_entry_new ();
+	gtk_widget_set_name (palette_entry, "fs-palette-entry");
+	gtk_entry_set_placeholder_text (GTK_ENTRY (palette_entry),
+	                                _("Search pages and commands"));
+	gtk_style_context_add_class (
+		gtk_widget_get_style_context (palette_entry),
+		"fs-palette-entry");
+	g_signal_connect (palette_entry, "changed",
+	                  G_CALLBACK (on_palette_changed), NULL);
+	g_signal_connect (palette_entry, "key-press-event",
+	                  G_CALLBACK (on_palette_key), NULL);
+	gtk_box_pack_start (GTK_BOX (card), palette_entry, FALSE, FALSE, 0);
+
+	palette_scroll = gtk_scrolled_window_new (NULL, NULL);
+	gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (palette_scroll),
+	                                GTK_POLICY_NEVER,
+	                                GTK_POLICY_AUTOMATIC);
+	gtk_scrolled_window_set_max_content_height (
+		GTK_SCROLLED_WINDOW (palette_scroll), 340);
+	gtk_scrolled_window_set_propagate_natural_height (
+		GTK_SCROLLED_WINDOW (palette_scroll), TRUE);
+	gtk_box_pack_start (GTK_BOX (card), palette_scroll, FALSE, FALSE, 0);
+
+	palette_list = gtk_list_box_new ();
+	gtk_widget_set_name (palette_list, "fs-palette-list");
+	gtk_list_box_set_selection_mode (GTK_LIST_BOX (palette_list),
+	                                 GTK_SELECTION_SINGLE);
+	gtk_list_box_set_activate_on_single_click (
+		GTK_LIST_BOX (palette_list), TRUE);
+	gtk_list_box_set_filter_func (GTK_LIST_BOX (palette_list),
+	                              palette_filter, NULL, NULL);
+	gtk_widget_set_can_focus (palette_list, FALSE);
+	gtk_style_context_add_class (
+		gtk_widget_get_style_context (palette_list),
+		"fs-palette-list");
+	g_signal_connect (palette_list, "row-activated",
+	                  G_CALLBACK (on_palette_row_activated), NULL);
+	gtk_container_add (GTK_CONTAINER (palette_scroll), palette_list);
+
+	for (guint i = 0; i < FS_PAGE_COUNT; i++)
+		palette_add (_("Go to"), _(nav_order[i].label),
+		             nav_order[i].icon, page_keys[i], palette_go,
+		             GUINT_TO_POINTER (nav_order[i].page));
+	palette_add (_("Firewall"), _("Start firewall"), FS_ICON_PLAY, NULL,
+	             palette_firewall, GINT_TO_POINTER (TRUE));
+	palette_add (_("Firewall"), _("Stop firewall\342\200\246"),
+	             FS_ICON_STOP, NULL, palette_firewall,
+	             GINT_TO_POINTER (FALSE));
+	palette_add (_("App"), _("Preferences"), FS_ICON_SETTINGS, "Ctrl+,",
+	             palette_preferences, NULL);
+	palette_add (_("App"), _("Toggle dark mode"), FS_ICON_MONITOR, NULL,
+	             palette_theme, NULL);
+	palette_add (_("App"), _("Help"), FS_ICON_HELP, "F1",
+	             palette_help, NULL);
+	palette_add (_("App"), _("About StockFW"), FS_ICON_INFO, NULL,
+	             palette_about, NULL);
+	palette_add (_("App"), _("Quit StockFW"), FS_ICON_STOP, "Ctrl+Q",
+	             palette_quit, NULL);
+
+	palette_empty = gtk_label_new (_("No matching command"));
+	gtk_label_set_xalign (GTK_LABEL (palette_empty), 0.0);
+	gtk_style_context_add_class (
+		gtk_widget_get_style_context (palette_empty),
+		"fs-palette-empty");
+	gtk_widget_set_no_show_all (palette_empty, TRUE);
+	gtk_box_pack_start (GTK_BOX (card), palette_empty, FALSE, FALSE, 0);
+
+	foot = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 14);
+	gtk_style_context_add_class (gtk_widget_get_style_context (foot),
+	                             "fs-palette-foot");
+	gtk_box_pack_start (GTK_BOX (foot),
+	                    palette_hint ("\342\206\221\342\206\223", _("Move")),
+	                    FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (foot), palette_hint ("Enter", _("Run")),
+	                    FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (foot), palette_hint ("Esc", _("Close")),
+	                    FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (card), foot, FALSE, FALSE, 0);
+
+	/* Built shown inside, hidden as a whole: show_all on the window
+	 * must not open the palette. */
+	gtk_widget_show_all (card_window);
+	gtk_widget_hide (palette_empty);
+	gtk_widget_set_no_show_all (palette_scrim, TRUE);
+
+	return palette_scrim;
+}
+
+static void
+on_side_search (GtkButton *button, gpointer data)
+{
+	(void) button;
+	(void) data;
+
+	palette_open ();
+}
+
 /* [ build_sidebar ]
- * Logo on a light tile (the logo's dark lower half disappears on the
- * dark sidebar otherwise), the page items, then Preferences and About,
- * then the verdict. */
+ * A dense list in the manner of OpenCode's session list: the name and
+ * version on one line, the command palette's trigger where a search
+ * field would be, the pages in three quiet groups with their
+ * shortcuts, then Preferences, Help and About, then the verdict. */
 static GtkWidget *
 build_sidebar (void)
 {
-	static const struct {
-		FsIconKind icon;
-		const gchar *label;
-	} pages[FS_PAGE_COUNT] = {
-		{ FS_ICON_SHIELD,       N_("Overview") },
-		{ FS_ICON_LIST,         N_("Events") },
-		{ FS_ICON_ACTIVITY,     N_("Activity") },
-		{ FS_ICON_ACTIVITY,     N_("Topology") },
-		{ FS_ICON_SLIDERS,      N_("Policy") },
-		{ FS_ICON_SHIELD_X,     N_("Threat Intel") },
-		{ FS_ICON_CHAT,         N_("Copilot") },
-		{ FS_ICON_CHECK_CIRCLE, N_("Trust") },
-		{ FS_ICON_SHIELD,       N_("Nexora") },
+	static const gchar *const page_keys[FS_PAGE_COUNT] = {
+		"Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5",
+		"Ctrl+6", "Ctrl+7", "Ctrl+8", "Ctrl+9"
 	};
+	GtkWidget *bar, *brand, *tile, *label, *spacer, *footer, *row;
+	const gchar *group = NULL;
 
-	GtkWidget *bar, *brand, *tile, *names, *label, *spacer, *footer, *row;
-	bar = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
-	gtk_widget_set_size_request (bar, 220, -1);
+	bar = gtk_box_new (GTK_ORIENTATION_VERTICAL, 1);
+	gtk_widget_set_size_request (bar, 232, -1);
 	gtk_style_context_add_class (gtk_widget_get_style_context (bar),
 	                             "fs-sidebar");
 
 	/* ---- brand ---- */
-	brand = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
+	brand = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
 	gtk_style_context_add_class (gtk_widget_get_style_context (brand),
 	                             "fs-brand");
 
 	tile = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
-	gtk_widget_set_size_request (tile, 40, 40);
+	gtk_widget_set_size_request (tile, 24, 24);
 	gtk_widget_set_valign (tile, GTK_ALIGN_CENTER);
 	gtk_style_context_add_class (gtk_widget_get_style_context (tile),
 	                             "fs-brand-tile");
@@ -525,45 +1121,86 @@ build_sidebar (void)
 		                               stockfw_logo_32_png_len);
 
 		if (logo != NULL) {
-			GtkWidget *image = gtk_image_new_from_pixbuf (logo);
+			GdkPixbuf *small = gdk_pixbuf_scale_simple (
+				logo, 18, 18, GDK_INTERP_BILINEAR);
+			GtkWidget *image = gtk_image_new_from_pixbuf (
+				small != NULL ? small : logo);
 
 			gtk_widget_set_halign (image, GTK_ALIGN_CENTER);
 			gtk_widget_set_valign (image, GTK_ALIGN_CENTER);
 			gtk_box_pack_start (GTK_BOX (tile), image, TRUE, TRUE, 0);
+			g_clear_object (&small);
 			g_object_unref (logo);
 		}
 	}
 	gtk_box_pack_start (GTK_BOX (brand), tile, FALSE, FALSE, 0);
 
-	names = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
-	gtk_widget_set_valign (names, GTK_ALIGN_CENTER);
 	label = gtk_label_new ("StockFW");
 	gtk_label_set_xalign (GTK_LABEL (label), 0.0);
 	gtk_style_context_add_class (gtk_widget_get_style_context (label),
 	                             "fs-brand-name");
-	gtk_box_pack_start (GTK_BOX (names), label, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (brand), label, TRUE, TRUE, 0);
 #ifdef FS_VERSION
 	label = gtk_label_new (FS_VERSION);
 #else
 	label = gtk_label_new ("");
 #endif
-	gtk_label_set_xalign (GTK_LABEL (label), 0.0);
 	gtk_style_context_add_class (gtk_widget_get_style_context (label),
 	                             "fs-brand-version");
-	gtk_box_pack_start (GTK_BOX (names), label, FALSE, FALSE, 0);
-	gtk_box_pack_start (GTK_BOX (brand), names, FALSE, FALSE, 0);
+	gtk_box_pack_end (GTK_BOX (brand), label, FALSE, FALSE, 0);
 
 	gtk_box_pack_start (GTK_BOX (bar), brand, FALSE, FALSE, 0);
 
-	/* ---- pages ---- */
-	for (guint i = 0; i < FS_PAGE_COUNT; i++) {
-		GtkWidget *item = nav_button (gtk_toggle_button_new (),
-		                              pages[i].icon, _(pages[i].label));
+	/* ---- command palette trigger ---- */
+	{
+		GtkWidget *item = gtk_button_new ();
+		GtkWidget *inner = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+		GtkStyleContext *ctx;
 
-		g_signal_connect (item, "toggled", G_CALLBACK (on_nav_toggled),
-		                  GUINT_TO_POINTER (i));
+		gtk_box_pack_start (GTK_BOX (inner),
+		                    fs_icon_new (FS_ICON_SEARCH, 14),
+		                    FALSE, FALSE, 0);
+		label = gtk_label_new (_("Search"));
+		gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+		gtk_box_pack_start (GTK_BOX (inner), label, TRUE, TRUE, 0);
+		label = gtk_label_new ("Ctrl+K");
+		ctx = gtk_widget_get_style_context (label);
+		gtk_style_context_add_class (ctx, "fs-kbd");
+		gtk_style_context_add_class (ctx, "boxed");
+		gtk_box_pack_end (GTK_BOX (inner), label, FALSE, FALSE, 0);
+		gtk_container_add (GTK_CONTAINER (item), inner);
+
+		gtk_widget_set_name (item, "nav-search");
+		gtk_widget_set_tooltip_text (
+			item, _("Search pages and commands (Ctrl+K)"));
+		gtk_style_context_add_class (
+			gtk_widget_get_style_context (item), "fs-side-search");
+		g_signal_connect (item, "clicked",
+		                  G_CALLBACK (on_side_search), NULL);
 		gtk_box_pack_start (GTK_BOX (bar), item, FALSE, FALSE, 0);
-		nav_items[i] = item;
+	}
+
+	/* ---- pages, in groups ---- */
+	for (guint i = 0; i < FS_PAGE_COUNT; i++) {
+		GtkWidget *item;
+
+		if (group == NULL || strcmp (group, nav_order[i].group) != 0) {
+			group = nav_order[i].group;
+			label = gtk_label_new (_(group));
+			gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+			gtk_style_context_add_class (
+				gtk_widget_get_style_context (label),
+				"fs-side-group");
+			gtk_box_pack_start (GTK_BOX (bar), label,
+			                    FALSE, FALSE, 0);
+		}
+
+		item = nav_button (gtk_toggle_button_new (), nav_order[i].icon,
+		                   _(nav_order[i].label), page_keys[i]);
+		g_signal_connect (item, "toggled", G_CALLBACK (on_nav_toggled),
+		                  GUINT_TO_POINTER (nav_order[i].page));
+		gtk_box_pack_start (GTK_BOX (bar), item, FALSE, FALSE, 0);
+		nav_items[nav_order[i].page] = item;
 	}
 
 	spacer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
@@ -574,13 +1211,14 @@ build_sidebar (void)
 		GtkWidget *item;
 
 		item = nav_button (gtk_button_new (), FS_ICON_SETTINGS,
-		                   _("Preferences"));
+		                   _("Preferences"), "Ctrl+,");
 		gtk_widget_set_tooltip_text (item, _("Preferences (Ctrl+,)"));
 		g_signal_connect (item, "clicked",
 		                  G_CALLBACK (on_nav_preferences), NULL);
 		gtk_box_pack_start (GTK_BOX (bar), item, FALSE, FALSE, 0);
 
-		item = nav_button (gtk_button_new (), FS_ICON_HELP, _("Help"));
+		item = nav_button (gtk_button_new (), FS_ICON_HELP, _("Help"),
+		                   "F1");
 		gtk_widget_set_name (item, "nav-help");
 		gtk_widget_set_tooltip_text (item, _("Help (F1)"));
 		g_signal_connect (item, "clicked", G_CALLBACK (on_nav_help),
@@ -588,14 +1226,14 @@ build_sidebar (void)
 		gtk_box_pack_start (GTK_BOX (bar), item, FALSE, FALSE, 0);
 
 		item = nav_button (gtk_button_new (), FS_ICON_INFO,
-		                   _("About StockFW"));
+		                   _("About StockFW"), NULL);
 		g_signal_connect (item, "clicked", G_CALLBACK (on_nav_about),
 		                  NULL);
 		gtk_box_pack_start (GTK_BOX (bar), item, FALSE, FALSE, 0);
 	}
 
 	/* ---- verdict ---- */
-	footer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+	footer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
 	gtk_style_context_add_class (gtk_widget_get_style_context (footer),
 	                             "fs-sidebar-footer");
 
@@ -606,6 +1244,7 @@ build_sidebar (void)
 	gtk_box_pack_start (GTK_BOX (row), side_dot, FALSE, FALSE, 0);
 	side_state = gtk_label_new (NULL);
 	gtk_label_set_xalign (GTK_LABEL (side_state), 0.0);
+	gtk_label_set_ellipsize (GTK_LABEL (side_state), PANGO_ELLIPSIZE_END);
 	gtk_style_context_add_class (gtk_widget_get_style_context (side_state),
 	                             "fs-side-state");
 	gtk_box_pack_start (GTK_BOX (row), side_state, TRUE, TRUE, 0);
@@ -623,23 +1262,45 @@ build_sidebar (void)
 	return bar;
 }
 
-/* [ install_theme ]
- * One stylesheet for the whole application: the light palette from
- * src/ui/fs-theme.css, compiled into the binary (fs-theme-css.h is
- * generated at configure time), so the installed exe needs no data
- * files beside it. */
-
-/* [ apply_dark_mode ] -- apply dark theme setting to GtkSettings and main window. */
+/* [ apply_dark_mode ]
+ * fs-theme.css defines the dark palette; "Dark mode" off lays the
+ * light values of the same colour names over it, one priority step
+ * up, and on takes them away again.  Both are for the whole screen,
+ * so every window and dialog follows at once.  GTK's own dark-variant
+ * switch follows too, for the stock widgets the stylesheet leaves
+ * alone. */
 static void
 apply_dark_mode (void)
 {
+	static GtkCssProvider *light = NULL;
 	gboolean dark = fs_prefs_bool (FS_PREFS_DARK_MODE);
-	GtkSettings *settings = gtk_settings_get_default ();
-	if (settings != NULL) {
-		g_object_set (settings, "gtk-application-prefer-dark-theme", dark, NULL);
+	GtkSettings *gtk_settings = gtk_settings_get_default ();
+	GdkScreen *screen = gdk_screen_get_default ();
+
+	if (gtk_settings != NULL)
+		g_object_set (gtk_settings,
+		              "gtk-application-prefer-dark-theme", dark, NULL);
+
+	if (screen != NULL && !dark && light == NULL) {
+		light = gtk_css_provider_new ();
+		if (gtk_css_provider_load_from_data (light, fs_theme_light_css,
+		                                     -1, NULL)) {
+			gtk_style_context_add_provider_for_screen (
+				screen, GTK_STYLE_PROVIDER (light),
+				GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+		} else {
+			g_warning ("StockFW light palette failed to load");
+			g_clear_object (&light);
+		}
+	} else if (screen != NULL && dark && light != NULL) {
+		gtk_style_context_remove_provider_for_screen (
+			screen, GTK_STYLE_PROVIDER (light));
+		g_clear_object (&light);
 	}
+
 	if (fsapp.window != NULL) {
 		GtkStyleContext *ctx = gtk_widget_get_style_context (fsapp.window);
+
 		if (dark)
 			gtk_style_context_add_class (ctx, "dark");
 		else
@@ -647,6 +1308,10 @@ apply_dark_mode (void)
 	}
 }
 
+/* [ install_theme ]
+ * One stylesheet for the whole application: src/ui/fs-theme.css,
+ * compiled into the binary (fs-theme-css.h is generated at configure
+ * time), so the installed exe needs no data files beside it. */
 static void
 install_theme (void)
 {
@@ -1201,6 +1866,11 @@ fs_app_activate (GtkApplication *app)
 		gtk_widget_set_margin_end (toast_box, 20);
 		gtk_widget_set_margin_bottom (toast_box, 20);
 		gtk_overlay_add_overlay (GTK_OVERLAY (overlay), toast_box);
+
+		/* The command palette, above everything, hidden until
+		 * Ctrl+K. */
+		gtk_overlay_add_overlay (GTK_OVERLAY (overlay),
+		                         build_palette ());
 	}
 
 	register_actions ();
@@ -1382,6 +2052,9 @@ fs_app_reload_settings (void)
 
 	/* ... and changed the list size or the history settings. */
 	fs_hitview_apply_settings ();
+
+	/* ... and switched Dark mode. */
+	apply_dark_mode ();
 }
 
 /* [ settings_swap ]

@@ -2530,7 +2530,7 @@ Not fixed here: the app's launch-time lift of rows that expired while it was clo
 ### 17.1 What changed for users
 
 - The command-line work listed under 1.0.9 in `CHANGELOG.md` (Chapter 15 has the evidence).
-- A **Dark mode** switch in Preferences > General. It asks GTK for its dark variant; the StockFW stylesheet has no dark palette of its own yet, so most of the window stays light. A restyled light theme.
+- A **Dark mode** switch in Preferences > General. As published in 1.0.9 it only asked GTK for its dark variant, and the StockFW stylesheet had no dark palette of its own, so most of the window stayed light. The release after 1.0.9 (2.0.0) rewrites the stylesheet on named colours with a dark palette (the default) and a light one laid over it when the switch is off (`port/src/ui/fs-theme.css`, `fs-theme-light.h`); cairo drawing reads the same names through `ui/fs-themecolor.h`. The same release adds a command palette (`Ctrl+K`) and `Ctrl+1` to `Ctrl+9` page shortcuts.
 - Two **preview pages**, Topology and Nexora. Both are layouts filled with fixed sample data and say so on the page. The Nexora page shows no measurement of this computer, and the Topology page does not draw this computer's network. As first published, 1.0.9 presented both as live: the Nexora figures were redrawn from random numbers every three seconds under a "Telemetry Active" badge. That was corrected after the release.
 
 ### 17.2 Experimental modules (not compiled into the programs)

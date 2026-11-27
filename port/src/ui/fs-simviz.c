@@ -386,236 +386,165 @@ set_color (cairo_t *cr, const Color *c, gdouble alpha_mul)
  * CSS: the window and the Copilot card, light and dark
  * ===================================================================== */
 static const gchar *simviz_css =
-	/* The window: the shell's canvas, cards on it. */
-	".fs-wi-page { background-color: #f4f5f7; }\n"
+	"/* Every colour here is one of fs-theme.css's named colours, so the\n"
+	"   window and the card follow Dark mode with the rest of the app: no\n"
+	"   second, dark copy of these rules is needed. */\n"
+	".fs-wi-page { background-color: @fs_bg; }\n"
 	".fs-wi-page scrolledwindow, .fs-wi-page viewport {\n"
-	"  background-color: #f4f5f7; border: none; }\n"
-	".fs-wi-card { background-color: #ffffff; border: 1px solid #e3e6eb;\n"
-	"  border-radius: 12px; padding: 16px 18px;\n"
-	"  box-shadow: 0 1px 2px rgba(16,24,40,0.06); }\n"
+	"  background-color: @fs_bg; border: none; }\n"
+	".fs-wi-card { background-color: @fs_surface; border: 1px solid @fs_border;\n"
+	"  border-radius: 8px; padding: 14px 16px; box-shadow: none; }\n"
 	".fs-wi-card.diagram { padding: 4px; }\n"
-	".fs-wi-heading { font-size: 13px; font-weight: bold; color: #16181d; }\n"
-	".fs-wi-sub { font-size: 12px; color: #5b6472; }\n"
-	".fs-wi-text { font-size: 13px; color: #16181d; }\n"
-	".fs-wi-muted { font-size: 13px; color: #5b6472; }\n"
-	".fs-wi-title { font-size: 17px; font-weight: bold; color: #16181d; }\n"
-	".fs-wi-mono { font-family: \"JetBrains Mono\", \"Cascadia Mono\",\n"
+	".fs-wi-heading { font-size: 13px; font-weight: 600; color: @fs_text_strong; }\n"
+	".fs-wi-sub { font-size: 12px; color: @fs_text_weak; }\n"
+	".fs-wi-text { font-size: 13px; color: @fs_text_strong; }\n"
+	".fs-wi-muted { font-size: 13px; color: @fs_text_weak; }\n"
+	".fs-wi-title { font-size: 16px; font-weight: 600; color: @fs_text_strong; }\n"
+	".fs-wi-mono { font-family: \"IBM Plex Mono\", \"JetBrains Mono\", \"Cascadia Mono\",\n"
 	"  \"DejaVu Sans Mono\", monospace; font-size: 12px; }\n"
-	/* The header: the Overview's verdict card. */
-	".fs-wi-hero { border-radius: 12px; padding: 18px 20px;\n"
-	"  border: 1px solid #dadfe6; background-color: #f6f7f9; }\n"
-	".fs-wi-hero.ok   { background-color: #f4fbf7; border-color: #bfe3cf; }\n"
-	".fs-wi-hero.bad  { background-color: #fef4f3; border-color: #f4c7c3; }\n"
-	".fs-wi-hero.warn { background-color: #fff8eb; border-color: #f3d9a4; }\n"
-	/* Verdict badges, shared with the card. */
-	".fs-wi-badge { border-radius: 6px; padding: 3px 10px;\n"
-	"  font-weight: bold; font-size: 12px; border: 1px solid transparent; }\n"
-	".fs-wi-badge.ok   { color: #1e7f4f; background-color: #e3f4ea;\n"
-	"  border-color: #bfe3cf; }\n"
-	".fs-wi-badge.bad  { color: #b42318; background-color: #fde8e6;\n"
-	"  border-color: #f4c7c3; }\n"
-	".fs-wi-badge.warn { color: #8a5300; background-color: #fff1d6;\n"
-	"  border-color: #f3d9a4; }\n"
-	".fs-wi-badge.err  { color: #3a4250; background-color: #eef0f3;\n"
-	"  border-color: #d5dae1; }\n"
-	".fs-wi-badge.big  { font-size: 13px; padding: 5px 12px; }\n"
-	/* Strips: something the answer rests on that is not the live
-	 * firewall, and what a fix did. */
-	".fs-wi-strip { border-radius: 8px; padding: 8px 12px; font-size: 13px;\n"
-	"  border: 1px solid #f3d9a4; background-color: #fff8eb; color: #6b3f00; }\n"
-	".fs-wi-strip.ok  { border-color: #bfe3cf; background-color: #f4fbf7;\n"
-	"  color: #145a38; }\n"
-	".fs-wi-strip.bad { border-color: #f4c7c3; background-color: #fef4f3;\n"
-	"  color: #8a1c12; }\n"
-	/* Facts. */
-	".fs-wi-caption { font-size: 12px; color: #5b6472; }\n"
-	".fs-wi-value { font-size: 13px; font-weight: 600; color: #16181d; }\n"
-	/* The trace. */
-	".fs-wi-step { padding: 7px 10px; border-radius: 8px; }\n"
+	".fs-wi-hero { border-radius: 8px; padding: 14px 16px;\n"
+	"  border: 1px solid @fs_border; background-color: @fs_surface; }\n"
+	".fs-wi-hero.ok   { background-color: alpha(@fs_ok, 0.06);\n"
+	"  border-color: alpha(@fs_ok, 0.35); }\n"
+	".fs-wi-hero.bad  { background-color: alpha(@fs_bad, 0.06);\n"
+	"  border-color: alpha(@fs_bad, 0.35); }\n"
+	".fs-wi-hero.warn { background-color: alpha(@fs_warn, 0.06);\n"
+	"  border-color: alpha(@fs_warn, 0.35); }\n"
+	".fs-wi-badge { border-radius: 5px; padding: 2px 8px;\n"
+	"  font-weight: 600; font-size: 12px; border: 1px solid transparent; }\n"
+	".fs-wi-badge.ok   { color: @fs_ok; background-color: alpha(@fs_ok, 0.12);\n"
+	"  border-color: alpha(@fs_ok, 0.35); }\n"
+	".fs-wi-badge.bad  { color: @fs_bad; background-color: alpha(@fs_bad, 0.12);\n"
+	"  border-color: alpha(@fs_bad, 0.35); }\n"
+	".fs-wi-badge.warn { color: @fs_warn; background-color: alpha(@fs_warn, 0.12);\n"
+	"  border-color: alpha(@fs_warn, 0.35); }\n"
+	".fs-wi-badge.err  { color: @fs_text_weak; background-color: @fs_surface_2;\n"
+	"  border-color: @fs_border_strong; }\n"
+	".fs-wi-badge.big  { font-size: 13px; padding: 4px 10px; }\n"
+	".fs-wi-badge label, .fs-wi-badge image { color: inherit; }\n"
+	".fs-wi-strip { border-radius: 6px; padding: 8px 12px; font-size: 13px;\n"
+	"  border: 1px solid alpha(@fs_warn, 0.35);\n"
+	"  background-color: alpha(@fs_warn, 0.10); color: @fs_warn; }\n"
+	".fs-wi-strip.ok  { border-color: alpha(@fs_ok, 0.35);\n"
+	"  background-color: alpha(@fs_ok, 0.10); color: @fs_ok; }\n"
+	".fs-wi-strip.bad { border-color: alpha(@fs_bad, 0.35);\n"
+	"  background-color: alpha(@fs_bad, 0.10); color: @fs_bad; }\n"
+	".fs-wi-caption { font-size: 12px; color: @fs_text_weak; }\n"
+	".fs-wi-value { font-size: 13px; font-weight: 600; color: @fs_text_strong; }\n"
+	".fs-wi-step { padding: 7px 10px; border-radius: 6px; }\n"
 	".fs-wi-note { font-style: italic; font-size: 12px; }\n"
 	".fs-wi-fold { padding: 6px 10px; }\n"
-	".fs-wi-fold > title { color: #5b6472; font-size: 13px; }\n"
-	".fs-wi-dark .fs-wi-fold > title { color: #a0a8b6; }\n"
-	".fs-wi-step.decides.ok   { background-color: #f0f9f4;\n"
-	"  border: 1px solid #bfe3cf; }\n"
-	".fs-wi-step.decides.bad  { background-color: #fef4f3;\n"
-	"  border: 1px solid #f4c7c3; }\n"
-	".fs-wi-step.decides.warn { background-color: #fff8eb;\n"
-	"  border: 1px solid #f3d9a4; }\n"
-	".fs-wi-stepnum { font-size: 11px; font-weight: bold; color: #5b6472;\n"
-	"  background-color: #eef0f3; border-radius: 11px; min-width: 22px;\n"
+	".fs-wi-fold > title { color: @fs_text_weak; font-size: 13px; }\n"
+	".fs-wi-step.decides.ok   { background-color: alpha(@fs_ok, 0.08);\n"
+	"  border: 1px solid alpha(@fs_ok, 0.35); }\n"
+	".fs-wi-step.decides.bad  { background-color: alpha(@fs_bad, 0.08);\n"
+	"  border: 1px solid alpha(@fs_bad, 0.35); }\n"
+	".fs-wi-step.decides.warn { background-color: alpha(@fs_warn, 0.08);\n"
+	"  border: 1px solid alpha(@fs_warn, 0.35); }\n"
+	".fs-wi-stepnum { font-size: 11px; font-weight: bold; color: @fs_text_weak;\n"
+	"  background-color: @fs_surface_3; border-radius: 11px; min-width: 22px;\n"
 	"  min-height: 22px; }\n"
-	".fs-wi-step.decides .fs-wi-stepnum { color: #ffffff;\n"
-	"  background-color: #16181d; }\n"
-	".fs-wi-rule { font-size: 13px; font-weight: 600; color: #16181d; }\n"
-	".fs-wi-step.skipped .fs-wi-rule { font-weight: normal; color: #5b6472; }\n"
-	".fs-wi-detail { font-size: 12px; color: #5b6472; }\n"
+	".fs-wi-step.decides .fs-wi-stepnum { color: @fs_on_primary;\n"
+	"  background-color: @fs_primary; }\n"
+	".fs-wi-rule { font-size: 13px; font-weight: 600; color: @fs_text_strong; }\n"
+	".fs-wi-step.skipped .fs-wi-rule { font-weight: normal; color: @fs_text_weak; }\n"
+	".fs-wi-detail { font-size: 12px; color: @fs_text_weak; }\n"
 	".fs-wi-tag { font-size: 11px; font-weight: bold; border-radius: 4px;\n"
-	"  padding: 1px 6px; color: #5b6472; background-color: #eef0f3; }\n"
-	".fs-wi-tag.ok   { color: #1e7f4f; background-color: #e3f4ea; }\n"
-	".fs-wi-tag.bad  { color: #b42318; background-color: #fde8e6; }\n"
-	".fs-wi-tag.warn { color: #8a5300; background-color: #fff1d6; }\n"
-	".fs-wi-case { font-size: 13px; color: #16181d; }\n"
-	/* Fixes. */
-	".fs-wi-action { padding: 12px 0 2px 0; border-top: 1px solid #eef0f3; }\n"
+	"  padding: 1px 6px; color: @fs_text_weak; background-color: @fs_surface_3; }\n"
+	".fs-wi-tag.ok   { color: @fs_ok; background-color: alpha(@fs_ok, 0.14); }\n"
+	".fs-wi-tag.bad  { color: @fs_bad; background-color: alpha(@fs_bad, 0.14); }\n"
+	".fs-wi-tag.warn { color: @fs_warn; background-color: alpha(@fs_warn, 0.14); }\n"
+	".fs-wi-case { font-size: 13px; color: @fs_text_strong; }\n"
+	".fs-wi-action { padding: 12px 0 2px 0; border-top: 1px solid @fs_border; }\n"
 	".fs-wi-action.first { border-top: none; padding-top: 4px; }\n"
-	".fs-wi-code { background-color: #f6f7f9; border: 1px solid #e3e6eb;\n"
-	"  border-radius: 6px; padding: 6px 10px; color: #16181d; }\n"
-	/* Buttons, the shell's, scoped so no theme face shows through. */
+	".fs-wi-code { background-color: @fs_code_bg; border: 1px solid @fs_border;\n"
+	"  border-radius: 6px; padding: 6px 10px; color: @fs_text_strong; }\n"
 	".fs-wi-page button.btn-primary, .fs-wi-card button.btn-primary,\n"
 	".fs-wi-dialog .dialog-action-area button.btn-primary {\n"
-	"  background-image: none; background-color: #16181d;\n"
-	"  border: 1px solid #16181d; border-radius: 8px; color: #ffffff;\n"
-	"  padding: 7px 16px; font-weight: 600; font-size: 13px;\n"
+	"  background-image: none; background-color: @fs_primary;\n"
+	"  border: 1px solid @fs_primary; border-radius: 6px; color: @fs_on_primary;\n"
+	"  padding: 5px 12px; font-weight: 600; font-size: 13px;\n"
 	"  box-shadow: none; text-shadow: none; }\n"
 	".fs-wi-page button.btn-primary:hover, .fs-wi-card button.btn-primary:hover,\n"
 	".fs-wi-dialog .dialog-action-area button.btn-primary:hover {\n"
-	"  background-color: #2a2f39; border-color: #2a2f39; }\n"
+	"  background-color: @fs_primary_hover; border-color: @fs_primary_hover; }\n"
 	".fs-wi-page button.btn-primary label, .fs-wi-card button.btn-primary label,\n"
 	".fs-wi-dialog .dialog-action-area button.btn-primary label {\n"
-	"  color: #ffffff; }\n"
+	"  color: @fs_on_primary; }\n"
 	".fs-wi-page button.btn-subtle, .fs-wi-card button.btn-subtle {\n"
-	"  background-image: none; background-color: #ffffff;\n"
-	"  border: 1px solid #cdd2da; border-radius: 8px; color: #16181d;\n"
-	"  padding: 7px 14px; font-weight: 600; font-size: 13px;\n"
-	"  box-shadow: none; text-shadow: none; }\n"
+	"  background-image: none; background-color: @fs_surface;\n"
+	"  border: 1px solid @fs_border_strong; border-radius: 6px;\n"
+	"  color: @fs_text_strong; padding: 5px 12px; font-weight: 500;\n"
+	"  font-size: 13px; box-shadow: none; text-shadow: none; }\n"
+	".fs-wi-page button.btn-subtle label, .fs-wi-card button.btn-subtle label {\n"
+	"  color: @fs_text_strong; }\n"
 	".fs-wi-page button.btn-subtle:hover, .fs-wi-card button.btn-subtle:hover {\n"
-	"  background-color: #f4f5f7; border-color: #aeb5c0; }\n"
-	".fs-wi-dialog .dialog-action-area { padding: 10px 16px 14px 16px;\n"
-	"  border-top: 1px solid #e3e6eb; background-color: #ffffff; }\n"
+	"  background-color: @fs_surface_2; border-color: @fs_border_strong; }\n"
+	".fs-wi-dialog .dialog-action-area { padding: 10px 16px 12px 16px;\n"
+	"  border-top: 1px solid @fs_border; background-color: @fs_bg_side; }\n"
 	".fs-wi-dialog .dialog-action-area button { min-width: 96px; }\n"
 	"button.fs-wi-link { background-image: none; background-color: transparent;\n"
 	"  border: none; box-shadow: none; padding: 0 2px; min-height: 0;\n"
-	"  color: #1d4ed8; font-size: 12px; }\n"
-	"button.fs-wi-link:hover { color: #1e3a8a; background-color: transparent; }\n"
+	"  color: @fs_accent; font-size: 12px; }\n"
+	"button.fs-wi-link:hover { color: @fs_text_strong;\n"
+	"  background-color: transparent; }\n"
 	"button.fs-wi-link label { color: inherit; }\n"
-	"button.fs-wi-iconbtn { background-image: none; background-color: #ffffff;\n"
-	"  border: 1px solid #cdd2da; border-radius: 16px; padding: 4px;\n"
-	"  min-width: 24px; min-height: 24px; box-shadow: none; }\n"
-	"button.fs-wi-iconbtn:hover { background-color: #f4f5f7; }\n"
-	/* Direction tabs: one segmented control. */
-	".fs-wi-seg button { background-image: none; background-color: #ffffff;\n"
-	"  border: 1px solid #cdd2da; border-radius: 0; color: #16181d;\n"
-	"  padding: 6px 16px; font-size: 13px; box-shadow: none; }\n"
-	".fs-wi-seg button:first-child { border-radius: 8px 0 0 8px; }\n"
-	".fs-wi-seg button:last-child { border-radius: 0 8px 8px 0;\n"
+	"button.fs-wi-iconbtn { background-image: none; background-color: @fs_surface;\n"
+	"  border: 1px solid @fs_border_strong; border-radius: 16px; padding: 4px;\n"
+	"  min-width: 24px; min-height: 24px; box-shadow: none;\n"
+	"  color: @fs_text_strong; }\n"
+	"button.fs-wi-iconbtn:hover { background-color: @fs_surface_2; }\n"
+	".fs-wi-seg button { background-image: none; background-color: transparent;\n"
+	"  border: 1px solid @fs_border_strong; border-radius: 0;\n"
+	"  color: @fs_text_weak; padding: 4px 12px; font-size: 12px;\n"
+	"  box-shadow: none; }\n"
+	".fs-wi-seg button:first-child { border-radius: 6px 0 0 6px; }\n"
+	".fs-wi-seg button:last-child { border-radius: 0 6px 6px 0;\n"
 	"  border-left-width: 0; }\n"
 	".fs-wi-seg button label, .fs-wi-seg button:backdrop label {\n"
-	"  color: #16181d; }\n"
-	".fs-wi-seg button:backdrop { background-color: #ffffff;\n"
-	"  border-color: #cdd2da; }\n"
-	".fs-wi-seg button:hover { background-color: #f4f5f7; }\n"
+	"  color: @fs_text_weak; }\n"
+	".fs-wi-seg button:backdrop { background-color: transparent;\n"
+	"  border-color: @fs_border_strong; }\n"
+	".fs-wi-seg button:hover { background-color: @fs_surface_2; }\n"
 	".fs-wi-seg button:checked, .fs-wi-seg button:checked:backdrop,\n"
-	".fs-wi-seg button:checked:hover { background-color: #16181d;\n"
-	"  border-color: #16181d; color: #ffffff; font-weight: 600; }\n"
+	".fs-wi-seg button:checked:hover { background-color: @fs_surface_3;\n"
+	"  border-color: @fs_border_strong; color: @fs_text_strong;\n"
+	"  font-weight: 600; }\n"
 	".fs-wi-seg button:checked label,\n"
-	".fs-wi-seg button:checked:backdrop label { color: #ffffff; }\n"
-	/* The Copilot card. */
-	"button.fs-wi-example { background-image: none; background-color: #ffffff;\n"
-	"  border: 1px solid #d5dae1; border-radius: 14px; padding: 3px 12px;\n"
-	"  min-height: 0; font-size: 12px; color: #16181d; box-shadow: none; }\n"
-	"button.fs-wi-example:hover { background-color: #f4f5f7;\n"
-	"  border-color: #aeb5c0; }\n"
-	".fs-wi-chip { font-size: 12px; border-radius: 6px; padding: 2px 8px;\n"
-	"  color: #16181d; background-color: #eef2f7; border: 1px solid #dfe5ee; }\n"
-	".fs-wi-chip.open { color: #5b6472; background-color: transparent;\n"
-	"  border: 1px dashed #c4cad3; }\n"
-	".fs-wi-chip.verb { color: #16181d; background-color: #ffffff;\n"
-	"  border: 1px solid #cdd2da; }\n"
-	".fs-wi-chip.ignored { color: #8a5300; background-color: #fff8eb;\n"
-	"  border: 1px solid #f3d9a4; }\n"
-	".fs-wi-result { border: 1px solid #e3e6eb; border-radius: 10px;\n"
-	"  padding: 10px 12px; background-color: #fafbfc; }\n"
-	".fs-wi-result.ok   { border-color: #bfe3cf; background-color: #f6fcf8; }\n"
-	".fs-wi-result.bad  { border-color: #f4c7c3; background-color: #fef7f6; }\n"
-	".fs-wi-result.warn { border-color: #f3d9a4; background-color: #fffaf0; }\n"
+	".fs-wi-seg button:checked:backdrop label { color: @fs_text_strong; }\n"
+	"button.fs-wi-example { background-image: none; background-color: @fs_surface;\n"
+	"  border: 1px solid @fs_border_strong; border-radius: 5px;\n"
+	"  padding: 2px 10px; min-height: 0; font-size: 12px;\n"
+	"  color: @fs_text_strong; box-shadow: none; }\n"
+	"button.fs-wi-example label { color: @fs_text_strong; }\n"
+	"button.fs-wi-example:hover { background-color: @fs_surface_2;\n"
+	"  border-color: @fs_text_weak; }\n"
+	".fs-wi-chip { font-size: 12px; border-radius: 5px; padding: 2px 8px;\n"
+	"  color: @fs_text_strong; background-color: @fs_surface_2;\n"
+	"  border: 1px solid @fs_border; }\n"
+	".fs-wi-chip.open { color: @fs_text_weak; background-color: transparent;\n"
+	"  border: 1px dashed @fs_border_strong; }\n"
+	".fs-wi-chip.verb { color: @fs_text_strong; background-color: @fs_surface;\n"
+	"  border: 1px solid @fs_border_strong; }\n"
+	".fs-wi-chip.ignored { color: @fs_warn; background-color: alpha(@fs_warn, 0.10);\n"
+	"  border: 1px solid alpha(@fs_warn, 0.35); }\n"
+	".fs-wi-result { border: 1px solid @fs_border; border-radius: 8px;\n"
+	"  padding: 10px 12px; background-color: @fs_bg; }\n"
+	".fs-wi-result.ok   { border-color: alpha(@fs_ok, 0.35);\n"
+	"  background-color: alpha(@fs_ok, 0.06); }\n"
+	".fs-wi-result.bad  { border-color: alpha(@fs_bad, 0.35);\n"
+	"  background-color: alpha(@fs_bad, 0.06); }\n"
+	".fs-wi-result.warn { border-color: alpha(@fs_warn, 0.35);\n"
+	"  background-color: alpha(@fs_warn, 0.06); }\n"
 	"button.fs-wi-history { background-image: none;\n"
 	"  background-color: transparent; border: none; border-radius: 6px;\n"
 	"  padding: 3px 6px; min-height: 0; box-shadow: none; }\n"
 	"button.fs-wi-history:hover {\n"
 	"  background-color: alpha(currentColor, 0.08); }\n"
-	/* The answer row has a light surface of its own whatever the
-	 * theme: its text is the light palette's ink, never the theme's. */
-	".fs-wi-result label { color: #16181d; }\n"
+	".fs-wi-result label { color: @fs_text_strong; }\n"
 	".fs-wi-dot { font-size: 10px; }\n"
-	".fs-wi-dot.ok { color: #1e7f4f; } .fs-wi-dot.bad { color: #b42318; }\n"
-	".fs-wi-dot.warn { color: #c47800; } .fs-wi-dot.err { color: #8b93a1; }\n"
-
-	/* ---- dark: the same layout on dark surfaces ---- */
-	".fs-wi-dark.fs-wi-page, .fs-wi-dark .fs-wi-page,\n"
-	".fs-wi-dark scrolledwindow, .fs-wi-dark viewport {\n"
-	"  background-color: #15171c; }\n"
-	".fs-wi-dark .fs-wi-card { background-color: #1d2027;\n"
-	"  border-color: #2f3440; }\n"
-	".fs-wi-dark .fs-wi-heading, .fs-wi-dark .fs-wi-text,\n"
-	".fs-wi-dark .fs-wi-title, .fs-wi-dark .fs-wi-value,\n"
-	".fs-wi-dark .fs-wi-rule, .fs-wi-dark .fs-wi-case { color: #e7e9ee; }\n"
-	".fs-wi-dark .fs-wi-sub, .fs-wi-dark .fs-wi-muted,\n"
-	".fs-wi-dark .fs-wi-caption, .fs-wi-dark .fs-wi-detail,\n"
-	".fs-wi-dark .fs-wi-step.skipped .fs-wi-rule { color: #a0a8b6; }\n"
-	".fs-wi-dark .fs-wi-hero { background-color: #1d2027;\n"
-	"  border-color: #2f3440; }\n"
-	".fs-wi-dark .fs-wi-hero.ok   { background-color: #16251d;\n"
-	"  border-color: #275a3d; }\n"
-	".fs-wi-dark .fs-wi-hero.bad  { background-color: #2a1816;\n"
-	"  border-color: #6b2a24; }\n"
-	".fs-wi-dark .fs-wi-hero.warn { background-color: #2a2113;\n"
-	"  border-color: #6b5220; }\n"
-	".fs-wi-dark .fs-wi-badge.ok   { color: #86efac; background-color: #183a27;\n"
-	"  border-color: #275a3d; }\n"
-	".fs-wi-dark .fs-wi-badge.bad  { color: #fca5a5; background-color: #3d1d1a;\n"
-	"  border-color: #6b2a24; }\n"
-	".fs-wi-dark .fs-wi-badge.warn { color: #fcd34d; background-color: #3a2c12;\n"
-	"  border-color: #6b5220; }\n"
-	".fs-wi-dark .fs-wi-badge.err  { color: #cbd2dc; background-color: #2c313b;\n"
-	"  border-color: #444b58; }\n"
-	".fs-wi-dark .fs-wi-strip { background-color: #2a2113;\n"
-	"  border-color: #6b5220; color: #fcd34d; }\n"
-	".fs-wi-dark .fs-wi-strip.ok { background-color: #16251d;\n"
-	"  border-color: #275a3d; color: #86efac; }\n"
-	".fs-wi-dark .fs-wi-strip.bad { background-color: #2a1816;\n"
-	"  border-color: #6b2a24; color: #fca5a5; }\n"
-	".fs-wi-dark .fs-wi-step.decides.ok   { background-color: #16251d;\n"
-	"  border-color: #275a3d; }\n"
-	".fs-wi-dark .fs-wi-step.decides.bad  { background-color: #2a1816;\n"
-	"  border-color: #6b2a24; }\n"
-	".fs-wi-dark .fs-wi-step.decides.warn { background-color: #2a2113;\n"
-	"  border-color: #6b5220; }\n"
-	".fs-wi-dark .fs-wi-stepnum { color: #cbd2dc; background-color: #2c313b; }\n"
-	".fs-wi-dark .fs-wi-step.decides .fs-wi-stepnum { color: #15171c;\n"
-	"  background-color: #e7e9ee; }\n"
-	".fs-wi-dark .fs-wi-tag { color: #cbd2dc; background-color: #2c313b; }\n"
-	".fs-wi-dark .fs-wi-tag.ok   { color: #86efac; background-color: #183a27; }\n"
-	".fs-wi-dark .fs-wi-tag.bad  { color: #fca5a5; background-color: #3d1d1a; }\n"
-	".fs-wi-dark .fs-wi-tag.warn { color: #fcd34d; background-color: #3a2c12; }\n"
-	".fs-wi-dark .fs-wi-action { border-top-color: #2f3440; }\n"
-	".fs-wi-dark .fs-wi-code { background-color: #15171c;\n"
-	"  border-color: #2f3440; color: #e7e9ee; }\n"
-	".fs-wi-dark button.btn-primary,\n"
-	".fs-wi-dark.fs-wi-dialog .dialog-action-area button.btn-primary {\n"
-	"  background-color: #e7e9ee; border-color: #e7e9ee; color: #15171c; }\n"
-	".fs-wi-dark button.btn-primary label,\n"
-	".fs-wi-dark.fs-wi-dialog .dialog-action-area button.btn-primary label {\n"
-	"  color: #15171c; }\n"
-	".fs-wi-dark button.btn-primary:hover,\n"
-	".fs-wi-dark.fs-wi-dialog .dialog-action-area button.btn-primary:hover {\n"
-	"  background-color: #ffffff; border-color: #ffffff; }\n"
-	".fs-wi-dark button.btn-subtle, .fs-wi-dark button.fs-wi-iconbtn {\n"
-	"  background-color: #262a33; border-color: #3c424e; color: #e7e9ee; }\n"
-	".fs-wi-dark button.btn-subtle label { color: #e7e9ee; }\n"
-	".fs-wi-dark button.btn-subtle:hover, .fs-wi-dark button.fs-wi-iconbtn:hover {\n"
-	"  background-color: #2f3440; }\n"
-	".fs-wi-dark.fs-wi-dialog .dialog-action-area {\n"
-	"  background-color: #1d2027; border-top-color: #2f3440; }\n"
-	".fs-wi-dark button.fs-wi-link { color: #93b4f5; }\n"
-	".fs-wi-dark .fs-wi-seg button { background-color: #262a33;\n"
-	"  border-color: #3c424e; color: #e7e9ee; }\n"
-	".fs-wi-dark .fs-wi-seg button label,\n"
-	".fs-wi-dark .fs-wi-seg button:backdrop label { color: #e7e9ee; }\n"
-	".fs-wi-dark .fs-wi-seg button:backdrop { background-color: #262a33; }\n"
-	".fs-wi-dark .fs-wi-seg button:checked { background-color: #e7e9ee;\n"
-	"  border-color: #e7e9ee; }\n"
-	".fs-wi-dark .fs-wi-seg button:checked label { color: #15171c; }\n";
+	".fs-wi-dot.ok { color: @fs_ok; } .fs-wi-dot.bad { color: @fs_bad; }\n"
+	".fs-wi-dot.warn { color: @fs_warn; } .fs-wi-dot.err { color: @fs_text_weaker; }\n";
 
 static GdkScreen *css_screen = NULL;
 
@@ -2688,6 +2617,42 @@ win_of (GtkWidget *window)
 	       ? g_object_get_data (G_OBJECT (window), "fs-simviz-win") : NULL;
 }
 
+/* Which diagram palette the window draws with, and the class that
+ * says so to the stylesheet and the tests. */
+static void
+win_set_dark (GtkWidget *window, Win *win, gboolean dark)
+{
+	GtkStyleContext *sc = gtk_widget_get_style_context (window);
+
+	if (dark == win->dark)
+		return;
+	win->dark = dark;
+	if (dark)
+		gtk_style_context_add_class (sc, "fs-wi-dark");
+	else
+		gtk_style_context_remove_class (sc, "fs-wi-dark");
+	gtk_widget_queue_draw (window);
+}
+
+/* Dark mode switched while the window is open (it is not modal): the
+ * cards follow the stylesheet by themselves, the diagram has to be
+ * told.  The window it opened from decides, as when it was presented. */
+static void
+on_window_style_updated (GtkWidget *window, gpointer data)
+{
+	Win *win = win_of (window);
+	GtkWindow *parent;
+
+	(void) data;
+
+	if (win == NULL)
+		return;
+	parent = gtk_window_get_transient_for (GTK_WINDOW (window));
+	win_set_dark (window, win,
+	              theme_is_dark (parent != NULL ? GTK_WIDGET (parent)
+	                                            : window));
+}
+
 /* =====================================================================
  * The window
  * ===================================================================== */
@@ -2744,6 +2709,8 @@ fs_simviz_window_new (FsWhatIfResult *result, const FsWhatIfContext *ctx,
 	win->dark = theme_is_dark (dialog);
 	if (win->dark)
 		add_class (dialog, "fs-wi-dark");
+	g_signal_connect (dialog, "style-updated",
+	                  G_CALLBACK (on_window_style_updated), NULL);
 
 	area = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
 	gtk_box_set_spacing (GTK_BOX (area), 0);
@@ -2887,24 +2854,12 @@ fs_simviz_window_present (GtkWidget *window, GtkWidget *parent)
 		GtkWidget *top = gtk_widget_get_toplevel (parent);
 
 		if (GTK_IS_WINDOW (top)) {
-			gboolean dark = theme_is_dark (top);
-
 			/* The window it opens from says which palette reads:
 			 * the main window may be styled apart from the theme
 			 * a new dialog would get. */
-			if (dark != win->dark) {
-				GtkStyleContext *sc =
-					gtk_widget_get_style_context (window);
-
-				win->dark = dark;
-				if (dark)
-					gtk_style_context_add_class (sc, "fs-wi-dark");
-				else
-					gtk_style_context_remove_class (sc, "fs-wi-dark");
-				gtk_widget_queue_draw (window);
-			}
 			gtk_window_set_transient_for (GTK_WINDOW (window),
 			                              GTK_WINDOW (top));
+			win_set_dark (window, win, theme_is_dark (top));
 			gtk_window_set_destroy_with_parent (GTK_WINDOW (window),
 			                                    TRUE);
 			gtk_window_set_position (GTK_WINDOW (window),

@@ -15,7 +15,25 @@ into `/usr/local/share/doc/stockfw/`.
 
 ## [2.0.0] - Unreleased
 
-Repairs to 1.0.9. Chapter 17 of the architecture document has the detail.
+A new look for the window, and repairs to 1.0.9. Chapter 17 of the
+architecture document has the detail.
+
+### Added
+
+- **A dark theme, on by default.** The window is redrawn flat: no
+  gradients or shadows, thin borders, compact type, and a fixed-width
+  font for addresses, counts and versions. Turn Dark mode off in
+  Preferences > General for the light version; the change applies as
+  soon as Preferences is saved. Charts, the What-If diagram and the
+  Events list follow the theme. (A settings file first written by 1.0.9
+  holds its "off" default and stays light until the switch is turned
+  on.)
+- **A command palette.** `Ctrl+K` or `Ctrl+Shift+P` opens a search box
+  that goes to any page, starts or stops the firewall, and opens
+  Preferences, Help or About. Stopping the firewall still asks first.
+- **Page shortcuts.** `Ctrl+1` to `Ctrl+9` switch pages in sidebar
+  order. The sidebar groups its pages under Monitor, Protect and Assist
+  and shows each shortcut.
 
 ### Fixed
 
@@ -40,6 +58,11 @@ Repairs to 1.0.9. Chapter 17 of the architecture document has the detail.
   `#!/bin/bash` had been added to each.
 - **A background start stays in the tray again.** 1.0.9 opened the
   window at sign-in and with `--background`.
+- **F1 opens the right Help topic again.** Since 1.0.9 added two pages,
+  Help on Policy, Threat Intel, Copilot and Trust opened a neighbouring
+  topic.
+- **The Dark mode switch works.** In 1.0.9 it had no styles behind it,
+  so most of the window stayed light.
 - An event-history test failed on any day after 25 November 2026.
 - The Windows installer build stops again when `strip` is missing,
   instead of shipping a much larger `StockFW.exe` with a warning.
