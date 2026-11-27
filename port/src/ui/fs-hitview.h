@@ -109,6 +109,11 @@ void     fs_hitview_reload (void);
 
 const FsHit *fs_hitview_selected (void);
 
+/* Open the detail drawer (ui/fs-drawer.h) for one event: what it was,
+ * where it came from and went to, and what blocked it.  The hit is
+ * copied.  The Overview's list of latest blocks calls this too. */
+void fs_hitview_show_details (const FsHit *hit);
+
 /* Puts `text' in the filter bar and filters at once (the Copilot's
  * "Show in Events"). */
 void fs_hitview_set_filter (const gchar *text);

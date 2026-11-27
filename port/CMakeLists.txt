@@ -220,6 +220,7 @@ add_executable(StockFW
   src/ui/fs-eventmodel.c
   src/ui/fs-activityview.c
   src/ui/fs-topology.c
+  src/ui/fs-drawer.c
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
@@ -425,6 +426,7 @@ set(FS_UI_ONLY_SOURCES
   src/ui/fs-eventmodel.c
   src/ui/fs-activityview.c
   src/ui/fs-topology.c
+  src/ui/fs-drawer.c
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c

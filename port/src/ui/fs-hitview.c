@@ -36,6 +36,7 @@
 #include "core/fs-eventfilter.h"
 #include "core/fs-i18n.h"
 #include "ui/fs-themecolor.h"
+#include "ui/fs-drawer.h"
 
 #include <string.h>
 
@@ -2577,4 +2578,32 @@ fs_hitview_page (void)
 	update_count_label ();
 
 	return page;
+}
+
+/* The owner token this page gives the drawer. */
+static gint details_owner;
+
+void
+fs_hitview_show_details (const FsHit *hit)
+{
+	GtkWidget *fields;
+	gchar *when;
+
+	if (hit == NULL)
+		return;
+
+	fields = fs_drawer_fields_new ();
+	when = fs_hitview_format_time (hit->time);
+	fs_drawer_field (fields, _("Time"), when, FALSE);
+	fs_drawer_field (fields, _("Direction"), hit->direction, FALSE);
+	fs_drawer_field (fields, _("Source"), hit->source, TRUE);
+	fs_drawer_field (fields, _("Destination"), hit->destination, TRUE);
+	fs_drawer_field (fields, _("Port"), hit->port, TRUE);
+	fs_drawer_field (fields, _("Protocol"), hit->protocol, FALSE);
+	fs_drawer_field (fields, _("Service"), hit->service, FALSE);
+	fs_drawer_field (fields, _("Program"), hit->program, TRUE);
+	fs_drawer_field (fields, _("Blocked by"), hit->rule, FALSE);
+	g_free (when);
+
+	fs_drawer_open (&details_owner, _("Event"), NULL, fields, NULL, 0);
 }
