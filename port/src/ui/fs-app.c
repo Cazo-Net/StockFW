@@ -44,6 +44,7 @@
 #include "stockfw-logo-128.h"
 #include "fs-theme-css.h"        /* generated from src/ui/fs-theme.css */
 #include "ui/fs-theme-light.h"   /* the light values of its colours */
+#include "ui/fs-theme-accent.h"  /* the accents, the comfortable rows */
 
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #include <gdk/gdkkeysyms.h>
@@ -811,7 +812,7 @@ static GtkWidget *palette_empty = NULL;
  * widget may be gone by the time the palette closes. */
 static GtkWidget *palette_prev_focus = NULL;
 
-static void apply_dark_mode (void);
+static void apply_appearance (void);
 
 static void
 palette_forget_focus (void)
@@ -1090,13 +1091,35 @@ palette_about (gpointer data)
 	fs_dialogs_about (fsapp.window);
 }
 
+/* The Appearance settings of Preferences, one command away: stored
+ * like a Save there would (the periodic save and the one at quit write
+ * the file) and applied at once.  `data' is the accent's stored word. */
+static void
+palette_accent (gpointer data)
+{
+	fs_prefs_set_string (FS_PREFS_ACCENT, data);
+	apply_appearance ();
+}
+
+static void
+palette_density (gpointer data)
+{
+	gboolean comfortable = strcmp (fs_prefs_choice (FS_PREFS_DENSITY),
+	                               "comfortable") == 0;
+
+	(void) data;
+	fs_prefs_set_string (FS_PREFS_DENSITY,
+	                     comfortable ? "compact" : "comfortable");
+	apply_appearance ();
+}
+
 static void
 palette_theme (gpointer data)
 {
 	(void) data;
 	fs_prefs_set_bool (FS_PREFS_DARK_MODE,
 	                   !fs_prefs_bool (FS_PREFS_DARK_MODE));
-	apply_dark_mode ();
+	apply_appearance ();
 }
 
 static void
@@ -1259,6 +1282,14 @@ build_palette (void)
 	             GINT_TO_POINTER (FALSE));
 	palette_add (_("App"), _("Preferences"), FS_ICON_SETTINGS, "Ctrl+,",
 	             palette_preferences, NULL);
+	palette_add (_("App"), _("Accent: blue"), FS_ICON_MONITOR, NULL,
+	             palette_accent, "blue");
+	palette_add (_("App"), _("Accent: green"), FS_ICON_MONITOR, NULL,
+	             palette_accent, "green");
+	palette_add (_("App"), _("Accent: amber"), FS_ICON_MONITOR, NULL,
+	             palette_accent, "amber");
+	palette_add (_("App"), _("Toggle row density"), FS_ICON_LIST, NULL,
+	             palette_density, NULL);
 	palette_add (_("App"), _("Toggle dark mode"), FS_ICON_MONITOR, NULL,
 	             palette_theme, NULL);
 	palette_add (_("App"), _("Toggle sidebar"), FS_ICON_SIDEBAR, "Ctrl+B",
@@ -1599,6 +1630,233 @@ apply_dark_mode (void)
 		else
 			gtk_style_context_remove_class (ctx, "dark");
 	}
+}
+
+/* [ appearance_sheet ]
+ * One of the two small sheets of ui/fs-theme-accent.h over the whole
+ * screen, or none of it: `css' is the sheet wanted now (NULL for
+ * none), *provider and *installed remember what is up.  They sit two
+ * priority steps above fs-theme.css, so above the light palette too,
+ * which names the accent colours itself.  Nothing is touched when the
+ * sheet wanted is the one installed: every Save of Preferences comes
+ * through here, and re-installing would restyle every window for
+ * nothing.  TRUE when what is installed changed. */
+static gboolean
+appearance_sheet (GtkCssProvider **provider, const gchar **installed,
+                  const gchar *css, const gchar *what)
+{
+	GdkScreen *screen = gdk_screen_get_default ();
+
+	if (screen == NULL || css == *installed)
+		return FALSE;
+
+	if (*provider != NULL) {
+		gtk_style_context_remove_provider_for_screen (
+			screen, GTK_STYLE_PROVIDER (*provider));
+		g_clear_object (provider);
+	}
+	*installed = NULL;
+	if (css == NULL)
+		return TRUE;
+
+	*provider = gtk_css_provider_new ();
+	if (gtk_css_provider_load_from_data (*provider, css, -1, NULL)) {
+		gtk_style_context_add_provider_for_screen (
+			screen, GTK_STYLE_PROVIDER (*provider),
+			GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 2);
+		*installed = css;
+	} else {
+		g_warning ("StockFW %s failed to load", what);
+		g_clear_object (provider);
+	}
+	return TRUE;
+}
+
+/* [ apply_accent ]
+ * The accent colour of Preferences: blue is what the stylesheet and
+ * the light palette say already and installs nothing; green and amber
+ * rename fs_accent and fs_accent_fill, with the values of the mode
+ * that is on.  So it runs after apply_dark_mode, and again whenever
+ * either changes.  Everything painted by hand asks the theme for
+ * "fs_accent" at each draw (ui/fs-themecolor.h) and follows too. */
+static void
+apply_accent (void)
+{
+	static GtkCssProvider *provider = NULL;
+	static const gchar *installed = NULL;
+	const gchar *accent = fs_prefs_choice (FS_PREFS_ACCENT);
+	gboolean dark = fs_prefs_bool (FS_PREFS_DARK_MODE);
+	const gchar *css = NULL;
+
+	/* Row 0 is blue. */
+	for (guint i = 1; i < G_N_ELEMENTS (fs_theme_accents); i++)
+		if (strcmp (accent, fs_theme_accents[i].id) == 0)
+			css = dark ? fs_theme_accents[i].dark
+			           : fs_theme_accents[i].light;
+
+	appearance_sheet (&provider, &installed, css, "accent colour");
+}
+
+/* What density_tree is told: how much to add to every row above and
+ * below, and whether the column headings have just been restyled (the
+ * comfortable sheet went up or came down). */
+typedef struct
+{
+	gint     extra;
+	gboolean restyled;
+} DensityPass;
+
+/* [ density_tree ]
+ * The rows of every tree view under `widget': a cell renderer takes no
+ * padding from CSS, the row is as tall as its tallest cell plus that
+ * cell's ypad twice.  So each renderer's ypad becomes the one it was
+ * built with (remembered on it the first time it is raised, +1 so that
+ * 0 can be told from "never seen") plus the pass's extra.
+ *
+ * Then the view has to measure its rows again, which it does not do
+ * for a renderer property on its own.  Queueing a resize on a column
+ * marks every row's height stale.  The Events list is in fixed-height
+ * mode, where one measured row stands for all and that height is kept
+ * until the mode itself is set: so the mode is switched off and on
+ * again around it.
+ *
+ * The headings are CSS, but need a hand as well.  A scrolled window
+ * leaves room for its list's heading from the height the list worked
+ * out the last time it was measured, and asks for that before it
+ * measures the list again: after the headings grow (and before the
+ * very first layout) its answer is one step behind, and a list that
+ * is only as tall as it must be (the Policy page's) gave its scrollbar
+ * less room than a scrollbar takes, which GTK reports on stderr.  So
+ * the headings are measured here, now, and the next layout starts
+ * from the right height. */
+static void
+density_tree (GtkWidget *widget, gpointer data)
+{
+	const DensityPass *pass = data;
+
+	if (GTK_IS_TREE_VIEW (widget)) {
+		GtkTreeView *view = GTK_TREE_VIEW (widget);
+		GList *columns = gtk_tree_view_get_columns (view);
+		gboolean moved = FALSE;
+
+		for (GList *c = columns; c != NULL; c = c->next) {
+			GList *cells = gtk_cell_layout_get_cells (
+				GTK_CELL_LAYOUT (c->data));
+
+			for (GList *r = cells; r != NULL; r = r->next) {
+				GObject *cell = r->data;
+				gpointer seen = g_object_get_data (
+					cell, "fs-density-ypad");
+				gint xpad = 0, ypad = 0, built;
+
+				gtk_cell_renderer_get_padding (
+					GTK_CELL_RENDERER (cell), &xpad, &ypad);
+				if (seen != NULL) {
+					built = GPOINTER_TO_INT (seen) - 1;
+				} else if (pass->extra == 0) {
+					/* Compact, and never raised: as built. */
+					continue;
+				} else {
+					built = ypad;
+					g_object_set_data (
+						cell, "fs-density-ypad",
+						GINT_TO_POINTER (built + 1));
+				}
+				if (ypad != built + pass->extra) {
+					gtk_cell_renderer_set_padding (
+						GTK_CELL_RENDERER (cell), xpad,
+						built + pass->extra);
+					moved = TRUE;
+				}
+			}
+			g_list_free (cells);
+		}
+
+		if (moved) {
+			gboolean fixed =
+				gtk_tree_view_get_fixed_height_mode (view);
+
+			if (fixed)
+				gtk_tree_view_set_fixed_height_mode (view, FALSE);
+			for (GList *c = columns; c != NULL; c = c->next)
+				gtk_tree_view_column_queue_resize (c->data);
+			if (fixed)
+				gtk_tree_view_set_fixed_height_mode (view, TRUE);
+		}
+
+		if (moved || pass->restyled) {
+			gint height = 0;
+
+			for (GList *c = columns; c != NULL; c = c->next) {
+				GtkWidget *heading =
+					gtk_tree_view_column_get_button (c->data);
+
+				if (heading != NULL)
+					gtk_widget_queue_resize (heading);
+			}
+			gtk_widget_get_preferred_height (widget, &height, NULL);
+			gtk_widget_queue_resize (widget);
+		}
+
+		g_list_free (columns);
+	}
+
+	if (GTK_IS_CONTAINER (widget))
+		gtk_container_forall (GTK_CONTAINER (widget), density_tree,
+		                      data);
+}
+
+/* [ density_rows ]
+ * The row density of Preferences, for the lists CSS does not reach:
+ * every tree view in every window that is open now (the main window's
+ * pages hold all of them; there may be no window at all, in a test of
+ * the Preferences window alone).  Runs once the pages are built and
+ * after every change of the setting.  Compact, with nothing ever
+ * raised, changes nothing. */
+static void
+density_rows (gboolean restyled)
+{
+	gboolean comfortable = strcmp (fs_prefs_choice (FS_PREFS_DENSITY),
+	                               "comfortable") == 0;
+	DensityPass pass = { comfortable ? FS_THEME_COMFORTABLE_YPAD : 0,
+	                     restyled };
+	GList *tops = gtk_window_list_toplevels ();
+
+	for (GList *l = tops; l != NULL; l = l->next)
+		density_tree (l->data, &pass);
+	g_list_free (tops);
+}
+
+/* [ apply_density ]
+ * Compact is the stylesheet as written.  Comfortable lays the second
+ * sheet of ui/fs-theme-accent.h over it (a little more room in the
+ * rows of the sidebars, the lists and the menus, in every window) and
+ * raises the rows of the tree views to match. */
+static void
+apply_density (void)
+{
+	static GtkCssProvider *provider = NULL;
+	static const gchar *installed = NULL;
+	gboolean comfortable = strcmp (fs_prefs_choice (FS_PREFS_DENSITY),
+	                               "comfortable") == 0;
+
+	density_rows (appearance_sheet (&provider, &installed,
+	                                comfortable ? fs_theme_comfortable_css
+	                                            : NULL,
+	                                "comfortable density"));
+}
+
+/* [ apply_appearance ]
+ * Everything Preferences > General > Appearance offers, from what is
+ * stored: Dark mode, then the accent (whose values depend on the
+ * mode), then the row density.  At startup, after a Save in
+ * Preferences, and from the command palette. */
+static void
+apply_appearance (void)
+{
+	apply_dark_mode ();
+	apply_accent ();
+	apply_density ();
 }
 
 /* [ install_theme ]
@@ -2144,7 +2402,7 @@ fs_app_activate (GtkApplication *app)
 
 	/* Theme first: everything built below picks up the classes. */
 	install_theme ();
-	apply_dark_mode ();
+	apply_appearance ();
 
 	{
 		GtkWidget *overlay = gtk_overlay_new ();
@@ -2318,6 +2576,10 @@ fs_app_activate (GtkApplication *app)
 	/* Reflect the real firewall state, if the backend knows it. */
 	fs_statusview_set_state (fs_backend ()->get_state ());
 
+	/* The lists exist now: give their rows the density Preferences
+	 * asks for (apply_appearance ran before there was a page). */
+	density_rows (FALSE);
+
 	/* The tray before the window: a hidden start needs the icon up
 	 * first, to come back from.  It reuses the window logo set above,
 	 * and the state call just now already fed the tooltip text. */
@@ -2368,8 +2630,8 @@ fs_app_reload_settings (void)
 	/* ... and changed the list size or the history settings. */
 	fs_hitview_apply_settings ();
 
-	/* ... and switched Dark mode. */
-	apply_dark_mode ();
+	/* ... and switched Dark mode, the accent or the row density. */
+	apply_appearance ();
 }
 
 /* [ settings_swap ]

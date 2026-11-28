@@ -598,10 +598,10 @@ static const FsHelpBlock preferences[] = {
 	  "would do nothing here is left out, and a row that cannot act "
 	  "right now is greyed, with the reason under it.") },
 	{ FS_HELP_PARA, N_("Changes stay in the window until you press "
-	  "<b>Save</b>; <b>Cancel</b> or Escape drops them. A setting you "
-	  "changed is marked with a blue bar on its left, and its page with a "
-	  "dot in the sidebar. The footer counts the unsaved changes, and "
-	  "Save writes only the settings you changed.") },
+	  "<b>Save</b>; <b>Cancel</b> or Escape drops them. The row of a "
+	  "setting you changed is tinted, and its page is marked with a dot "
+	  "in the sidebar. The footer counts the unsaved changes, and Save "
+	  "writes only the settings you changed.") },
 	{ FS_HELP_PARA, N_("When you save a firewall setting, StockFW offers "
 	  "to apply it now. The settings go out with the policy that is "
 	  "already in force, not with Policy page edits you have not applied. "
@@ -645,6 +645,22 @@ static const FsHelpBlock prefs_general[] = {
 	  "instead of quitting, so event monitoring and Sentinel keep "
 	  "running. It needs the tray icon; where the desktop has no tray "
 	  "area, closing quits.") },
+	{ FS_HELP_HEAD, N_("Appearance") },
+	{ FS_HELP_ITEM, N_("<b>Dark mode</b> (on by default): a dark colour "
+	  "palette for the StockFW window and its dialogs. Off gives the "
+	  "light palette.") },
+	{ FS_HELP_ITEM, N_("<b>Accent colour</b> (Blue by default, or Green "
+	  "or Amber): the colour of links, of switches and check boxes that "
+	  "are on, of the focus ring and of selected text. The green, amber "
+	  "and red that mark a verdict, such as a blocked event, do not "
+	  "change with it.") },
+	{ FS_HELP_ITEM, N_("<b>Row density</b> (Compact by default): how "
+	  "much room a row gets in the lists, the sidebar and the menus. "
+	  "Compact shows more rows at once; Comfortable gives each row more "
+	  "space.") },
+	{ FS_HELP_PARA, N_("All three take effect when you press Save. The "
+	  "command palette (<b>Ctrl+K</b>) changes them at once and "
+	  "remembers the choice: type \"accent\", \"density\" or \"dark\".") },
 	{ FS_HELP_HEAD, N_("Firewall") },
 	{ FS_HELP_ITEM, N_("<b>Start the firewall when StockFW opens</b> (off "
 	  "by default): turns the firewall on each time StockFW starts. It "
@@ -1644,9 +1660,12 @@ static const FsHelpTopic topics[] = {
 	  preferences },
 	{ "prefs-general", "preferences", NULL,
 	  N_("General"),
-	  N_("The tray icon, closing to the tray, starting the firewall when "
+	  N_("The tray icon, closing to the tray, dark mode, the accent "
+	     "colour and the row density, starting the firewall when "
 	     "StockFW opens, and starting StockFW at sign-in."),
-	  N_("tray minimize close start sign-in login autostart boot"),
+	  N_("tray minimize close start sign-in login autostart boot "
+	     "appearance dark light theme accent colour color blue green "
+	     "amber density compact comfortable rows"),
 	  prefs_general },
 	{ "prefs-events", "preferences", NULL,
 	  N_("Events settings"),

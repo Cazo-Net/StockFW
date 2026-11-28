@@ -9,8 +9,10 @@
  *   - small radii (6px controls, 8px cards), compact 13px type
  *   - monospace for anything that is data: addresses, ports, counts,
  *     versions, shortcuts
- *   - one accent (blue) for links and focus; green/amber/red only
- *     ever mean a verdict
+ *   - one accent at a time, for links, focus and switches: fs_accent
+ *     and fs_accent_fill, blue here, green or amber when the user
+ *     picks one in Preferences; fs_ok, fs_warn and fs_bad (green,
+ *     amber, red) only ever mean a verdict, whatever the accent is
  *   - the primary action is the inverse of the canvas (light on dark,
  *     dark on light), everything else is quiet
  *
@@ -20,6 +22,12 @@
  * values, installed one priority step above this sheet when Dark mode
  * is switched off in Preferences.  A rule that writes a literal hex
  * colour therefore breaks one of the two modes: add a name instead.
+ * The other accents are src/ui/fs-theme-accent.h, another step up:
+ * they rename the two accent colours and nothing else, so a rule that
+ * means "the accent" must say @fs_accent or @fs_accent_fill and a
+ * rule that means "information" @fs_info, which stays blue.  The same
+ * header holds the comfortable row density; the metrics in this file
+ * are the compact ones.
  * ===================================================================== */
 
 /* --- palette: dark (default) ----------------------------------------- */

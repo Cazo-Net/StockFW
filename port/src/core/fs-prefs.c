@@ -352,6 +352,10 @@ static const FsPrefSpec prefs_table[] = {
 	SPEC_BOOL (FS_PREFS_ENABLE_TRAY_ICON,        TRUE,  FALSE),
 	SPEC_BOOL (FS_PREFS_MINIMIZE_TO_TRAY,        TRUE,  FALSE),
 	SPEC_BOOL (FS_PREFS_DARK_MODE,               TRUE,  FALSE),
+	/* One word each, out of the lists under fs_prefs_choices below.
+	 * "compact" is the look the window has always had. */
+	SPEC_STRING (FS_PREFS_ACCENT,                "blue",    FALSE),
+	SPEC_STRING (FS_PREFS_DENSITY,               "compact", FALSE),
 	SPEC_BOOL (FS_PREFS_START_ON_GUI,            FALSE, FALSE),
 
 	/* Events */
@@ -443,6 +447,50 @@ fs_prefs_string (const gchar *key)
 	                      g_strdup (""));
 
 	return fs_prefs_get_string (key, spec->string_default);
+}
+
+/* The settings that take one word out of a list.  The first word of
+ * each list is the table's default (tests/ui-prefs-smoke.c checks the
+ * two against each other). */
+static const gchar * const accent_choices[] = {
+	"blue", "green", "amber", NULL
+};
+static const gchar * const density_choices[] = {
+	"compact", "comfortable", NULL
+};
+
+const gchar * const *
+fs_prefs_choices (const gchar *key)
+{
+	if (key == NULL)
+		return NULL;
+	if (strcmp (key, FS_PREFS_ACCENT) == 0)
+		return accent_choices;
+	if (strcmp (key, FS_PREFS_DENSITY) == 0)
+		return density_choices;
+	return NULL;
+}
+
+/* [ fs_prefs_choice ]
+ * Never the stored text itself but the word of the list that equals
+ * it: the caller gets a string that outlives the store, and anything
+ * else the file holds reads as the default. */
+const gchar *
+fs_prefs_choice (const gchar *key)
+{
+	const gchar * const *choices = fs_prefs_choices (key);
+	const gchar *found = NULL;
+	gchar *stored;
+
+	g_return_val_if_fail (choices != NULL, "");
+
+	stored = fs_prefs_string (key);
+	for (guint i = 0; choices[i] != NULL && found == NULL; i++)
+		if (g_strcmp0 (stored, choices[i]) == 0)
+			found = choices[i];
+	g_free (stored);
+
+	return found != NULL ? found : choices[0];
 }
 
 guint
