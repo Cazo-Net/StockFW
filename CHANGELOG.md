@@ -34,6 +34,64 @@ architecture document has the detail.
 - **Page shortcuts.** `Ctrl+1` to `Ctrl+9` switch pages in sidebar
   order. The sidebar groups its pages under Monitor, Protect and Assist
   and shows each shortcut.
+- **The Overview is a status board.** The firewall's state is one large
+  word, coloured by its level, with the sentences that explain it under
+  it and a single Start or Stop button beside it. IPv4, IPv6, the
+  policy and the engine sit in a strip along the foot of the same card.
+- **A live traffic graph on the Overview.** The Traffic card draws
+  bytes per second received and sent over the last two minutes, with
+  the two current rates beside the heading. It is everything the
+  network adapters carried, whether or not the firewall filtered it,
+  and the card says so. Virtual adapters are left out unless no
+  hardware adapter is up.
+- **Busiest programs and latest blocks.** The Overview ranks the five
+  programs with the most open TCP connections to other computers; it
+  counts connections, not data. The five newest blocks are rows that
+  open the event's details, and "All events" leads to the Events page.
+- **A details panel beside the lists.** Details of an event, a rule, a
+  file or a connection open in a panel that slides in at the right of
+  the page, with the actions that apply to it. The rest of the page
+  stays in use. Escape, the panel's close button or a change of page
+  closes it.
+- **Events, Policy and Trust fill the panel.** On Events press Enter,
+  double-click, or choose Details in the right-click menu; the panel
+  has the menu's actions and follows the selection. On Policy every
+  group has a Details button. On Trust, Enter or a double click on a
+  baseline row inspects the file again and shows its whole report.
+- **Connection details on the Overview.** Enter or a double click on an
+  open connection shows its program, addresses, port, service and
+  direction, how many connections the same program holds, and a "Show
+  in Events" button.
+- **A sidebar that collapses to icons.** The button at the top of the
+  sidebar, `Ctrl+B` or "Toggle sidebar" in the command palette folds it
+  to a narrow strip and opens it again. Each icon names its page and
+  shortcut in a tooltip, and StockFW remembers the choice.
+- **Accent colour and row density.** Preferences > General > Appearance
+  has two new choices. Accent colour is Blue (as before), Green or
+  Amber; the colours that mark a verdict do not change. Row density is
+  Compact (as before) or Comfortable, which gives rows about 3 pixels
+  more above and below.
+- **Both from the command palette and from `stockfw config`.** "Accent:
+  green" and "Toggle row density" in the palette change the look at
+  once. `stockfw config` has the two settings as `accent` and
+  `density`, and `set` refuses a word that is not on offer.
+- **Topology draws this computer's connections.** The programs that
+  hold open connections are on the left (the five busiest by name),
+  this computer and the firewall in the middle, the local network and
+  the internet on the right. The page reads them every three seconds
+  while it is on screen.
+- **Topology lines move, and are red at a block.** Dashes run along each
+  line the way its connections were opened, all at one speed: they show
+  direction, not volume. An address the firewall blocked since StockFW
+  opened stays in red for 10 minutes after its last block. A line that
+  carries connections opened both ways stands still, with an arrowhead
+  at each end. With the desktop's animations off nothing moves, and
+  arrowheads show the way.
+- **Topology has a table view, and details for every node.** "Show as
+  table" lists every open connection and every blocked address. A click
+  on a node, or the arrow keys and Enter, opens its details in the
+  panel; a blocked address offers "Show in Events". The page has a
+  Help topic of its own, which F1 opens.
 
 ### Fixed
 
@@ -42,10 +100,14 @@ architecture document has the detail.
   random numbers every three seconds under a "Telemetry Active" badge.
   No model runs in StockFW, so the page now shows fixed sample figures
   and says on every card that they are samples.
-- **The Topology page says it is an example.** Its computers, addresses
-  and rates are a fixed sample diagram, not this computer's network, and
-  the dots that travelled along its lines like live traffic no longer
-  move.
+- **An inbound connection's remote address.** For a connection another
+  computer opened, the Overview's list of open connections showed this
+  computer's own address as the remote one. It shows the other
+  computer's.
+- **The Topology page no longer shows an example network.** In 1.0.9
+  its computers, addresses and rates were a fixed sample diagram, with
+  dots travelling along the lines like live traffic. The page is now
+  drawn from this computer (see Added).
 - **1.0.9 builds on Linux again.** It needed `json-glib` without saying
   so and did not link the maths library. The programs no longer need
   `json-glib` at all.
@@ -69,6 +131,15 @@ architecture document has the detail.
 
 ### Changed
 
+- **The Copilot page has two columns.** What-If comes first, with its
+  examples under the question. Findings from the events and from the
+  policy share one card, and the four figures are an "At a glance"
+  card at the side. The Sentinel switch is in the page header, and a
+  finding's severity is a coloured edge, an icon and a word.
+- **The Nexora sample chart follows the theme.** It is drawn in the
+  theme's colours, so Dark mode and the accent colour reach it, with
+  two labelled scales and a legend. It is still sample data and says
+  so.
 - **Unfinished 1.0.9 modules are no longer compiled into the programs.**
   The anomaly scorer, playbooks, mesh, quarantine, KEV reader, eBPF
   generator, audit ledger and the "post-quantum" module were never
