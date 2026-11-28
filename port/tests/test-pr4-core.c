@@ -485,7 +485,11 @@ test_lift_helpers (void)
 	CHECK (!fs_policy_contains (file, s2) && state_has (s2),
 	       "lift_all held: the row for the rule still live stays");
 	lifted = fs_policy_new ();
-	fs_autoblock_expire (file, now, FALSE, lifted);
+	/* The lift dates the row by the clock, so the next start is judged
+	 * by the clock too: `now' was read at the top, and a second may
+	 * have passed since. */
+	fs_autoblock_expire (file, g_get_real_time () / G_USEC_PER_SEC, FALSE,
+	                     lifted);
 	CHECK (fs_policy_contains (lifted, s2) && !state_has (s2),
 	       "lift_all held: ...dated as due, so the next start leaves "
 	       "it out");
