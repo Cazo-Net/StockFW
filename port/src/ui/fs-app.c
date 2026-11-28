@@ -2476,7 +2476,10 @@ fs_app_activate (GtkApplication *app)
 	            "time."),
 	          fs_activityview_page (), TRUE);
 
-	add_page (_("Topology"), _("Preview of a planned page. It shows a fixed example diagram, not your network."), fs_topology_page (), TRUE);
+	add_page (_("Topology"),
+	          _("This computer's open connections, and what the firewall "
+	            "blocked in the last 10 minutes."),
+	          fs_topology_page (), TRUE);
 	policy = fs_policy_new ();
 
 	/* The Events page was built above (before there was a policy to
