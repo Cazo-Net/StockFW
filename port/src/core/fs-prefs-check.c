@@ -320,6 +320,27 @@ fs_prefs_validate (const gchar * const *keys, const gchar * const *values,
 			}
 			g_hash_table_replace (c->values, (gpointer) spec->key,
 			                      g_strdup (text));
+		} else if (fs_prefs_choices (spec->key) != NULL) {
+			const gchar * const *choices = fs_prefs_choices (spec->key);
+			const gchar *word = NULL;
+
+			/* One word out of a list (the accent, the row
+			 * density), in any case; saved as the list spells
+			 * it. */
+			for (guint w = 0; choices[w] != NULL && word == NULL; w++)
+				if (g_ascii_strcasecmp (text, choices[w]) == 0)
+					word = choices[w];
+			if (word == NULL) {
+				gchar *list = g_strjoinv (", ", (gchar **) choices);
+
+				issue_add (c->refusals, spec->key, NULL,
+				           g_strdup_printf (_("\"%s\" is not one of: "
+				                              "%s."), text, list));
+				g_free (list);
+				continue;
+			}
+			g_hash_table_replace (c->values, (gpointer) spec->key,
+			                      g_strdup (word));
 		} else {
 			guint min = 0, max = 0;
 			guint64 v = 0;

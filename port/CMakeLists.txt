@@ -220,6 +220,7 @@ add_executable(StockFW
   src/ui/fs-eventmodel.c
   src/ui/fs-activityview.c
   src/ui/fs-topology.c
+  src/ui/fs-drawer.c
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
@@ -425,6 +426,7 @@ set(FS_UI_ONLY_SOURCES
   src/ui/fs-eventmodel.c
   src/ui/fs-activityview.c
   src/ui/fs-topology.c
+  src/ui/fs-drawer.c
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
@@ -697,6 +699,22 @@ target_include_directories(fs-overview-place-smoke PRIVATE
                            "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(fs-overview-place-smoke PRIVATE fs-core PkgConfig::GTK3)
 target_compile_definitions(fs-overview-place-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+# The Topology page against a fake backend whose list of connections
+# the test controls: ranking and merging of programs, local network or
+# internet, blocked events and their expiry, the empty states, the
+# layout at two sizes, and that the lines are animated only while the
+# diagram is on screen.  Supplies fs_backend() itself.
+add_executable(fs-topology-smoke EXCLUDE_FROM_ALL
+  tests/ui-topology-smoke.c
+  ${FS_UI_ONLY_SOURCES}
+)
+target_include_directories(fs-topology-smoke PRIVATE
+                           "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-topology-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-topology-smoke PRIVATE
   FS_VERSION="${PROJECT_VERSION}"
   FS_PLATFORM_NAME="${FS_PLATFORM}"
 )

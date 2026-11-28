@@ -23,6 +23,11 @@ G_BEGIN_DECLS
 #define FS_PREFS_ENABLE_TRAY_ICON "/apps/stockfw/client/enable_tray_icon"
 #define FS_PREFS_MINIMIZE_TO_TRAY "/apps/stockfw/client/minimize_to_tray"
 #define FS_PREFS_DARK_MODE        "/apps/stockfw/client/dark_mode"
+/* The look of the window, beside Dark mode.  Each holds one word out
+ * of a short list (fs_prefs_choices): the accent is "blue", "green" or
+ * "amber", the row density "compact" or "comfortable". */
+#define FS_PREFS_ACCENT           "/apps/stockfw/client/accent"
+#define FS_PREFS_DENSITY          "/apps/stockfw/client/density"
 
 #define FS_PREFS_SKIP_REDUNDANT          "/apps/stockfw/client/filter/redundant"
 #define FS_PREFS_SKIP_NOT_FOR_FIREWALL   "/apps/stockfw/client/filter/not_for_firewall"
@@ -105,6 +110,16 @@ gchar    *fs_prefs_string (const gchar *key);
  * value clamped to min..max, or the table's default when the stored
  * text is not a number. */
 guint     fs_prefs_uint   (const gchar *key, guint min, guint max);
+
+/* A setting that takes one word out of a short list (the accent, the
+ * row density): the words, NULL-terminated, the table's default first.
+ * NULL for every other key. */
+const gchar * const *fs_prefs_choices (const gchar *key);
+/* The stored word of such a setting when it is one of its list, else
+ * the table's default: a file edited by hand can hold anything, and
+ * text nobody knows behaves as if the key were not set.  A static
+ * string. */
+const gchar *fs_prefs_choice (const gchar *key);
 
 /* TRUE when the settings file holds key at all. */
 gboolean  fs_prefs_has_key (const gchar *key);

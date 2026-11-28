@@ -76,20 +76,26 @@ static const FsHelpBlock getting_started[] = {
 /* ------------------------------------------------------------ pages */
 
 static const FsHelpBlock overview[] = {
-	{ FS_HELP_PARA, N_("The Overview is the first page. Its header names "
+	{ FS_HELP_PARA, N_("The Overview is the first page. It answers one "
+	  "question first, whether this computer is protected, and then shows "
+	  "what is happening on the network now. Its header names "
 	  "this computer and its address. The <b>Lock policy</b> switch next "
 	  "to it holds every policy change back: while it is on, applying "
 	  "saves your changes and writes them to the audit log, and the "
 	  "firewall is left as it is.") },
-	{ FS_HELP_HEAD, N_("The status card") },
-	{ FS_HELP_PARA, N_("The coloured card says whether this computer is "
-	  "protected, and why. Green means your policy is in force. Amber "
+	{ FS_HELP_HEAD, N_("The status board") },
+	{ FS_HELP_PARA, N_("The coloured board at the top says the state in "
+	  "one large word: <b>Protected</b>, <b>Not protected</b>, or a word "
+	  "for what is only partly covered, such as <b>IPv6 not "
+	  "protected</b>. The sentences under it say why. Green means your "
+	  "policy is in force. Amber "
 	  "means part of the traffic is not filtered, IPv6 for example. Red "
 	  "means the firewall is stopped, or a network has no firewall on it. "
 	  "Grey means StockFW could not read the state, usually because it "
 	  "is not running with enough rights.") },
-	{ FS_HELP_PARA, N_("The button on the card starts or stops the "
-	  "firewall. Beside it are four facts: whether IPv4 and IPv6 traffic "
+	{ FS_HELP_PARA, N_("The one button on the board starts or stops the "
+	  "firewall. Along the foot of the board are four facts: whether IPv4 "
+	  "and IPv6 traffic "
 	  "is filtered, how many rules your policy has, and which firewall "
 	  "StockFW is driving.") },
 	{ FS_HELP_WARN, N_("On Windows, <b>Stop firewall</b> turns Windows "
@@ -97,7 +103,7 @@ static const FsHelpBlock overview[] = {
 	  "filtered until you start it again. On Linux it removes StockFW's "
 	  "rules and leaves those of other tools, such as ufw or Docker, as "
 	  "they are.") },
-	{ FS_HELP_PARA, N_("While the firewall runs, the card can add a "
+	{ FS_HELP_PARA, N_("While the firewall runs, the board can add a "
 	  "sentence on the <a href=\"help:threat-intel\">threat-intel "
 	  "blocklists</a> when they are in force, not in force and why, not "
 	  "loaded, or changed outside StockFW. Stopping the firewall takes the blocklists out too, and "
@@ -106,25 +112,45 @@ static const FsHelpBlock overview[] = {
 	{ FS_HELP_PARA, N_("Windows applies one of three profiles to each "
 	  "network: Domain, Private or Public. The Overview lists all three "
 	  "with a switch each and marks the ones in force <b>In use</b>. If "
-	  "the profile in use is switched off, the status card turns red: "
+	  "the profile in use is switched off, the status board turns red: "
 	  "the firewall service is running, but nothing on that network is "
 	  "filtered.") },
 	{ FS_HELP_HEAD, N_("What is happening now") },
+	{ FS_HELP_ITEM, N_("<b>Traffic</b>: a graph of the last two minutes, "
+	  "read every two seconds. The filled line is what the network "
+	  "adapters received and the grey line what they sent, in bytes per "
+	  "second, with the two current rates beside the heading and the "
+	  "scale at the top right. Rest the pointer on the graph to read a "
+	  "moment's numbers. It is everything the adapters carried, whether "
+	  "or not the firewall filtered it, so it keeps moving while the "
+	  "firewall is stopped. Virtual adapters are left out, unless no "
+	  "hardware adapter is up.") },
+	{ FS_HELP_ITEM, N_("<b>Busiest programs</b>: the five programs with "
+	  "the most open connections to other computers. It counts open TCP "
+	  "connections, not data volume. Connections whose owner could not "
+	  "be read are counted together as <b>Unknown program</b>.") },
+	{ FS_HELP_ITEM, N_("<b>Latest blocks</b>: the last five events "
+	  "blocked since StockFW opened. Select one to open its details in "
+	  "the panel on the right. <b>All events</b> opens the Events "
+	  "page.") },
+	{ FS_HELP_HEAD, N_("The detail") },
 	{ FS_HELP_ITEM, N_("<b>Totals</b>: inbound and outbound events since "
 	  "StockFW opened and how many were blocked, open connections, and "
 	  "traffic right now.") },
 	{ FS_HELP_ITEM, N_("<b>Open connections</b>: each program's "
 	  "connections to other computers, with a filter box. Connections "
 	  "between two programs on this computer are behind <b>Show "
-	  "them</b>, because no firewall rule sees them.") },
+	  "them</b>, because no firewall rule sees them. Press Enter on a "
+	  "connection, or double-click it, to open its details in the panel "
+	  "on the right: this computer's end of it, its state, and how many "
+	  "connections the same program holds. <b>Show in Events</b> there "
+	  "opens the Events page filtered to the remote address.") },
 	{ FS_HELP_ITEM, N_("<b>Network adapters</b>: the real adapters with "
 	  "their addresses and traffic. Virtual ones, such as Docker bridges "
 	  "or VPN tunnels, are behind <b>Show them</b>.") },
-	{ FS_HELP_ITEM, N_("<b>Recent blocks</b>: the last few blocked "
-	  "events. <b>All events</b> opens the Events page.") },
 	{ FS_HELP_NOTE, N_("Every number here is one the system reported. "
-	  "Where a platform cannot report something, its card is left out "
-	  "rather than shown as zero.") },
+	  "Where a platform cannot report something, its card is left out or "
+	  "says so, rather than showing a zero.") },
 	{ FS_HELP_SEE, "events activity threat-intel windows linux" },
 	{ FS_HELP_END, NULL }
 };
@@ -167,9 +193,23 @@ static const FsHelpBlock events[] = {
 	  "When StockFW starts the newest of them fill the list again, and "
 	  "<tt>stockfw events --history</tt> searches further back with the "
 	  "same filters. The system's own log stays the full record.") },
+	{ FS_HELP_HEAD, N_("One event in detail") },
+	{ FS_HELP_PARA, N_("Press Enter on a row, double-click it, or "
+	  "right-click it and choose <b>Details</b>, to open the event in the "
+	  "details panel on the right: the connection, the packet, what the "
+	  "log says about why it was blocked or allowed, and when it was "
+	  "logged. Addresses are shown whole there, where a narrow column "
+	  "cuts them short.") },
+	{ FS_HELP_ITEM, N_("While the panel is open it follows the row you "
+	  "select, so the arrow keys walk through the events one by one.") },
+	{ FS_HELP_ITEM, N_("New events arriving do not change what it shows. "
+	  "It closes with Escape, and by itself when its event leaves the "
+	  "list: when you press <b>Clear</b>, or when a full list drops that "
+	  "event as its oldest.") },
 	{ FS_HELP_HEAD, N_("From an event to a rule") },
-	{ FS_HELP_PARA, N_("Right-click a row to turn it into a rule. StockFW "
-	  "offers only what that event can express:") },
+	{ FS_HELP_PARA, N_("Right-click a row to turn it into a rule, or use "
+	  "the buttons at the bottom of the details panel: both offer the "
+	  "same actions. StockFW offers only what that event can express:") },
 	{ FS_HELP_ITEM, N_("Outbound: block the destination, allow the "
 	  "destination, or block this service to the destination.") },
 	{ FS_HELP_ITEM, N_("Inbound: trust the source (an inbound allow), or "
@@ -208,7 +248,8 @@ static const FsHelpBlock events[] = {
 	  "Their row names the list, such as "
 	  "<i>Threat intel: Spamhaus DROP (IPv4)</i>, and right-clicking it "
 	  "offers <b>Add exception</b>, which puts the address on the allow "
-	  "list. A block by one of your country or network rules is logged "
+	  "list. The details panel names the list too, and has the same "
+	  "button. A block by one of your country or network rules is logged "
 	  "and named the same way, with the rule's name.") },
 	{ FS_HELP_PARA, N_("On Windows the Security log does not name the rule "
 	  "that blocked a connection, so Events cannot say which list blocked "
@@ -247,6 +288,96 @@ static const FsHelpBlock activity[] = {
 	{ FS_HELP_END, NULL }
 };
 
+static const FsHelpBlock topology[] = {
+	{ FS_HELP_PARA, N_("The Topology page draws what this computer is "
+	  "connected to right now, and what the firewall turned away in the "
+	  "last 10 minutes. Programs stand in boxes on the left and <b>This "
+	  "computer</b> in the middle, with the firewall as a bar on its "
+	  "right. Beyond the bar are <b>Local network</b> and "
+	  "<b>Internet</b>, and under them the blocked addresses. All of it "
+	  "is read from this computer.") },
+	{ FS_HELP_HEAD, N_("Where it comes from") },
+	{ FS_HELP_ITEM, N_("The open connections are the ones the "
+	  "<a href=\"help:overview\">Overview</a> lists under <b>Open "
+	  "connections</b>, read again every three seconds. A connection "
+	  "between two programs on this computer is not drawn; the line "
+	  "above the diagram counts those.") },
+	{ FS_HELP_ITEM, N_("Up to six programs get a box each. When there "
+	  "are more, the five that hold the most connections get one and "
+	  "the rest share <b>Other programs</b>.") },
+	{ FS_HELP_ITEM, N_("The other end of a connection counts as "
+	  "<b>Local network</b> when its address is of a kind that does not "
+	  "cross the internet, such as <tt>192.168.1.20</tt> or "
+	  "<tt>10.0.0.5</tt>, and as <b>Internet</b> otherwise.") },
+	{ FS_HELP_ITEM, N_("A blocked address is the other end of an event "
+	  "that the <a href=\"help:events\">Events</a> page listed as "
+	  "blocked. It stays for 10 minutes after its last block.") },
+	{ FS_HELP_ITEM, N_("The diagram draws the four addresses blocked "
+	  "most recently, and the page remembers the newest 32. When more "
+	  "than that were blocked in 10 minutes it says <i>more than "
+	  "32</i>, and the rest are on the Events page.") },
+	{ FS_HELP_NOTE, N_("Blocks are counted since StockFW opened. In its "
+	  "first 10 minutes the page cannot know what was blocked before "
+	  "that, so the line above the diagram says <i>counted since "
+	  "StockFW opened</i>.") },
+	{ FS_HELP_HEAD, N_("What the lines mean") },
+	{ FS_HELP_ITEM, N_("A line in the accent colour stands for open "
+	  "connections, a little thicker when it carries more of them. Its "
+	  "dashes travel the way the connections were opened: away from a "
+	  "program and out through the firewall for those this computer "
+	  "started, the other way for those that came in.") },
+	{ FS_HELP_ITEM, N_("A line that does not move and has an arrowhead "
+	  "at each end carries both kinds. Point at its box, or open it, to "
+	  "read how many were opened here and how many from outside.") },
+	{ FS_HELP_ITEM, N_("A red dashed line is a blocked address. It ends "
+	  "at the firewall bar, at a red mark on the side the traffic came "
+	  "from. For traffic this computer tried to send, the stretch "
+	  "beyond the bar is drawn faint: nothing travelled it.") },
+	{ FS_HELP_ITEM, N_("The bar is solid while the firewall runs and an "
+	  "empty outline while it is stopped.") },
+	{ FS_HELP_NOTE, N_("Movement is not a measurement. Every line moves "
+	  "at the same speed however much data it carries, and the page "
+	  "measures no rates. A red line says that the firewall blocked "
+	  "that address at least once in the last 10 minutes. It does not "
+	  "say that an attack is under way, or that the address is still "
+	  "trying.") },
+	{ FS_HELP_HEAD, N_("Details and the table") },
+	{ FS_HELP_PARA, N_("Click a box, or move to it with the arrow keys "
+	  "and press Enter, to open its details in the panel on the right: "
+	  "up to 20 of a program's connections one by one, the programs "
+	  "that talk to the local network or to the internet, or for a "
+	  "blocked address what was blocked, how often and when. For a "
+	  "blocked address, <b>Show in Events</b> lists its events.") },
+	{ FS_HELP_ITEM, N_("While the panel is open the page is laid out "
+	  "beside it, the arrow keys take the panel along from box to box, "
+	  "and what it shows is kept up to date.") },
+	{ FS_HELP_ITEM, N_("It closes with Escape, and by itself when its "
+	  "box leaves the diagram, for instance when a program closes its "
+	  "last connection or a block is 10 minutes old.") },
+	{ FS_HELP_ITEM, N_("<b>Show as table</b> lists every open "
+	  "connection and every remembered blocked address as rows.") },
+	{ FS_HELP_HEAD, N_("Keys") },
+	{ FS_HELP_KEYS, N_("Up Down Left Right|Move from box to box in the "
+	  "diagram") },
+	{ FS_HELP_KEYS, N_("Enter Space|Open the details of the box in "
+	  "focus") },
+	{ FS_HELP_KEYS, N_("Tab|Leave the diagram") },
+	{ FS_HELP_KEYS, N_("Escape|Close the details panel") },
+	{ FS_HELP_HEAD, N_("When it reads and when it moves") },
+	{ FS_HELP_PARA, N_("The page asks for the open connections only "
+	  "while it is on screen. On another page, or with StockFW hidden, "
+	  "nothing is read and nothing moves. Blocked events are still "
+	  "noted meanwhile, so the last 10 minutes are complete when you "
+	  "come back.") },
+	{ FS_HELP_ITEM, N_("The lines follow the system's animation "
+	  "setting. With animations switched off nothing moves, and "
+	  "arrowheads show the direction instead.") },
+	{ FS_HELP_ITEM, N_("Where StockFW cannot list the open connections "
+	  "the page says so, and still draws the blocked addresses.") },
+	{ FS_HELP_SEE, "overview events activity shortcuts" },
+	{ FS_HELP_END, NULL }
+};
+
 static const FsHelpBlock policy[] = {
 	{ FS_HELP_PARA, N_("Your policy is the set of rules StockFW asks the "
 	  "firewall to enforce, kept as plain CSV files. The Policy page "
@@ -281,6 +412,15 @@ static const FsHelpBlock policy[] = {
 	  "for you to fill in. On the groups that have a twin in the other "
 	  "direction, the menu beside Add can make it <b>Bi-directional</b>: "
 	  "both rows are saved together, or neither is.") },
+	{ FS_HELP_PARA, N_("<b>Details</b>, beside Remove, opens the selected "
+	  "rule in the details panel on the right: every field of the row, "
+	  "which addresses the rule covers and why, the program a service "
+	  "rule is bound to, what is wrong with a rule the firewall would not "
+	  "take, and whether its twin for the other direction is in the "
+	  "policy. While the panel is open it follows the rule you select, in "
+	  "any group. <b>Remove rule</b> there does what Remove does, and a "
+	  "service rule has <b>Bind App</b> there as well. Editing stays in "
+	  "the cells.") },
 	{ FS_HELP_HEAD, N_("Services, ports and hosts") },
 	{ FS_HELP_PARA, N_("A service names a port, such as SSH for 22 or "
 	  "HTTPS for 443. A port is one number or a range such as 6000-6010. "
@@ -330,11 +470,17 @@ static const FsHelpBlock copilot[] = {
 	  "policy. Each rule is a count compared with a written limit, so the "
 	  "same events always give the same findings. Nothing is sent "
 	  "anywhere, and no language model is involved.") },
-	{ FS_HELP_PARA, N_("Four tiles sit at the top: <b>Needs attention</b> "
-	  "(the Critical and Warning findings, from the events and from the "
-	  "policy), <b>Policy health</b>, <b>Auto-blocks active</b>, and "
-	  "<b>Apps learned</b>, which reads <b>Services learned</b> on Linux, "
-	  "where the log names a port's service rather than a program.") },
+	{ FS_HELP_PARA, N_("The page has two columns. On the left, the "
+	  "<a href=\"help:whatif\">What-If</a> simulator comes first, then "
+	  "one <b>Findings</b> card with two groups, <b>From events</b> and "
+	  "<b>From the policy</b>, then <b>Changes made by the Copilot</b>. "
+	  "On the right, <b>At a glance</b> lists four figures: <b>Needs "
+	  "attention</b> (the Critical and Warning findings, from the events "
+	  "and from the policy), <b>Policy health</b>, <b>Auto-blocks "
+	  "active</b>, and <b>Apps learned</b>, which reads <b>Services "
+	  "learned</b> on Linux, where the log names a port's service rather "
+	  "than a program. In a narrow window the figures move above the "
+	  "rest.") },
 	{ FS_HELP_HEAD, N_("What it looks for") },
 	{ FS_HELP_ITEM, N_("<b>Beacon</b> and <b>Fan-Out</b> in outgoing "
 	  "traffic: see <a href=\"help:sentinel\">Sentinel</a>.") },
@@ -367,8 +513,9 @@ static const FsHelpBlock copilot[] = {
 	  "Allow. Two different checks on the same address within an hour "
 	  "make both findings Critical.") },
 	{ FS_HELP_HEAD, N_("A finding") },
-	{ FS_HELP_PARA, N_("Each finding has a severity in a word (Info, "
-	  "Warning or Critical). Click it, or press Enter, to open what was "
+	{ FS_HELP_PARA, N_("Each finding shows its severity as a word (Info, "
+	  "Warning or Critical) with an icon, and as a coloured edge on its "
+	  "row. Click it, or press Enter, to open what was "
 	  "seen, why it was flagged with the numbers next to the limits, what "
 	  "could make it harmless, what Sentinel did, and the events behind "
 	  "it.") },
@@ -379,7 +526,8 @@ static const FsHelpBlock copilot[] = {
 	  "nothing. Findings are kept while StockFW runs; dismissals are not "
 	  "saved.") },
 	{ FS_HELP_HEAD, N_("Policy health") },
-	{ FS_HELP_PARA, N_("The Policy health card checks your saved rules: "
+	{ FS_HELP_PARA, N_("The <b>From the policy</b> group of the Findings "
+	  "card checks your saved rules: "
 	  "duplicates, rules another rule already covers, allows a deny "
 	  "cancels, outbound allows that have no effect while outbound is "
 	  "open, inbound allows over more than 100 ports, risky services "
@@ -414,7 +562,7 @@ static const FsHelpBlock copilot[] = {
 
 static const FsHelpBlock whatif[] = {
 	{ FS_HELP_PARA, N_("Describe a connection in the What-If box at the "
-	  "bottom of the Copilot page and press <b>Simulate</b>. StockFW "
+	  "top of the Copilot page and press <b>Simulate</b>. StockFW "
 	  "answers <b>ALLOWED</b>, <b>BLOCKED</b> or <b>DEPENDS</b> the way "
 	  "the firewall on this computer would decide, names the rule that "
 	  "decided, and offers fixes it has checked. Asking writes nothing: "
@@ -510,7 +658,8 @@ static const FsHelpBlock sentinel[] = {
 	  "On Linux only the blocked ones count, because one port's service "
 	  "covers every browser.") },
 	{ FS_HELP_HEAD, N_("Modes") },
-	{ FS_HELP_PARA, N_("The switch at the top of the Copilot page has two "
+	{ FS_HELP_PARA, N_("The <b>Sentinel</b> switch, in the header of the "
+	  "Copilot page, has two "
 	  "modes. <b>Detect only</b> reports what it sees and changes "
 	  "nothing. <b>Detect + auto-block</b>, the default, can also block "
 	  "a beacon's destination for ten minutes.") },
@@ -573,6 +722,11 @@ static const FsHelpBlock trust[] = {
 	{ FS_HELP_PARA, N_("<b>Refresh list</b> checks every file in the "
 	  "baseline again. <b>Scan processes</b> inspects the programs that "
 	  "are running now (Windows).") },
+	{ FS_HELP_PARA, N_("Press Enter on a row of the baseline list, or "
+	  "double-click it, to inspect that file again and open its report in "
+	  "the details panel on the right. The panel shows the path and the "
+	  "fingerprint whole, and has <b>Attest</b> and <b>Forget</b> for "
+	  "that file; they ask first, like the buttons on the page.") },
 	{ FS_HELP_NOTE, N_("Signatures are checked on Windows only, with "
 	  "Windows' own Authenticode check, offline: nothing is downloaded "
 	  "and revocation is not checked. On Linux the signature reads "
@@ -598,10 +752,10 @@ static const FsHelpBlock preferences[] = {
 	  "would do nothing here is left out, and a row that cannot act "
 	  "right now is greyed, with the reason under it.") },
 	{ FS_HELP_PARA, N_("Changes stay in the window until you press "
-	  "<b>Save</b>; <b>Cancel</b> or Escape drops them. A setting you "
-	  "changed is marked with a blue bar on its left, and its page with a "
-	  "dot in the sidebar. The footer counts the unsaved changes, and "
-	  "Save writes only the settings you changed.") },
+	  "<b>Save</b>; <b>Cancel</b> or Escape drops them. The row of a "
+	  "setting you changed is tinted, and its page is marked with a dot "
+	  "in the sidebar. The footer counts the unsaved changes, and Save "
+	  "writes only the settings you changed.") },
 	{ FS_HELP_PARA, N_("When you save a firewall setting, StockFW offers "
 	  "to apply it now. The settings go out with the policy that is "
 	  "already in force, not with Policy page edits you have not applied. "
@@ -612,8 +766,9 @@ static const FsHelpBlock preferences[] = {
 	  "opens the topic for the page you are on.") },
 	{ FS_HELP_HEAD, N_("The pages") },
 	{ FS_HELP_ITEM, N_("<a href=\"help:prefs-general\">General</a>: the "
-	  "tray icon, closing to the tray, starting the firewall when "
-	  "StockFW opens, and starting StockFW when you sign in.") },
+	  "tray icon, closing to the tray, dark mode, the accent colour and "
+	  "the row density, starting the firewall when StockFW opens, and "
+	  "starting StockFW when you sign in.") },
 	{ FS_HELP_ITEM, N_("<a href=\"help:prefs-events\">Events</a>: what "
 	  "the Events list leaves out.") },
 	{ FS_HELP_ITEM, N_("<a href=\"help:prefs-policy\">Policy</a>: when "
@@ -645,6 +800,22 @@ static const FsHelpBlock prefs_general[] = {
 	  "instead of quitting, so event monitoring and Sentinel keep "
 	  "running. It needs the tray icon; where the desktop has no tray "
 	  "area, closing quits.") },
+	{ FS_HELP_HEAD, N_("Appearance") },
+	{ FS_HELP_ITEM, N_("<b>Dark mode</b> (on by default): a dark colour "
+	  "palette for the StockFW window and its dialogs. Off gives the "
+	  "light palette.") },
+	{ FS_HELP_ITEM, N_("<b>Accent colour</b> (Blue by default, or Green "
+	  "or Amber): the colour of links, of switches and check boxes that "
+	  "are on, of the focus ring and of selected text. The green, amber "
+	  "and red that mark a verdict, such as a blocked event, do not "
+	  "change with it.") },
+	{ FS_HELP_ITEM, N_("<b>Row density</b> (Compact by default): how "
+	  "much room a row gets in the lists, the sidebar and the menus. "
+	  "Compact shows more rows at once; Comfortable gives each row more "
+	  "space.") },
+	{ FS_HELP_PARA, N_("All three take effect when you press Save. The "
+	  "command palette (<b>Ctrl+K</b>) changes them at once and "
+	  "remembers the choice: type \"accent\", \"density\" or \"dark\".") },
 	{ FS_HELP_HEAD, N_("Firewall") },
 	{ FS_HELP_ITEM, N_("<b>Start the firewall when StockFW opens</b> (off "
 	  "by default): turns the firewall on each time StockFW starts. It "
@@ -1500,6 +1671,8 @@ static const FsHelpBlock shortcuts[] = {
 	  "does the same") },
 	{ FS_HELP_KEYS, N_("Ctrl+1|Go to the first page in the sidebar; "
 	  "Ctrl+2 to Ctrl+9 for the ones below it") },
+	{ FS_HELP_KEYS, N_("Ctrl+B|Collapse the sidebar to a strip of icons, "
+	  "or expand it again") },
 	{ FS_HELP_KEYS, N_("Ctrl+,|Preferences") },
 	{ FS_HELP_KEYS, N_("Ctrl+Q|Quit StockFW") },
 	{ FS_HELP_KEYS, N_("Alt+A|Policy: apply the policy") },
@@ -1507,7 +1680,12 @@ static const FsHelpBlock shortcuts[] = {
 	{ FS_HELP_KEYS, N_("Alt+F|Events: read recent events again") },
 	{ FS_HELP_KEYS, N_("Left Right Home End|Activity: read one interval "
 	  "of the focused graph") },
+	{ FS_HELP_KEYS, N_("Up Down Left Right Enter|Topology: move from "
+	  "box to box in the diagram; Enter opens the details of the one "
+	  "in focus") },
 	{ FS_HELP_KEYS, N_("Enter|Trust: inspect the path you typed") },
+	{ FS_HELP_KEYS, N_("Escape|Close the details panel at the right of "
+	  "the page") },
 	{ FS_HELP_HEAD, N_("Preferences") },
 	{ FS_HELP_KEYS, N_("F1|Help for the page shown") },
 	{ FS_HELP_KEYS, N_("Escape|Cancel and close") },
@@ -1590,6 +1768,14 @@ static const FsHelpTopic topics[] = {
 	  N_("Allowed and blocked events, and adapter traffic, over time."),
 	  N_("graph chart network io throughput history table"),
 	  activity },
+	{ "topology", NULL, NULL,
+	  N_("Topology"),
+	  N_("What this computer is connected to right now, and what the "
+	     "firewall turned away, as a diagram."),
+	  N_("diagram map connections programs local network internet "
+	     "blocked lines arrows dashes animation motion table boxes "
+	     "nodes inbound outbound"),
+	  topology },
 	{ "policy", NULL, NULL,
 	  N_("Policy"),
 	  N_("The rules StockFW enforces: what may come in, what may go out, "
@@ -1640,9 +1826,12 @@ static const FsHelpTopic topics[] = {
 	  preferences },
 	{ "prefs-general", "preferences", NULL,
 	  N_("General"),
-	  N_("The tray icon, closing to the tray, starting the firewall when "
+	  N_("The tray icon, closing to the tray, dark mode, the accent "
+	     "colour and the row density, starting the firewall when "
 	     "StockFW opens, and starting StockFW at sign-in."),
-	  N_("tray minimize close start sign-in login autostart boot"),
+	  N_("tray minimize close start sign-in login autostart boot "
+	     "appearance dark light theme accent colour color blue green "
+	     "amber density compact comfortable rows"),
 	  prefs_general },
 	{ "prefs-events", "preferences", NULL,
 	  N_("Events settings"),

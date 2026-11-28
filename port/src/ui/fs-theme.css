@@ -9,8 +9,10 @@
  *   - small radii (6px controls, 8px cards), compact 13px type
  *   - monospace for anything that is data: addresses, ports, counts,
  *     versions, shortcuts
- *   - one accent (blue) for links and focus; green/amber/red only
- *     ever mean a verdict
+ *   - one accent at a time, for links, focus and switches: fs_accent
+ *     and fs_accent_fill, blue here, green or amber when the user
+ *     picks one in Preferences; fs_ok, fs_warn and fs_bad (green,
+ *     amber, red) only ever mean a verdict, whatever the accent is
  *   - the primary action is the inverse of the canvas (light on dark,
  *     dark on light), everything else is quiet
  *
@@ -20,6 +22,12 @@
  * values, installed one priority step above this sheet when Dark mode
  * is switched off in Preferences.  A rule that writes a literal hex
  * colour therefore breaks one of the two modes: add a name instead.
+ * The other accents are src/ui/fs-theme-accent.h, another step up:
+ * they rename the two accent colours and nothing else, so a rule that
+ * means "the accent" must say @fs_accent or @fs_accent_fill and a
+ * rule that means "information" @fs_info, which stays blue.  The same
+ * header holds the comfortable row density; the metrics in this file
+ * are the compact ones.
  * ===================================================================== */
 
 /* --- palette: dark (default) ----------------------------------------- */
@@ -1068,6 +1076,35 @@ textview text {
 	font-family: "IBM Plex Mono", "JetBrains Mono", "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace;
 }
 
+/* The fold button at the end of the brand row (Ctrl+B).  As tall as
+ * the brand tile beside it, so it adds nothing to the row. */
+button.fs-side-toggle {
+	background-image: none;
+	background-color: transparent;
+	border: 1px solid transparent;
+	border-radius: 6px;
+	box-shadow: none;
+	color: @fs_text_weaker;
+	padding: 3px;
+	margin: 0;
+	min-height: 16px;
+	min-width: 16px;
+}
+button.fs-side-toggle:hover {
+	background-image: none;
+	background-color: @fs_surface;
+	border-color: transparent;
+	color: @fs_text_strong;
+	box-shadow: none;
+}
+button.fs-side-toggle:active {
+	background-image: none;
+	background-color: @fs_surface_2;
+	border-color: transparent;
+	color: @fs_text_strong;
+	box-shadow: none;
+}
+
 /* The command-palette trigger: reads as a search field. */
 button.fs-side-search {
 	background-image: none;
@@ -1177,6 +1214,28 @@ button.nav-item label.fs-kbd {
 	font-size: 11px;
 }
 
+/* The rail: the same sidebar folded to its icons (fs-app.c hides the
+ * text and sets the width).  Only what would not fit a 52px column
+ * changes here; button.nav-item is left exactly as it is above, in
+ * the rail too, so its height is the same in both. */
+.fs-sidebar.rail .fs-brand {
+	padding: 4px 0 10px 0;
+}
+.fs-sidebar.rail button.fs-side-search {
+	padding: 5px 0;
+	margin: 0 0 8px 0;
+}
+.fs-sidebar.rail .fs-sidebar-footer {
+	padding: 10px 0 2px 0;
+}
+/* Stands where a group's heading was. */
+.fs-side-rule {
+	background-image: none;
+	background-color: @fs_border;
+	min-height: 1px;
+	margin: 7px 8px 7px 8px;
+}
+
 /* Status dots */
 .dot-ok      { color: @fs_ok; text-shadow: none; }
 .dot-warn    { color: @fs_warn; text-shadow: none; }
@@ -1205,15 +1264,113 @@ button.nav-item label.fs-kbd {
 	font-size: 12px;
 }
 
-/* --- Overview: verdict card ---------------------------------------------------- */
+/* =====================================================================
+ * Detail drawer (ui/fs-drawer.c): slides in over the right edge of the
+ * page for the event, rule or program a list has selected.  An opaque
+ * surface with one hairline on the side it meets the page; no shadow
+ * and no scrim, the list behind stays in use.
+ * ===================================================================== */
+.fs-drawer {
+	background-image: none;
+	background-color: @fs_surface;
+	border-left: 1px solid @fs_border;
+	box-shadow: none;
+}
+.fs-drawer scrolledwindow,
+.fs-drawer viewport {
+	background-image: none;
+	background-color: transparent;
+	border: none;
+}
+/* The body takes the keyboard only while it scrolls (fs-drawer.c); a
+ * hairline around it in the accent says where Page Down will act. */
+.fs-drawer scrolledwindow:focus {
+	box-shadow: inset 0 0 0 1px @fs_accent_fill;
+}
+.fs-drawer-head {
+	padding: 14px 12px 14px 16px;
+	border-bottom: 1px solid @fs_border;
+}
+.fs-drawer-title {
+	font-size: 15px;
+	font-weight: 600;
+	color: @fs_text_strong;
+}
+.fs-drawer-subtitle {
+	font-size: 12px;
+	color: @fs_text_weak;
+}
+/* The cross: a bare glyph until the pointer or the keyboard is on it. */
+button.fs-drawer-close {
+	background-image: none;
+	background-color: transparent;
+	border: 1px solid transparent;
+	border-radius: 6px;
+	box-shadow: none;
+	color: @fs_text_weak;
+	padding: 5px;
+	margin: 0;
+	min-height: 16px;
+	min-width: 16px;
+}
+button.fs-drawer-close:hover {
+	background-image: none;
+	background-color: @fs_surface_2;
+	border-color: transparent;
+	color: @fs_text_strong;
+	box-shadow: none;
+}
+button.fs-drawer-close:active {
+	background-image: none;
+	background-color: @fs_surface_3;
+	border-color: transparent;
+	color: @fs_text_strong;
+	box-shadow: none;
+}
+.fs-drawer-body {
+	padding: 16px;
+}
+/* A heading between groups of fields: small and quiet, set a little
+ * wide so it reads as a label and not as a value. */
+.fs-drawer-section {
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.5px;
+	color: @fs_text_weaker;
+	margin-top: 4px;
+}
+.fs-drawer-name {
+	font-size: 12px;
+	color: @fs_text_weak;
+}
+.fs-drawer-value {
+	font-size: 13px;
+	color: @fs_text;
+}
+.fs-drawer-value.mono {
+	font-size: 12px;
+}
+.fs-drawer-foot {
+	padding: 12px 16px 16px 16px;
+	border-top: 1px solid @fs_border;
+}
+
+/* --- Overview: the status board ------------------------------------------------ *
+ * One card.  On top the state in one large word, coloured by the
+ * card's level, with the sentences that explain it and the one button
+ * that changes it; along the foot a strip of four facts, divided by
+ * hairlines and not boxed. */
 .hero {
 	border: 1px solid @fs_border;
 	border-radius: 8px;
-	padding: 16px;
+	padding: 0;
 	background-image: none;
 	background-color: @fs_surface;
 	margin-bottom: 12px;
 	box-shadow: none;
+}
+.hero-top {
+	padding: 18px 20px 16px 20px;
 }
 .hero-icon-tile {
 	border-radius: 6px;
@@ -1223,8 +1380,16 @@ button.nav-item label.fs-kbd {
 .hero-icon {
 	color: @fs_text_weak;
 }
+.state-word {
+	font-size: 30px;
+	font-weight: 600;
+	color: @fs_text_weak;
+}
+.hero.level-ok .state-word   { color: @fs_ok; }
+.hero.level-warn .state-word { color: @fs_warn; }
+.hero.level-bad .state-word  { color: @fs_bad; }
 .hero-title {
-	font-size: 16px;
+	font-size: 14px;
 	font-weight: 600;
 	color: @fs_text_strong;
 }
@@ -1233,12 +1398,40 @@ button.nav-item label.fs-kbd {
 	color: @fs_text_weak;
 	font-weight: 400;
 }
+button.power-button {
+	padding: 10px 22px;
+	font-size: 14px;
+	font-weight: 600;
+}
+.hero-facts {
+	border-top: 1px solid @fs_border;
+	padding: 12px 20px 14px 20px;
+}
 .hero-tile {
+	background-color: transparent;
+	border: none;
+	border-radius: 0;
+	padding: 0;
+	box-shadow: none;
+}
+.hero-tile-next {
+	border-left: 1px solid @fs_border;
+	padding-left: 16px;
+}
+/* The Threat Intel page's status card (ui/fs-intelview.c) is built from
+ * the same classes, without the board's two inner boxes: it keeps its
+ * own padding, its larger title and its four boxed facts. */
+#intel-hero {
+	padding: 16px;
+}
+#intel-hero .hero-title {
+	font-size: 16px;
+}
+#intel-hero .hero-tile {
 	background-color: @fs_bg;
 	border: 1px solid @fs_border;
 	border-radius: 6px;
 	padding: 8px 12px;
-	box-shadow: none;
 }
 .tile-caption {
 	color: @fs_text_weak;
@@ -1264,7 +1457,6 @@ button.nav-item label.fs-kbd {
 .hero.level-ok .hero-icon      { color: @fs_ok; }
 .hero.level-ok .hero-title     { color: @fs_text_strong; }
 .hero.level-ok .hero-body      { color: @fs_text_weak; }
-.hero.level-ok .hero-tile      { border-color: @fs_border; background-color: @fs_bg; box-shadow: none; }
 
 .hero.level-warn {
 	background-image: none;
@@ -1276,7 +1468,6 @@ button.nav-item label.fs-kbd {
 .hero.level-warn .hero-icon      { color: @fs_warn; }
 .hero.level-warn .hero-title     { color: @fs_text_strong; }
 .hero.level-warn .hero-body      { color: @fs_text_weak; }
-.hero.level-warn .hero-tile      { border-color: @fs_border; background-color: @fs_bg; box-shadow: none; }
 
 .hero.level-bad {
 	background-image: none;
@@ -1288,7 +1479,6 @@ button.nav-item label.fs-kbd {
 .hero.level-bad .hero-icon      { color: @fs_bad; }
 .hero.level-bad .hero-title     { color: @fs_text_strong; }
 .hero.level-bad .hero-body      { color: @fs_text_weak; }
-.hero.level-bad .hero-tile      { border-color: @fs_border; background-color: @fs_bg; box-shadow: none; }
 
 /* --- Overview: totals, lists ----------------------------------------------------- */
 .stat-card {
@@ -1331,6 +1521,10 @@ button.nav-item label.fs-kbd {
 	font-weight: 600;
 	color: @fs_text_strong;
 }
+/* An adapter's kind, on the line of its name (.adapter-name too). */
+.adapter-kind {
+	color: @fs_text_weak;
+}
 .adapter-num {
 	font-size: 12px;
 	font-weight: 500;
@@ -1344,9 +1538,72 @@ button.nav-item label.fs-kbd {
 .adapter-ip {
 	color: @fs_text_weak;
 }
-.recent-row {
-	padding: 8px 0;
-	border-bottom: 1px solid @fs_border;
+/* Traffic: the legend beside the heading.  The graph itself is drawn
+ * with cairo from the same named colours (fs-statusview.c). */
+.legend-received { color: @fs_accent; }
+.legend-sent     { color: @fs_text_weak; }
+.legend-name {
+	font-size: 12px;
+	color: @fs_text_weak;
+}
+.legend-value {
+	font-family: "IBM Plex Mono", "JetBrains Mono", "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace;
+	font-size: 12px;
+	font-weight: 500;
+	color: @fs_text_strong;
+}
+/* Busiest programs: name, bar (cairo), count. */
+.busy-name {
+	font-size: 13px;
+	font-weight: 500;
+	color: @fs_text_strong;
+}
+.busy-count {
+	font-family: "IBM Plex Mono", "JetBrains Mono", "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace;
+	font-size: 12px;
+	font-weight: 500;
+	color: @fs_text_strong;
+}
+/* Latest blocks: each row is a button that opens the event's details.
+ * The card's side padding moves into the rows, so a row's hover face
+ * reaches past the text and the text still lines up with the heading. */
+.recent-card {
+	padding: 14px 8px;
+}
+.recent-card > label,
+.recent-card > box {
+	margin-left: 8px;
+	margin-right: 8px;
+}
+.recent-card > box.recent-list {
+	margin-left: 0;
+	margin-right: 0;
+}
+/* The link's face reaches 12px left of its text; with this its text
+ * starts under the heading's. */
+.recent-card > box.recent-foot {
+	margin-left: 4px;
+}
+button.recent-row {
+	background-image: none;
+	background-color: transparent;
+	border: none;
+	border-radius: 6px;
+	padding: 6px 8px;
+	box-shadow: none;
+}
+button.recent-row:hover,
+button.recent-row:active {
+	background-image: none;
+	background-color: @fs_surface_2;
+	box-shadow: none;
+}
+.recent-more {
+	color: @fs_text_weaker;
+}
+button.recent-row:hover .recent-more,
+button.recent-row:focus .recent-more {
+	color: @fs_text_strong;
 }
 .recent-title {
 	font-size: 13px;
@@ -1379,7 +1636,24 @@ button.nav-item label.fs-kbd {
 
 /* =====================================================================
  * Copilot page
+ *
+ * A header, then two columns of cards, 16px apart and 16px inside.
+ * Lists run edge to edge in their card.  A row's severity is a 3px
+ * edge in the level's colour (an inset hairline, so it takes no room
+ * from the row), an icon and the word in the same colour.
  * ===================================================================== */
+/* The gap between two cards is the column's spacing alone. */
+.cp-page .card {
+	margin-bottom: 0;
+}
+.cp-page-strip {
+	margin-bottom: 14px;
+}
+.cp-card-strip {
+	margin: 0 16px 10px 16px;
+}
+
+/* --- row text: title, detail, meta --- */
 .cp-title {
 	font-size: 13px;
 	font-weight: 600;
@@ -1395,6 +1669,91 @@ button.nav-item label.fs-kbd {
 	font-size: 12px;
 	color: @fs_text_weak;
 }
+
+/* --- the What-If card: the question is the largest control here --- */
+.cp-hero entry.cp-ask {
+	min-height: 24px;
+	padding: 7px 12px;
+	font-size: 14px;
+}
+.cp-hero button.cp-ask-go {
+	padding: 5px 16px;
+	font-size: 14px;
+}
+
+/* --- a group inside the Findings card --- */
+.cp-group-head {
+	min-height: 24px;
+	padding: 0 16px 8px 16px;
+}
+.cp-group-head.cp-group-next {
+	border-top: 1px solid @fs_border;
+	padding-top: 10px;
+}
+.cp-group {
+	font-size: 12px;
+	font-weight: 600;
+	color: @fs_text_weak;
+}
+button.cp-small {
+	min-height: 16px;
+	padding: 3px 10px;
+	font-size: 12px;
+}
+
+/* --- lists: no frame of their own, rows from edge to edge --- */
+.cp-rows-card {
+	padding-bottom: 6px;
+}
+.cp-list-frame {
+	background-color: transparent;
+	border: none;
+	border-radius: 0;
+	padding: 0;
+	margin: 0;
+}
+list.cp-list {
+	background-color: transparent;
+}
+list.cp-list row.cp-row {
+	padding: 10px 16px;
+	border-top: 1px solid @fs_border;
+	background-color: transparent;
+	box-shadow: none;
+}
+list.cp-list row.cp-row.activatable:hover {
+	background-color: @fs_surface_2;
+}
+list.cp-list row.cp-row:focus {
+	outline: 2px solid alpha(@fs_accent_fill, 0.7);
+	outline-offset: -2px;
+}
+list.cp-list row.cp-row.sev-bad {
+	box-shadow: inset 3px 0 0 @fs_bad;
+}
+list.cp-list row.cp-row.sev-warn {
+	box-shadow: inset 3px 0 0 @fs_warn;
+}
+list.cp-list row.cp-row.sev-info {
+	box-shadow: inset 3px 0 0 @fs_info;
+}
+
+/* --- severity: icon and word, no box --- */
+.cp-pill {
+	margin-top: 1px;
+	font-size: 12px;
+	font-weight: 600;
+	color: @fs_text_weak;
+}
+.cp-pill.bad  { color: @fs_bad; }
+.cp-pill.warn { color: @fs_warn; }
+.cp-pill.info { color: @fs_info; }
+.cp-pill label,
+.cp-pill .fs-icon {
+	color: inherit;
+}
+
+/* --- a finding's drawer --- */
 #cp-evidence label.mono {
 	color: @fs_text_strong;
 }
@@ -1402,43 +1761,61 @@ button.nav-item label.fs-kbd {
 	font-size: 12px;
 	font-weight: 600;
 	color: @fs_text_strong;
-	margin-top: 6px;
+	margin-top: 8px;
 }
 .cp-arrow {
 	color: @fs_text_weak;
 	font-size: 12px;
 }
 .cp-drawer {
-	padding: 10px 0 6px 0;
+	padding: 4px 0 4px 0;
 	border-top: 1px solid @fs_border;
-	margin-top: 8px;
+	margin-top: 10px;
 }
-.cp-list-frame {
-	margin-bottom: 12px;
+
+/* --- empty states: an icon, a sentence, one action --- */
+.cp-empty {
+	padding: 2px 16px 10px 16px;
 }
-list.cp-list {
-	background-color: transparent;
+.cp-empty-icon {
+	color: @fs_text_weaker;
 }
-list.cp-list row.cp-row {
-	padding: 10px 14px;
-	border-bottom: 1px solid @fs_border;
-	background-color: transparent;
+.cp-empty-icon.ok {
+	color: @fs_ok;
 }
-list.cp-list row.cp-row:last-child {
-	border-bottom: none;
+button.fs-link.cp-empty-link {
+	padding: 0;
 }
-list.cp-list row.cp-row:hover {
-	background-color: @fs_surface_2;
+
+/* --- At a glance: caption, figure at the right, a note under them --- */
+.cp-glance-row {
+	background-color: @fs_surface;
+	border-top: 1px solid @fs_border;
+	padding: 9px 16px 10px 16px;
 }
-list.cp-list row.cp-row:focus {
-	outline: 2px solid alpha(@fs_accent_fill, 0.7);
-	outline-offset: -2px;
+.cp-glance-row:last-child {
+	border-radius: 0 0 7px 7px;
+	padding-bottom: 12px;
 }
-.cp-pill {
-	padding: 2px 8px;
-	border-radius: 5px;
+.cp-glance-caption {
+	font-size: 13px;
+	color: @fs_text;
+}
+.cp-glance-value {
+	font-size: 15px;
 	font-weight: 600;
+	color: @fs_text_strong;
+}
+.cp-glance-value.zero {
+	font-weight: 500;
+	color: @fs_text_weak;
+}
+.cp-glance-value.bad  { color: @fs_bad; }
+.cp-glance-value.warn { color: @fs_warn; }
+.cp-glance-value.info { color: @fs_info; }
+.cp-glance-note {
 	font-size: 12px;
+	color: @fs_text_weak;
 }
 
 /* =====================================================================

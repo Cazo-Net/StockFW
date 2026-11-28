@@ -9,6 +9,13 @@
  * again and expect CHANGED, press Forget, and read the engine's
  * outcomes back through the page's small accessor seam.
  *
+ * 2.0.0: Enter or a double click on a row of the baseline list
+ * inspects that file and opens its report in the window's detail
+ * drawer (ui/fs-drawer.h), with the fingerprint in full and the
+ * page's two actions.  No window hosts the drawer here; the module
+ * fills its own unparented revealer, and the checks read what a user
+ * would see from fs_drawer_widget ().
+ *
  * Deliberately NOT part of StockFW.exe -- the CMake target is
  * EXCLUDE_FROM_ALL -- so no test hook is ever shipped to a user.
  *
@@ -24,6 +31,7 @@
 
 #include "core/fs-trust.h"
 #include "ui/fs-trustview.h"
+#include "ui/fs-drawer.h"
 
 #define CHECK(cond, ...) do {                                   \
 	if (!(cond)) {                                             \
@@ -159,11 +167,155 @@ find_button (GtkWidget *root, const gchar *label)
 	return found;
 }
 
+/* ---- the detail drawer ---------------------------------------------- */
+
+static GtkWidget *
+find_named (GtkWidget *root, const gchar *name)
+{
+	GtkWidget *found = NULL;
+	GList *children, *l;
+
+	if (g_strcmp0 (gtk_widget_get_name (root), name) == 0)
+		return root;
+	if (!GTK_IS_CONTAINER (root))
+		return NULL;
+
+	children = gtk_container_get_children (GTK_CONTAINER (root));
+	for (l = children; l != NULL && found == NULL; l = l->next)
+		found = find_named (l->data, name);
+	g_list_free (children);
+
+	return found;
+}
+
+static GtkWidget *
+find_tree (GtkWidget *root)
+{
+	GtkWidget *found = NULL;
+	GList *children, *l;
+
+	if (GTK_IS_TREE_VIEW (root))
+		return root;
+	if (!GTK_IS_CONTAINER (root))
+		return NULL;
+
+	children = gtk_container_get_children (GTK_CONTAINER (root));
+	for (l = children; l != NULL && found == NULL; l = l->next)
+		found = find_tree (l->data);
+	g_list_free (children);
+
+	return found;
+}
+
+/* A label of the drawer's head, by widget name; NULL while hidden. */
+static const gchar *
+drawer_text (const gchar *name)
+{
+	GtkWidget *w = find_named (fs_drawer_widget (), name);
+
+	return w != NULL && GTK_IS_LABEL (w) && gtk_widget_get_visible (w)
+		? gtk_label_get_text (GTK_LABEL (w)) : NULL;
+}
+
+/* The value beside the field called `name' in a grid of name / value
+ * rows somewhere under `root'. */
+static const gchar *
+field_under (GtkWidget *root, const gchar *name)
+{
+	const gchar *found = NULL;
+	GList *children, *l;
+
+	if (GTK_IS_GRID (root)) {
+		gint row;
+
+		for (row = 0; ; row++) {
+			GtkWidget *n = gtk_grid_get_child_at (GTK_GRID (root), 0, row);
+			GtkWidget *v = gtk_grid_get_child_at (GTK_GRID (root), 1, row);
+
+			if (n == NULL || v == NULL)
+				return NULL;
+			if (GTK_IS_LABEL (n) && GTK_IS_LABEL (v) &&
+			    g_strcmp0 (gtk_label_get_text (GTK_LABEL (n)), name) == 0)
+				return gtk_label_get_text (GTK_LABEL (v));
+		}
+	}
+	if (!GTK_IS_CONTAINER (root))
+		return NULL;
+
+	children = gtk_container_get_children (GTK_CONTAINER (root));
+	for (l = children; l != NULL && found == NULL; l = l->next)
+		found = field_under (l->data, name);
+	g_list_free (children);
+
+	return found;
+}
+
+static const gchar *
+drawer_field (const gchar *name)
+{
+	GtkWidget *body = find_named (fs_drawer_widget (), "fs-drawer-body");
+
+	return body != NULL ? field_under (body, name) : NULL;
+}
+
+static gboolean
+says_under (GtkWidget *root, const gchar *needle)
+{
+	gboolean found = FALSE;
+	GList *children, *l;
+
+	if (GTK_IS_LABEL (root))
+		return strstr (gtk_label_get_text (GTK_LABEL (root)),
+		               needle) != NULL;
+	if (!GTK_IS_CONTAINER (root))
+		return FALSE;
+
+	children = gtk_container_get_children (GTK_CONTAINER (root));
+	for (l = children; l != NULL && !found; l = l->next)
+		found = says_under (l->data, needle);
+	g_list_free (children);
+
+	return found;
+}
+
+/* TRUE when a label in the drawer's body contains `needle'. */
+static gboolean
+drawer_says (const gchar *needle)
+{
+	GtkWidget *body = find_named (fs_drawer_widget (), "fs-drawer-body");
+
+	return body != NULL && says_under (body, needle);
+}
+
+/* The drawer's action button with this label, or NULL. */
+static GtkWidget *
+drawer_button (const gchar *label)
+{
+	GtkWidget *foot = find_named (fs_drawer_widget (), "fs-drawer-actions");
+
+	return foot != NULL && gtk_widget_get_visible (foot)
+		? find_button (foot, label) : NULL;
+}
+
+/* Enter or a double click on row `n' of the list. */
+static void
+activate_row (GtkWidget *tree, gint n)
+{
+	GtkTreePath *path = gtk_tree_path_new_from_indices (n, -1);
+
+	gtk_tree_view_set_cursor (GTK_TREE_VIEW (tree), path, NULL, FALSE);
+	gtk_tree_view_row_activated (
+		GTK_TREE_VIEW (tree), path,
+		gtk_tree_view_get_column (GTK_TREE_VIEW (tree), 0));
+	gtk_tree_path_free (path);
+}
+
 int
 main (int argc, char **argv)
 {
 	GtkWidget *page;
 	GtkWidget *entry;
+	GtkWidget *tree;
 	GtkWidget *inspect, *refresh, *scan, *attest, *forget;
 	gchar *dir, *payload, *store_file, *audit_file;
 	gchar *contents = NULL;
@@ -195,6 +347,7 @@ main (int argc, char **argv)
 	scan = find_button (page, "Scan _processes");
 	attest = find_button (page, "_Attest");
 	forget = find_button (page, "_Forget");
+	tree = find_tree (page);
 
 	CHECK (entry != NULL, "the page builds a path entry");
 	CHECK (inspect != NULL && refresh != NULL && scan != NULL &&
@@ -227,6 +380,8 @@ main (int argc, char **argv)
 	       "a never-attested file reads as new");
 	CHECK (fs_trustview_list_count () == 0,
 	       "the baseline list is empty before any attestation");
+	CHECK (!fs_drawer_is_open (),
+	       "Inspect alone does not open the detail drawer");
 
 	/* --- attest: the confirm dialog answers itself. */
 	auto_confirm = TRUE;
@@ -241,6 +396,44 @@ main (int argc, char **argv)
 	       "right after attesting, the file matches its baseline");
 	CHECK (fs_trustview_list_count () == 1,
 	       "the attested row reaches the baseline list");
+
+	/* --- the detail drawer: Enter or a double click on the row
+	 * inspects the file, and the report opens when it arrives. */
+	CHECK (tree != NULL, "the page builds the baseline list");
+	gtk_entry_set_text (GTK_ENTRY (entry), "");
+	activate_row (tree, 0);
+	CHECK (fs_trustview_busy () && !fs_drawer_is_open (),
+	       "activating a row starts an inspection; the drawer waits for "
+	       "its result");
+	CHECK (pump_until_idle (), "the activated row's inspection settles");
+	CHECK (g_strcmp0 (gtk_entry_get_text (GTK_ENTRY (entry)), payload) == 0,
+	       "the row's path is in the entry, as if typed and inspected");
+	CHECK (fs_drawer_is_open (),
+	       "the drawer opens once the file has been inspected");
+	CHECK (g_strcmp0 (drawer_text ("fs-drawer-title"), "payload.txt") == 0 &&
+	       g_strcmp0 (drawer_text ("fs-drawer-subtitle"), dir) == 0,
+	       "titled with the file's name, its folder under it (\"%s\")",
+	       drawer_text ("fs-drawer-title"));
+	CHECK (g_strcmp0 (drawer_field ("File"), payload) == 0,
+	       "File is the full path");
+	CHECK (drawer_field ("SHA-256") != NULL &&
+	       strlen (drawer_field ("SHA-256")) == 64 &&
+	       g_strcmp0 (drawer_field ("SHA-256"), PAYLOAD_SHA) == 0,
+	       "SHA-256 is the whole digest, not the list's first 16 "
+	       "characters");
+	CHECK (drawer_field ("Publisher") != NULL &&
+	       drawer_field ("Signature") != NULL &&
+	       drawer_field ("Size") != NULL &&
+	       drawer_field ("Modified") != NULL,
+	       "publisher, signature, size and last change are there too");
+	CHECK (drawer_says ("Matches the attested baseline."),
+	       "and the baseline sentence the card shows");
+	CHECK (drawer_button ("Attest") != NULL &&
+	       drawer_button ("Forget") != NULL,
+	       "the drawer offers Attest and Forget");
+	CHECK (find_button (page, "_Attest") == attest &&
+	       find_button (page, "_Forget") == forget,
+	       "the card keeps its own Attest and Forget");
 
 	CHECK (g_file_get_contents (audit_file, &contents, NULL, NULL) &&
 	       strstr (contents, "trust-attest") != NULL &&
@@ -265,6 +458,34 @@ main (int argc, char **argv)
 	                  PAYLOAD_SHA) == 0,
 	       "the page still knows what was attested");
 
+	/* The open drawer shows the same file as the card, always. */
+	CHECK (fs_drawer_is_open () &&
+	       drawer_says ("CHANGED since attestation") &&
+	       drawer_field ("SHA-256") != NULL &&
+	       g_strcmp0 (drawer_field ("SHA-256"), PAYLOAD_SHA) != 0,
+	       "the open drawer follows the new inspection: CHANGED, with "
+	       "the new digest");
+
+	/* --- the drawer's Attest is the card's: it asks, attests and
+	 * writes the audit line. */
+	auto_confirm = TRUE;
+	if (drawer_button ("Attest") != NULL)
+		gtk_button_clicked (GTK_BUTTON (drawer_button ("Attest")));
+	CHECK (pump_until_idle (), "the drawer's attestation settles");
+	CHECK (!auto_confirm,
+	       "the drawer's Attest asked in the confirm dialog first");
+	CHECK (fs_trustview_current () != NULL &&
+	       fs_trustview_current ()->change == FS_TRUST_CHANGE_UNCHANGED &&
+	       fs_drawer_is_open () &&
+	       drawer_says ("Matches the attested baseline."),
+	       "attested from the drawer, and the drawer says so");
+	CHECK (g_file_get_contents (audit_file, &contents, NULL, NULL) &&
+	       strstr (contents, "trust-attest") != NULL &&
+	       strstr (strstr (contents, "trust-attest") + 1,
+	               "trust-attest") != NULL,
+	       "the second attestation reached the audit log too");
+	g_clear_pointer (&contents, g_free);
+
 	/* --- refresh re-lists the baseline from disk. */
 	gtk_button_clicked (GTK_BUTTON (refresh));
 	CHECK (pump_until_idle (), "the refresh task settles");
@@ -280,11 +501,101 @@ main (int argc, char **argv)
 	       "the forgotten row leaves the list");
 	CHECK (fs_trustview_current () == NULL,
 	       "forgetting clears the report");
+	CHECK (!fs_drawer_is_open (),
+	       "and closes the drawer that showed the file");
 
 	CHECK (g_file_get_contents (audit_file, &contents, NULL, NULL) &&
 	       strstr (contents, "trust-forget") != NULL,
 	       "the removal reached the audit log");
 	g_clear_pointer (&contents, g_free);
+
+	/* --- the drawer's Forget is the card's too: attest once more,
+	 * open the row, and forget it from the drawer. */
+	gtk_entry_set_text (GTK_ENTRY (entry), payload);
+	gtk_button_clicked (GTK_BUTTON (inspect));
+	CHECK (pump_until_idle () && !fs_drawer_is_open (),
+	       "a closed drawer stays closed through an inspection");
+	auto_confirm = TRUE;
+	gtk_button_clicked (GTK_BUTTON (attest));
+	CHECK (pump_until_idle () && !auto_confirm &&
+	       fs_trustview_list_count () == 1,
+	       "the file is attested again");
+	gtk_entry_set_text (GTK_ENTRY (entry), "/somewhere/else");
+	activate_row (tree, 0);
+	CHECK (pump_until_idle () && fs_drawer_is_open (),
+	       "its row opens in the drawer again");
+	gtk_entry_set_text (GTK_ENTRY (entry), "/typed/since");
+	auto_confirm = TRUE;
+	if (drawer_button ("Forget") != NULL)
+		gtk_button_clicked (GTK_BUTTON (drawer_button ("Forget")));
+	CHECK (pump_until_idle () && !auto_confirm,
+	       "the drawer's Forget asked in the confirm dialog first");
+	CHECK (fs_trustview_list_count () == 0 &&
+	       fs_trustview_current () == NULL && !fs_drawer_is_open (),
+	       "the drawer's file is forgotten, whatever the entry held, and "
+	       "the drawer closes");
+	CHECK (g_file_get_contents (audit_file, &contents, NULL, NULL) &&
+	       strstr (contents, "trust-forget") != NULL &&
+	       strstr (strstr (contents, "trust-forget") + 1,
+	               "trust-forget") != NULL,
+	       "that removal reached the audit log as well");
+	g_clear_pointer (&contents, g_free);
+
+	/* --- a report that arrives after the user has left the page must
+	 * not open the drawer over the page they went to.  The window's
+	 * notebook is what takes a page off show, so the page goes into
+	 * one here, beside a stand-in for another page.  The switch comes
+	 * before the main loop has turned once, so before the result. */
+	{
+		GtkWidget *book = gtk_notebook_new ();
+		GtkWidget *other = gtk_label_new ("another page");
+
+		g_object_ref_sink (book);
+		gtk_notebook_append_page (GTK_NOTEBOOK (book), page, NULL);
+		gtk_notebook_append_page (GTK_NOTEBOOK (book), other, NULL);
+		gtk_widget_show_all (book);
+
+		gtk_entry_set_text (GTK_ENTRY (entry), payload);
+		gtk_button_clicked (GTK_BUTTON (inspect));
+		pump_until_idle ();
+		auto_confirm = TRUE;
+		gtk_button_clicked (GTK_BUTTON (attest));
+		CHECK (pump_until_idle () && !auto_confirm &&
+		       fs_trustview_list_count () == 1 && !fs_drawer_is_open (),
+		       "in a notebook now, the file is attested once more");
+
+		gtk_entry_set_text (GTK_ENTRY (entry), "");
+		activate_row (tree, 0);
+		gtk_notebook_set_current_page (GTK_NOTEBOOK (book), 1);
+		CHECK (fs_trustview_busy () &&
+		       gtk_notebook_get_current_page (GTK_NOTEBOOK (book)) == 1,
+		       "a row is activated and the page left before its report "
+		       "is in");
+		CHECK (pump_until_idle () && !fs_drawer_is_open (),
+		       "the report that arrives then does not open the drawer "
+		       "over the other page");
+		CHECK (fs_trustview_current () != NULL &&
+		       g_strcmp0 (fs_trustview_current ()->path, payload) == 0,
+		       "the page's own card has it all the same");
+
+		gtk_notebook_set_current_page (GTK_NOTEBOOK (book), 0);
+		gtk_button_clicked (GTK_BUTTON (inspect));
+		CHECK (pump_until_idle () && !fs_drawer_is_open (),
+		       "back on the page, the request is not left over for the "
+		       "next inspection");
+		activate_row (tree, 0);
+		CHECK (pump_until_idle () && fs_drawer_is_open () &&
+		       g_strcmp0 (drawer_field ("File"), payload) == 0,
+		       "and a row opens in the drawer as before");
+
+		/* As it was found: nothing attested, the drawer closed. */
+		auto_confirm = TRUE;
+		if (drawer_button ("Forget") != NULL)
+			gtk_button_clicked (GTK_BUTTON (drawer_button ("Forget")));
+		CHECK (pump_until_idle () && !auto_confirm &&
+		       fs_trustview_list_count () == 0 && !fs_drawer_is_open (),
+		       "the file is forgotten again");
+	}
 
 	/* --- inspect something that is not there. */
 	gtk_entry_set_text (GTK_ENTRY (entry),

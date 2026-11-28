@@ -1,32 +1,41 @@
 /*---[ fs-statusview.c ]------------------------------------------------
- * The Overview page (1.0.7 redesign; the Status page before it).
+ * The Overview page (a status board since 2.0.0; the 1.0.7 Overview
+ * and the Status page before it).
  *
- * Top to bottom:
+ * Top to bottom, the answer first and the detail after it:
  *   header       "Overview", which machine and address, Lock policy
- *   verdict      one coloured card that says, in a sentence, whether
- *                this computer is protected, with the one button that
- *                changes that (Start or Stop) and four facts beside it:
- *                IPv4, IPv6, the policy, the engine
+ *   board        one coloured card: the state in one large word
+ *                ("Protected"), the sentences that explain it, the one
+ *                button that changes it (Start or Stop), and four facts
+ *                in a strip along its foot: IPv4, IPv6, the policy,
+ *                the engine
  *   profiles     Windows only: the three firewall profiles, the ones
  *                in force marked "In use"
+ *   traffic      a live graph of what the real adapters received and
+ *                sent over the last two minutes
+ *   programs     the five programs with the most open connections
+ *   blocks       the last few blocked events; a row opens its details
  *   totals       events in and out (and how many were blocked), open
  *                connections, traffic now
  *   connections  open connections with a filter box; connections
  *                between two programs on this computer are hidden
- *                behind a "Show them" link, because no rule sees them
+ *                behind a "Show them" link, because no rule sees them.
+ *                A row opens its details in the drawer
  *   adapters     real adapters; virtual ones (Docker bridges, Hyper-V,
  *                VPN tunnels) behind a "Show them" link
- *   recent       the last few blocked events
  *
  * Every number on the page is one the backend reported.  A backend
- * that cannot list connections or adapters gets no card for them, and
- * "Threat intel" is not shown until it exists.
+ * that cannot list connections or adapters gets no card for them (the
+ * traffic card stays and says the counters are missing), and "Threat
+ * intel" is not shown until it exists.
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-statusview.h"
 #include "ui/fs-intelview.h"
 #include "ui/fs-app.h"
 #include "ui/fs-dialogs.h"
+#include "ui/fs-drawer.h"
+#include "ui/fs-hitview.h"
 #include "ui/fs-icons.h"
 #include "ui/fs-tray.h"
 #include "ui/fs-policyview.h"
@@ -51,8 +60,14 @@
  * home to a cafe is the change this catches, so seconds are plenty. */
 #define PLACE_REFRESH_MS  5000
 
-/* How many blocked events the Recent blocks card keeps. */
+/* How many blocked events the Latest blocks card keeps. */
 #define RECENT_MAX        5
+
+/* The Traffic card: one point per network refresh, two minutes of them. */
+#define TRAFFIC_POINTS    60
+
+/* How many programs the Busiest programs card ranks. */
+#define BUSY_MAX          5
 
 /* UTF-8 spelled out, so the source stays ASCII. */
 #define DOT   " \xc2\xb7 "     /* " . " middle dot */
@@ -95,6 +110,8 @@ static gchar     *primary_where = NULL;   /* "eth0 . 192.168.1.20" */
 static GtkWidget *lock_button, *lock_icon, *lock_label;
 
 static GtkWidget *hero, *hero_icon, *hero_title, *hero_body;
+/* The verdict's own short word ("Protected"), set large. */
+static GtkWidget *state_word;
 static GtkWidget *power_button, *power_icon, *power_label;
 
 enum { TILE_IPV4, TILE_IPV6, TILE_POLICY, TILE_ENGINE, N_TILES };
@@ -145,6 +162,8 @@ on_sparkline_draw (GtkWidget *widget, cairo_t *cr, gpointer data)
 	gtk_widget_get_allocation (widget, &alloc);
 	w = (gdouble) alloc.width;
 	h = (gdouble) alloc.height;
+	if (w < 12 || h < 10)
+		return FALSE;
 
 	if (count < 2) {
 		fs_theme_source (cr, "fs_border_strong", "#4a4545", 1.0);
@@ -165,7 +184,13 @@ on_sparkline_draw (GtkWidget *widget, cairo_t *cr, gpointer data)
 		max_v = min_v + 1.0;
 	}
 
-	cairo_set_source_rgba (cr, 0.16, 0.47, 0.84, 0.08);
+	/* Room at the right for the dot on the newest point. */
+	w -= 5.0;
+
+	/* The accent comes from the theme at each paint, so the line
+	 * follows Dark mode and the accent the user chose.  The fill ends
+	 * under the newest point, not at the widget's far corner. */
+	fs_theme_source (cr, "fs_accent", "#5aa2ff", 0.10);
 	cairo_move_to (cr, 0, h);
 	for (guint i = 0; i < count; i++) {
 		gdouble x = (gdouble) i / (gdouble) (SPARK_POINTS - 1) * w;
@@ -173,11 +198,12 @@ on_sparkline_draw (GtkWidget *widget, cairo_t *cr, gpointer data)
 		gdouble y = h - 4 - norm * (h - 8);
 		cairo_line_to (cr, x, y);
 	}
-	cairo_line_to (cr, w, h);
+	cairo_line_to (cr, (gdouble) (count - 1) / (gdouble) (SPARK_POINTS - 1) * w,
+	               h);
 	cairo_close_path (cr);
 	cairo_fill (cr);
 
-	cairo_set_source_rgb (cr, 0.16, 0.47, 0.84);
+	fs_theme_source (cr, "fs_accent", "#5aa2ff", 1.0);
 	cairo_set_line_width (cr, 2.0);
 	cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
 	cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
@@ -202,7 +228,7 @@ on_sparkline_draw (GtkWidget *widget, cairo_t *cr, gpointer data)
 		cairo_arc (cr, x, y, 5.0, 0, 2 * 3.1415926535);
 		cairo_fill (cr);
 
-		cairo_set_source_rgb (cr, 0.16, 0.47, 0.84);
+		fs_theme_source (cr, "fs_accent", "#5aa2ff", 1.0);
 		cairo_arc (cr, x, y, 3.5, 0, 2 * 3.1415926535);
 		cairo_fill (cr);
 	}
@@ -220,6 +246,9 @@ enum
 	CONN_COL_SERVICE,
 	CONN_COL_DIRECTION,
 	CONN_COL_LOCAL,        /* gboolean: both ends are this computer */
+	/* Not shown in the list; the details drawer reads them. */
+	CONN_COL_LOCAL_END,    /* this computer's address, and its port  */
+	CONN_COL_STATE,        /* "ESTABLISHED"...; "" when not reported */
 	CONN_N_COLS
 };
 
@@ -233,6 +262,9 @@ static gboolean      show_local = FALSE;
 static guint         conn_total = 0;   /* rows in the last sample  */
 static guint         conn_local = 0;   /* of which loopback-only   */
 
+/* The owner token this page gives the drawer for a connection. */
+static gint conn_drawer_owner;
+
 /* Adapters. */
 static GtkWidget  *adapters_card;
 static GtkWidget  *adapters_list;
@@ -241,16 +273,71 @@ static GtkWidget  *adapters_toggle;
 static gboolean    show_virtual = FALSE;
 static GHashTable *net_samples = NULL;
 
-/* Recent blocks: newest at the head. */
+/* Traffic: what the real adapters received and sent, in bytes per
+ * second, oldest point first.  One point per network refresh.  Bytes
+ * are counted into traffic_acc as they are read and turned into a
+ * point when at least half a refresh period has passed, so a second
+ * reading in between (the adapters card's "Show them") adds no point
+ * and loses no byte. */
+static guint64    traffic_rx[TRAFFIC_POINTS];
+static guint64    traffic_tx[TRAFFIC_POINTS];
+static guint      traffic_count = 0;
+static gboolean   traffic_known = FALSE;    /* the backend has counters */
+static gboolean   traffic_started = FALSE;  /* traffic_stamp is set     */
+static gint64     traffic_stamp;
+static guint64    traffic_acc_rx, traffic_acc_tx;
+static GtkWidget *traffic_area;
+static GtkWidget *traffic_legend;
+static GtkWidget *traffic_rx_value, *traffic_tx_value;
+static GtkWidget *traffic_note;
+
+/* The page's clock, monotonic microseconds.  A test puts its own in
+ * (fs_statusview_set_clock) so that a rate is a known number. */
+static gint64 (*page_clock) (void) = NULL;
+
+/* Busiest programs: the top few of the last connections sample. */
+typedef struct
+{
+	GtkWidget *box;
+	GtkWidget *name;
+	GtkWidget *bar;
+	GtkWidget *count;
+} BusyRow;
+
+static GtkWidget *busy_card;
+static GtkWidget *busy_list;
+static GtkWidget *busy_empty;
+static BusyRow    busy_rows[BUSY_MAX];
+static gchar     *busy_name[BUSY_MAX];
+static guint      busy_count[BUSY_MAX];
+static guint      busy_n = 0;
+
+/* Latest blocks: newest at the head.  The event itself is kept, so a
+ * row can open its details. */
 typedef struct
 {
 	gchar *title;
 	gchar *detail;
+	FsHit *hit;
 } RecentBlock;
+
+/* The card has RECENT_MAX rows from the start and re-labels them as
+ * blocks arrive: a row that was destroyed and built again on every
+ * block would drop the pointer's hover and the keyboard's focus. */
+typedef struct
+{
+	GtkWidget *button;
+	GtkWidget *title;
+	GtkWidget *detail;
+} RecentRow;
 
 static GQueue     recent = G_QUEUE_INIT;
 static GtkWidget *recent_list;
 static GtkWidget *recent_empty;
+static RecentRow  recent_rows[RECENT_MAX];
+
+/* The page's timers, removed when the page is destroyed. */
+static guint net_timer = 0, conn_timer = 0, place_timer = 0;
 
 /* Previous interface sample, so consecutive polls yield a rate. */
 typedef struct
@@ -370,6 +457,29 @@ format_rate (guint64 bytes_per_second)
 	text = g_strdup_printf ("%s/s", amount);
 	g_free (amount);
 	return text;
+}
+
+/* The same, with nothing put in words: a legend reads "0 B/s". */
+static gchar *
+format_speed (guint64 bytes_per_second)
+{
+	gchar *amount = format_bytes (bytes_per_second);
+	gchar *text = g_strdup_printf ("%s/s", amount);
+
+	g_free (amount);
+	return text;
+}
+
+static gint64
+page_now (void)
+{
+	return page_clock != NULL ? page_clock () : g_get_monotonic_time ();
+}
+
+void
+fs_statusview_set_clock (gint64 (*clock) (void))
+{
+	page_clock = clock;
 }
 
 /* Adapters that are not hardware: Docker and libvirt bridges, veth
@@ -613,6 +723,10 @@ update_overview (void)
 	if (hero != NULL) {
 		swap_class (hero, levels, levels[level]);
 		fs_icon_set_kind (hero_icon, icon);
+		/* The board's large word is the verdict's own, the one the
+		 * sidebar and `stockfw status' print: never a second wording
+		 * of the same state. */
+		gtk_label_set_text (GTK_LABEL (state_word), word);
 		gtk_label_set_text (GTK_LABEL (hero_title), title);
 		gtk_label_set_text (GTK_LABEL (hero_body), body->str);
 	}
@@ -851,6 +965,7 @@ recent_block_free (gpointer data)
 
 	g_free (b->title);
 	g_free (b->detail);
+	fs_hit_free (b->hit);
 	g_free (b);
 }
 
@@ -878,38 +993,93 @@ clean_service (const FsHit *hit)
 	return service;
 }
 
+/* [ on_recent_clicked ]
+ * A row of Latest blocks, pressed or activated from the keyboard: the
+ * event's details open in the drawer, as they do from the Events list. */
 static void
-rebuild_recent (void)
+on_recent_clicked (GtkButton *button, gpointer data)
 {
-	GList *children, *l;
+	RecentBlock *b = g_queue_peek_nth (&recent, GPOINTER_TO_UINT (data));
+
+	(void) button;
+	if (b != NULL && b->hit != NULL)
+		fs_hitview_show_details (b->hit);
+}
+
+/* One row of Latest blocks, empty: update_recent () fills and shows it. */
+static void
+recent_row_build (guint n)
+{
+	RecentRow *row = &recent_rows[n];
+	GtkWidget *line = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
+	GtkWidget *dot = fs_icon_new (FS_ICON_DOT, 8);
+	GtkWidget *text = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+	GtkWidget *more = fs_icon_new (FS_ICON_FORWARD, 14);
+
+	row->button = gtk_button_new ();
+	gtk_button_set_relief (GTK_BUTTON (row->button), GTK_RELIEF_NONE);
+	add_class (row->button, "recent-row");
+	gtk_widget_set_tooltip_text (row->button,
+	                             _("Show this event's details"));
+
+	add_class (dot, "dot-bad");
+	gtk_widget_set_valign (dot, GTK_ALIGN_START);
+	gtk_widget_set_margin_top (dot, 5);
+	row->title = label_new (NULL, "recent-title", 0.0);
+	gtk_label_set_ellipsize (GTK_LABEL (row->title), PANGO_ELLIPSIZE_END);
+	row->detail = label_new (NULL, "recent-detail", 0.0);
+	gtk_label_set_ellipsize (GTK_LABEL (row->detail), PANGO_ELLIPSIZE_END);
+	add_class (more, "recent-more");
+	gtk_widget_set_valign (more, GTK_ALIGN_CENTER);
+
+	gtk_box_pack_start (GTK_BOX (text), row->title, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (text), row->detail, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (line), dot, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (line), text, TRUE, TRUE, 0);
+	gtk_box_pack_start (GTK_BOX (line), more, FALSE, FALSE, 0);
+	gtk_container_add (GTK_CONTAINER (row->button), line);
+	gtk_widget_show_all (line);
+
+	/* Shown by update_recent (), and only while it has an event. */
+	gtk_widget_set_no_show_all (row->button, TRUE);
+	g_signal_connect (row->button, "clicked",
+	                  G_CALLBACK (on_recent_clicked), GUINT_TO_POINTER (n));
+	gtk_box_pack_start (GTK_BOX (recent_list), row->button, FALSE, FALSE, 0);
+}
+
+/* [ update_recent ]
+ * Writes the queue into the card's rows, in place. */
+static void
+update_recent (void)
+{
+	GList *l = recent.head;
 
 	if (recent_list == NULL)
 		return;
 
-	children = gtk_container_get_children (GTK_CONTAINER (recent_list));
-	for (l = children; l != NULL; l = l->next)
-		gtk_widget_destroy (GTK_WIDGET (l->data));
-	g_list_free (children);
+	for (guint i = 0; i < RECENT_MAX; i++, l = l != NULL ? l->next : NULL) {
+		RecentRow *row = &recent_rows[i];
+		RecentBlock *b = l != NULL ? l->data : NULL;
+		AtkObject *atk;
+		gchar *name;
 
-	for (l = recent.head; l != NULL; l = l->next) {
-		RecentBlock *b = l->data;
-		GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
-		GtkWidget *dot = fs_icon_new (FS_ICON_DOT, 8);
-		GtkWidget *text = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
-		GtkWidget *title = label_new (b->title, "recent-title", 0.0);
-		GtkWidget *detail = label_new (b->detail, "recent-detail", 0.0);
+		if (row->button == NULL)
+			continue;
+		if (b == NULL) {
+			gtk_widget_hide (row->button);
+			continue;
+		}
 
-		add_class (row, "recent-row");
-		add_class (dot, "dot-bad");
-		gtk_widget_set_valign (dot, GTK_ALIGN_START);
-		gtk_widget_set_margin_top (dot, 5);
-		gtk_label_set_ellipsize (GTK_LABEL (detail), PANGO_ELLIPSIZE_END);
-		gtk_box_pack_start (GTK_BOX (text), title, FALSE, FALSE, 0);
-		gtk_box_pack_start (GTK_BOX (text), detail, FALSE, FALSE, 0);
-		gtk_box_pack_start (GTK_BOX (row), dot, FALSE, FALSE, 0);
-		gtk_box_pack_start (GTK_BOX (row), text, TRUE, TRUE, 0);
-		gtk_box_pack_start (GTK_BOX (recent_list), row, FALSE, FALSE, 0);
-		gtk_widget_show_all (row);
+		gtk_label_set_text (GTK_LABEL (row->title), b->title);
+		gtk_label_set_text (GTK_LABEL (row->detail), b->detail);
+		/* The whole row is one button: a screen reader hears what
+		 * was blocked, then what pressing it does. */
+		name = g_strdup_printf ("%s, %s", b->title, b->detail);
+		atk = gtk_widget_get_accessible (row->button);
+		if (atk != NULL)
+			atk_object_set_name (atk, name);
+		g_free (name);
+		gtk_widget_show (row->button);
 	}
 
 	gtk_widget_set_visible (recent_empty, recent.length == 0);
@@ -949,13 +1119,14 @@ fs_statusview_note_block (const FsHit *hit)
 	                             hit->rule != NULL && *hit->rule
 	                             ? hit->rule : _("Policy"),
 	                             when);
+	b->hit = fs_hit_copy (hit);
 	g_free (service);
 
 	g_queue_push_head (&recent, b);
 	while (recent.length > RECENT_MAX)
 		recent_block_free (g_queue_pop_tail (&recent));
 
-	rebuild_recent ();
+	update_recent ();
 
 	/* The tray's "Blocked today" and its Recent blocks. */
 	{
@@ -981,17 +1152,388 @@ fs_statusview_recent_blocks (void)
 	return out;
 }
 
+/* ------------------------------------------------------------- traffic */
+
+/* [ traffic_nice_ceiling ]
+ * The top of the graph's scale for a peak of `peak' bytes per second:
+ * the smallest of 1, 2, 5, 10, 20, 50, 100, 200, 500 times a binary
+ * unit (the page counts in KiB and MiB everywhere) that holds it.  The
+ * floor is 1 KiB/s, so a few stray bytes do not draw a mountain. */
+static guint64
+traffic_nice_ceiling (guint64 peak)
+{
+	static const guint steps[] = { 1, 2, 5, 10, 20, 50, 100, 200, 500 };
+	guint64 unit = 1024;
+
+	/* KiB, MiB, GiB, TiB: past that, the peak itself. */
+	for (guint power = 0; power < 4; power++, unit *= 1024)
+		for (guint i = 0; i < G_N_ELEMENTS (steps); i++)
+			if (peak <= steps[i] * unit)
+				return steps[i] * unit;
+	return peak;
+}
+
+/* A ceiling in words: "500 KiB/s", "2 MiB/s".  Whole numbers, because
+ * the ceiling is one. */
+static gchar *
+traffic_scale_text (guint64 ceiling)
+{
+	static const gchar *const units[] = { "B", "KiB", "MiB", "GiB", "TiB" };
+	guint unit = 0;
+
+	while (unit + 1 < G_N_ELEMENTS (units) && ceiling >= 1024 &&
+	       ceiling % 1024 == 0) {
+		ceiling /= 1024;
+		unit++;
+	}
+	return g_strdup_printf ("%" G_GUINT64_FORMAT " %s/s", ceiling,
+	                        units[unit]);
+}
+
+static guint64
+traffic_peak (void)
+{
+	guint64 peak = 0;
+
+	for (guint i = 0; i < traffic_count; i++) {
+		peak = MAX (peak, traffic_rx[i]);
+		peak = MAX (peak, traffic_tx[i]);
+	}
+	return peak;
+}
+
+guint64
+fs_statusview_traffic_scale (void)
+{
+	return traffic_nice_ceiling (traffic_peak ());
+}
+
+guint
+fs_statusview_traffic_points (guint64 **received, guint64 **sent)
+{
+	if (received != NULL) {
+		*received = g_new0 (guint64, traffic_count + 1);
+		memcpy (*received, traffic_rx, sizeof (guint64) * traffic_count);
+	}
+	if (sent != NULL) {
+		*sent = g_new0 (guint64, traffic_count + 1);
+		memcpy (*sent, traffic_tx, sizeof (guint64) * traffic_count);
+	}
+	return traffic_count;
+}
+
+/* The legend's two numbers and the card's sentence. */
+static void
+update_traffic_labels (void)
+{
+	if (traffic_area == NULL)
+		return;
+
+	if (traffic_known && traffic_count > 0) {
+		gchar *rx = format_speed (traffic_rx[traffic_count - 1]);
+		gchar *tx = format_speed (traffic_tx[traffic_count - 1]);
+
+		gtk_label_set_text (GTK_LABEL (traffic_rx_value), rx);
+		gtk_label_set_text (GTK_LABEL (traffic_tx_value), tx);
+		g_free (rx);
+		g_free (tx);
+	} else {
+		/* Counters, but no second reading to take a rate from yet. */
+		gtk_label_set_text (GTK_LABEL (traffic_rx_value), "-");
+		gtk_label_set_text (GTK_LABEL (traffic_tx_value), "-");
+	}
+
+	gtk_widget_set_visible (traffic_legend, traffic_known);
+	gtk_label_set_text (GTK_LABEL (traffic_note), traffic_known
+		? _("Everything the network adapters of this computer carried "
+		    "in the last two minutes, whether or not the firewall "
+		    "filtered it.")
+		: _("This computer's adapter counters are not available."));
+	gtk_widget_queue_draw (traffic_area);
+}
+
+/* [ traffic_sample ]
+ * One reading of the counters: `received' and `sent' are the bytes the
+ * real adapters moved since the reading before (the virtual ones',
+ * where no real adapter is up: refresh_network). */
+static void
+traffic_sample (gint64 now, guint64 received, guint64 sent)
+{
+	traffic_known = TRUE;
+
+	if (!traffic_started) {
+		/* The first reading has nothing before it to measure from. */
+		traffic_started = TRUE;
+		traffic_stamp = now;
+		traffic_acc_rx = traffic_acc_tx = 0;
+	} else {
+		traffic_acc_rx += received;
+		traffic_acc_tx += sent;
+
+		if (now - traffic_stamp >= (gint64) NET_REFRESH_MS * 1000 / 2) {
+			gdouble elapsed = (gdouble) (now - traffic_stamp) /
+			                  1000000.0;
+
+			if (traffic_count == TRAFFIC_POINTS) {
+				memmove (traffic_rx, traffic_rx + 1,
+				         sizeof (guint64) * (TRAFFIC_POINTS - 1));
+				memmove (traffic_tx, traffic_tx + 1,
+				         sizeof (guint64) * (TRAFFIC_POINTS - 1));
+				traffic_count--;
+			}
+			traffic_rx[traffic_count] =
+				(guint64) ((gdouble) traffic_acc_rx / elapsed);
+			traffic_tx[traffic_count] =
+				(guint64) ((gdouble) traffic_acc_tx / elapsed);
+			traffic_count++;
+
+			traffic_stamp = now;
+			traffic_acc_rx = traffic_acc_tx = 0;
+		}
+	}
+
+	update_traffic_labels ();
+}
+
+/* The backend has no counters (or lost them): an empty graph that says
+ * so, never the last line left standing as if it were live. */
+static void
+traffic_reset (void)
+{
+	traffic_known = FALSE;
+	traffic_started = FALSE;
+	traffic_count = 0;
+	traffic_acc_rx = traffic_acc_tx = 0;
+	update_traffic_labels ();
+}
+
+/* Where the graph is drawn inside its widget: room above for the scale
+ * label, below for the two ends of the time axis, and at the right for
+ * the dot on the newest point. */
+#define TRAFFIC_PAD_TOP     18.0
+#define TRAFFIC_PAD_BOTTOM  18.0
+#define TRAFFIC_PAD_RIGHT   4.0
+
+/* The distance between two points of a graph `w' wide. */
+static gdouble
+traffic_step (gdouble w)
+{
+	return (w - TRAFFIC_PAD_RIGHT) / (gdouble) (TRAFFIC_POINTS - 1);
+}
+
+static gdouble
+traffic_x (guint i, gdouble w)
+{
+	/* Newest at the right edge; older points one step left each, so
+	 * the line grows in from the right while the two minutes fill. */
+	return w - TRAFFIC_PAD_RIGHT -
+	       (gdouble) (traffic_count - 1 - i) * traffic_step (w);
+}
+
+static void
+traffic_path (cairo_t *cr, const guint64 *series, guint64 ceiling,
+              gdouble w, gdouble top, gdouble base)
+{
+	for (guint i = 0; i < traffic_count; i++) {
+		gdouble v = (gdouble) MIN (series[i], ceiling) / (gdouble) ceiling;
+		gdouble y = base - v * (base - top);
+
+		if (i == 0)
+			cairo_move_to (cr, traffic_x (i, w), y);
+		else
+			cairo_line_to (cr, traffic_x (i, w), y);
+	}
+}
+
+/* Small text in the widget's own face, its top-left or top-right corner
+ * at x, y. */
+static void
+traffic_text (GtkWidget *widget, cairo_t *cr, const gchar *text,
+              gdouble x, gdouble y, gboolean right)
+{
+	PangoLayout *layout = gtk_widget_create_pango_layout (widget, text);
+	PangoAttrList *attrs = pango_attr_list_new ();
+	gint tw, th;
+
+	pango_attr_list_insert (attrs, pango_attr_scale_new (0.85));
+	pango_layout_set_attributes (layout, attrs);
+	pango_attr_list_unref (attrs);
+	pango_layout_get_pixel_size (layout, &tw, &th);
+
+	fs_theme_source (cr, "fs_text_weak", "#a8a4a4", 1.0);
+	cairo_move_to (cr, right ? x - tw : x, y);
+	pango_cairo_show_layout (cr, layout);
+	g_object_unref (layout);
+}
+
+/* [ on_traffic_draw ]
+ * Received as the accent line over a soft fill, sent as a quiet grey
+ * line, both from a zero baseline up to a round ceiling.  Every colour
+ * is asked of the theme at each paint.  No smoothing: a point is what
+ * was measured. */
+static gboolean
+on_traffic_draw (GtkWidget *widget, cairo_t *cr, gpointer data)
+{
+	GtkAllocation alloc;
+	gdouble w, h, top, base;
+	guint64 ceiling;
+	gchar *scale;
+
+	(void) data;
+
+	gtk_widget_get_allocation (widget, &alloc);
+	w = (gdouble) alloc.width;
+	h = (gdouble) alloc.height;
+	if (w < 40 || h < TRAFFIC_PAD_TOP + TRAFFIC_PAD_BOTTOM + 8)
+		return FALSE;
+
+	top = TRAFFIC_PAD_TOP + 0.5;
+	base = h - TRAFFIC_PAD_BOTTOM - 0.5;
+
+	cairo_set_line_width (cr, 1.0);
+
+	if (!traffic_known) {
+		/* No counters: the baseline alone. */
+		fs_theme_source (cr, "fs_border_strong", "#4a4545", 1.0);
+		cairo_move_to (cr, 0, base);
+		cairo_line_to (cr, w, base);
+		cairo_stroke (cr);
+		return FALSE;
+	}
+
+	ceiling = fs_statusview_traffic_scale ();
+
+	/* Two quiet gridlines: the ceiling and half of it. */
+	fs_theme_source (cr, "fs_border", "#2f2b2b", 1.0);
+	cairo_move_to (cr, 0, top);
+	cairo_line_to (cr, w, top);
+	cairo_move_to (cr, 0, (gdouble) (gint) ((top + base) / 2) + 0.5);
+	cairo_line_to (cr, w, (gdouble) (gint) ((top + base) / 2) + 0.5);
+	cairo_stroke (cr);
+
+	scale = traffic_scale_text (ceiling);
+	traffic_text (widget, cr, scale, w, 0, TRUE);
+	g_free (scale);
+	traffic_text (widget, cr, _("2 minutes ago"), 0, base + 3, FALSE);
+	traffic_text (widget, cr, _("now"), w, base + 3, TRUE);
+
+	if (traffic_count > 0) {
+		gdouble last = traffic_x (traffic_count - 1, w);
+		gdouble first = traffic_x (0, w);
+
+		cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
+		cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+
+		/* Received: the fill, down to the baseline. */
+		if (traffic_count > 1) {
+			traffic_path (cr, traffic_rx, ceiling, w, top, base);
+			cairo_line_to (cr, last, base);
+			cairo_line_to (cr, first, base);
+			cairo_close_path (cr);
+			fs_theme_source (cr, "fs_accent", "#5aa2ff", 0.15);
+			cairo_fill (cr);
+		}
+
+		/* Sent, under the received line where they cross. */
+		fs_theme_source (cr, "fs_text_weak", "#a8a4a4", 1.0);
+		if (traffic_count > 1) {
+			cairo_set_line_width (cr, 1.5);
+			traffic_path (cr, traffic_tx, ceiling, w, top, base);
+			cairo_stroke (cr);
+		}
+		cairo_arc (cr, last, base - (gdouble) MIN (
+		                   traffic_tx[traffic_count - 1], ceiling) /
+		               (gdouble) ceiling * (base - top),
+		           2.5, 0, 2 * G_PI);
+		cairo_fill (cr);
+
+		fs_theme_source (cr, "fs_accent", "#5aa2ff", 1.0);
+		if (traffic_count > 1) {
+			cairo_set_line_width (cr, 1.75);
+			traffic_path (cr, traffic_rx, ceiling, w, top, base);
+			cairo_stroke (cr);
+		}
+		cairo_arc (cr, last, base - (gdouble) MIN (
+		                   traffic_rx[traffic_count - 1], ceiling) /
+		               (gdouble) ceiling * (base - top),
+		           2.5, 0, 2 * G_PI);
+		cairo_fill (cr);
+	}
+
+	/* The zero baseline, over the fill's lower edge. */
+	cairo_set_line_width (cr, 1.0);
+	fs_theme_source (cr, "fs_border_strong", "#4a4545", 1.0);
+	cairo_move_to (cr, 0, base);
+	cairo_line_to (cr, w, base);
+	cairo_stroke (cr);
+
+	return FALSE;
+}
+
+/* [ on_traffic_tooltip ]
+ * The two numbers of the point under the pointer. */
+static gboolean
+on_traffic_tooltip (GtkWidget *widget, gint x, gint y, gboolean keyboard,
+                    GtkTooltip *tooltip, gpointer data)
+{
+	gdouble w = (gdouble) gtk_widget_get_allocated_width (widget);
+	gdouble step = traffic_step (w);
+	gchar *rx, *tx, *text;
+	guint back, i;
+
+	(void) y;
+	(void) data;
+
+	if (keyboard || !traffic_known || traffic_count == 0 || step <= 0)
+		return FALSE;
+
+	/* How many points back from the newest one the pointer is. */
+	back = (guint) (MAX (w - TRAFFIC_PAD_RIGHT - (gdouble) x, 0.0) / step +
+	                0.5);
+	if (back >= traffic_count)
+		return FALSE;
+	i = traffic_count - 1 - back;
+
+	rx = format_speed (traffic_rx[i]);
+	tx = format_speed (traffic_tx[i]);
+	if (back == 0)
+		text = g_strdup_printf (_("Now: received %s, sent %s"), rx, tx);
+	else
+		text = g_strdup_printf (_("About %u s ago: received %s, sent %s"),
+		                        back * (NET_REFRESH_MS / 1000), rx, tx);
+	gtk_tooltip_set_text (tooltip, text);
+	g_free (rx);
+	g_free (tx);
+	g_free (text);
+	return TRUE;
+}
+
 /* ------------------------------------------------------------ adapters */
 
+/* What a row says of its adapter that does not change from sample to
+ * sample.  While it holds, the row is kept and only its numbers are
+ * rewritten; a row rebuilt every two seconds would lose its tooltip
+ * under the pointer each time. */
+static gchar *
+adapter_key (const FsIfaceStat *stat)
+{
+	return g_strdup_printf ("%s\n%s\n%s\n%d", stat->device,
+	                        stat->kind != NULL ? stat->kind : "",
+	                        stat->ip != NULL ? stat->ip : "", stat->up);
+}
+
+/* An adapter's row: what it is and where, with its numbers still empty
+ * (adapter_row_set). */
 static GtkWidget *
-adapter_row (const FsIfaceStat *stat, guint64 rate)
+adapter_row (const FsIfaceStat *stat)
 {
 	GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
 	GtkWidget *tile = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
 	GtkWidget *text = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
 	GtkWidget *nums = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+	GtkWidget *line = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
 	gboolean wireless = g_strcmp0 (stat->kind, "Wireless") == 0;
-	gchar *name, *rx, *tx, *down, *up, *speed;
+	gchar *name;
 	GtkWidget *label;
 
 	gtk_widget_set_size_request (tile, 36, 36);
@@ -1003,21 +1545,27 @@ adapter_row (const FsIfaceStat *stat, guint64 rate)
 	                    TRUE, TRUE, 0);
 	gtk_box_pack_start (GTK_BOX (row), tile, FALSE, FALSE, 0);
 
-	if (stat->kind != NULL && *stat->kind != '\0') {
-		gchar *weak = fs_theme_hex ("fs_text_weak", "#a8a4a4");
-
-		name = g_markup_printf_escaped ("<b>%s</b><span foreground=\"%s\">"
-		                                DOT "%s%s</span>",
-		                                stat->device, weak, stat->kind,
-		                                stat->up ? "" : _(" (down)"));
-		g_free (weak);
-	} else
-		name = g_markup_printf_escaped ("<b>%s</b>", stat->device);
+	/* The name, then the kind in the secondary ink.  The kind is a
+	 * label of its own so that its colour is the stylesheet's
+	 * (.adapter-kind): a colour written into the name's markup would
+	 * stay the other palette's after a Dark mode switch, for as long
+	 * as the row is kept. */
+	name = g_markup_printf_escaped ("<b>%s</b>", stat->device);
 	label = label_new (NULL, "adapter-name", 0.0);
 	gtk_label_set_markup (GTK_LABEL (label), name);
 	gtk_label_set_ellipsize (GTK_LABEL (label), PANGO_ELLIPSIZE_END);
-	gtk_box_pack_start (GTK_BOX (text), label, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (line), label, FALSE, FALSE, 0);
 	g_free (name);
+	if (stat->kind != NULL && *stat->kind != '\0') {
+		name = g_strdup_printf (DOT "%s%s", stat->kind,
+		                        stat->up ? "" : _(" (down)"));
+		label = label_new (name, "adapter-name", 0.0);
+		add_class (label, "adapter-kind");
+		gtk_label_set_ellipsize (GTK_LABEL (label), PANGO_ELLIPSIZE_END);
+		gtk_box_pack_start (GTK_BOX (line), label, TRUE, TRUE, 0);
+		g_free (name);
+	}
+	gtk_box_pack_start (GTK_BOX (text), line, FALSE, FALSE, 0);
 
 	label = label_new (stat->ip != NULL ? stat->ip : _("No IPv4 address"),
 	                   stat->ip != NULL ? "mono" : "muted", 0.0);
@@ -1025,47 +1573,66 @@ adapter_row (const FsIfaceStat *stat, guint64 rate)
 	gtk_box_pack_start (GTK_BOX (text), label, FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (row), text, TRUE, TRUE, 0);
 
-	rx = format_bytes (stat->received);
-	tx = format_bytes (stat->sent);
-	speed = format_rate (rate);
-	down = g_strconcat (DOWN, rx, NULL);
-	up = g_strconcat (UP, tx, NULL);
-
-	label = label_new (down, "adapter-num", 1.0);
+	label = label_new (NULL, "adapter-num", 1.0);
 	gtk_widget_set_tooltip_text (label, _("Received since the adapter "
 	                                      "came up"));
 	gtk_box_pack_start (GTK_BOX (nums), label, FALSE, FALSE, 0);
-	label = label_new (up, "adapter-num-muted", 1.0);
+	g_object_set_data (G_OBJECT (row), "fs-down", label);
+	label = label_new (NULL, "adapter-num-muted", 1.0);
 	gtk_widget_set_tooltip_text (label, _("Sent since the adapter came up"));
 	gtk_box_pack_start (GTK_BOX (nums), label, FALSE, FALSE, 0);
-	label = label_new (speed, "adapter-num-muted", 1.0);
+	g_object_set_data (G_OBJECT (row), "fs-up", label);
+	label = label_new (NULL, "adapter-num-muted", 1.0);
 	gtk_widget_set_tooltip_text (label, _("Traffic right now"));
 	gtk_box_pack_start (GTK_BOX (nums), label, FALSE, FALSE, 0);
+	g_object_set_data (G_OBJECT (row), "fs-speed", label);
 	gtk_widget_set_valign (nums, GTK_ALIGN_CENTER);
 	gtk_box_pack_start (GTK_BOX (row), nums, FALSE, FALSE, 0);
+
+	g_object_set_data_full (G_OBJECT (row), "fs-adapter",
+	                        adapter_key (stat), g_free);
+	add_class (row, "adapter-row");
+	return row;
+}
+
+/* The three numbers of an adapter's row, which change at every sample. */
+static void
+adapter_row_set (GtkWidget *row, const FsIfaceStat *stat, guint64 rate)
+{
+	gchar *rx = format_bytes (stat->received);
+	gchar *tx = format_bytes (stat->sent);
+	gchar *speed = format_rate (rate);
+	gchar *down = g_strconcat (DOWN, rx, NULL);
+	gchar *up = g_strconcat (UP, tx, NULL);
+
+	gtk_label_set_text (g_object_get_data (G_OBJECT (row), "fs-down"), down);
+	gtk_label_set_text (g_object_get_data (G_OBJECT (row), "fs-up"), up);
+	gtk_label_set_text (g_object_get_data (G_OBJECT (row), "fs-speed"),
+	                    speed);
 
 	g_free (rx);
 	g_free (tx);
 	g_free (down);
 	g_free (up);
 	g_free (speed);
-
-	add_class (row, "adapter-row");
-	return row;
 }
 
 /* [ refresh_network ]
  * Sample the interface counters, turn two consecutive samples into a
- * rate, and rebuild the adapters card, the Traffic total and the
- * header's "which machine" line. */
+ * rate, and bring the adapters card, the Traffic graph, the Traffic
+ * total and the header's "which machine" line up to date. */
 static void
 refresh_network (void)
 {
 	const FsBackend *backend = fs_backend ();
-	GList *stats, *l, *children;
+	GList *stats, *l, *rows, *row_at;
 	gint64 now;
 	guint hidden = 0, shown = 0;
 	guint64 total_rate = 0, total_rx = 0, total_tx = 0;
+	guint64 moved_rx = 0, moved_tx = 0;
+	guint64 soft_rate = 0, soft_rx = 0, soft_tx = 0;
+	guint64 soft_moved_rx = 0, soft_moved_tx = 0;
+	guint real_up = 0;
 	const FsIfaceStat *primary = NULL;
 	guint64 primary_bytes = 0;
 
@@ -1084,6 +1651,7 @@ refresh_network (void)
 		gtk_widget_hide (adapters_card);
 		g_hash_table_remove_all (net_samples);
 		set_total (TOTAL_TRAFFIC, "-", _("No adapter counters"));
+		traffic_reset ();
 		g_clear_pointer (&primary_where, g_free);
 		update_subtitle ();
 		return;
@@ -1091,28 +1659,34 @@ refresh_network (void)
 	gtk_widget_set_no_show_all (adapters_card, FALSE);
 	gtk_widget_show (adapters_card);
 
-	children = gtk_container_get_children (GTK_CONTAINER (adapters_list));
-	for (l = children; l != NULL; l = l->next)
-		gtk_widget_destroy (GTK_WIDGET (l->data));
-	g_list_free (children);
+	/* The rows on show, walked in step with the adapters: a row that
+	 * is still about the same adapter is kept. */
+	rows = gtk_container_get_children (GTK_CONTAINER (adapters_list));
+	row_at = rows;
 
-	now = g_get_monotonic_time ();
+	now = page_now ();
 
 	for (l = stats; l != NULL; l = l->next) {
 		FsIfaceStat *stat = l->data;
 		NetSample *prev = g_hash_table_lookup (net_samples, stat->device);
-		guint64 rate = 0;
+		guint64 rate = 0, dr = 0, ds = 0;
+		GtkWidget *row = NULL;
+		gchar *key;
 
-		if (prev != NULL && now > prev->stamp) {
-			gdouble elapsed = (gdouble) (now - prev->stamp) / 1000000.0;
+		if (prev != NULL) {
 			/* A counter that went backwards means the adapter
 			 * was reset, not that traffic was un-sent. */
-			guint64 dr = stat->received >= prev->received
-			           ? stat->received - prev->received : 0;
-			guint64 ds = stat->sent >= prev->sent
-			           ? stat->sent - prev->sent : 0;
+			dr = stat->received >= prev->received
+			   ? stat->received - prev->received : 0;
+			ds = stat->sent >= prev->sent
+			   ? stat->sent - prev->sent : 0;
 
-			rate = (guint64) ((gdouble) (dr + ds) / elapsed);
+			if (now > prev->stamp) {
+				gdouble elapsed = (gdouble) (now - prev->stamp) /
+				                  1000000.0;
+
+				rate = (guint64) ((gdouble) (dr + ds) / elapsed);
+			}
 		}
 
 		prev = g_new0 (NetSample, 1);
@@ -1123,6 +1697,15 @@ refresh_network (void)
 
 		if (adapter_is_virtual (stat)) {
 			hidden++;
+			/* Kept aside for a computer with no real adapter
+			 * up (below).  Loopback never left the machine. */
+			if (g_strcmp0 (stat->kind, "Loopback") != 0) {
+				soft_rate += rate;
+				soft_rx += stat->received;
+				soft_tx += stat->sent;
+				soft_moved_rx += dr;
+				soft_moved_tx += ds;
+			}
 			if (!show_virtual)
 				continue;
 		} else {
@@ -1132,6 +1715,10 @@ refresh_network (void)
 			total_rate += rate;
 			total_rx += stat->received;
 			total_tx += stat->sent;
+			moved_rx += dr;
+			moved_tx += ds;
+			if (stat->up)
+				real_up++;
 
 			if (stat->ip != NULL && stat->up &&
 			    stat->received + stat->sent >= primary_bytes) {
@@ -1140,12 +1727,46 @@ refresh_network (void)
 			}
 		}
 
-		gtk_box_pack_start (GTK_BOX (adapters_list),
-		                    adapter_row (stat, rate), FALSE, FALSE, 0);
+		key = adapter_key (stat);
+		if (row_at != NULL &&
+		    g_strcmp0 (g_object_get_data (G_OBJECT (row_at->data),
+		                                  "fs-adapter"), key) == 0) {
+			row = row_at->data;
+			row_at = row_at->next;
+		} else {
+			/* A different adapter here: this row and the ones
+			 * after it are out of step, so they go. */
+			for (; row_at != NULL; row_at = row_at->next)
+				gtk_widget_destroy (GTK_WIDGET (row_at->data));
+			row = adapter_row (stat);
+			gtk_box_pack_start (GTK_BOX (adapters_list), row,
+			                    FALSE, FALSE, 0);
+		}
+		g_free (key);
+		adapter_row_set (row, stat, rate);
 		shown++;
 	}
 
+	for (; row_at != NULL; row_at = row_at->next)
+		gtk_widget_destroy (GTK_WIDGET (row_at->data));
+	g_list_free (rows);
+
 	gtk_widget_show_all (adapters_list);
+
+	/* No real adapter is up: a container, whose only adapter is one
+	 * end of a veth pair, or a computer on a PPP or tunnel link alone.
+	 * What the software adapters carry is then all there is, with no
+	 * real adapter for it to be counted through a second time; leaving
+	 * it out would draw a measured-looking 0 B/s under traffic. */
+	if (real_up == 0) {
+		total_rate += soft_rate;
+		total_rx += soft_rx;
+		total_tx += soft_tx;
+		moved_rx += soft_moved_rx;
+		moved_tx += soft_moved_tx;
+	}
+
+	traffic_sample (now, moved_rx, moved_tx);
 
 	if (hidden > 0) {
 		gchar *text = show_virtual
@@ -1244,7 +1865,8 @@ on_adapters_toggle (GtkButton *button, gpointer data)
 static void
 conn_set_nth (gint n, GdkPixbuf *icon, const gchar *program, const gchar *remote,
               const gchar *port, const gchar *service,
-              const gchar *direction, gboolean local)
+              const gchar *direction, gboolean local,
+              const gchar *local_end, const gchar *state)
 {
 	GtkTreeIter iter;
 
@@ -1260,7 +1882,136 @@ conn_set_nth (gint n, GdkPixbuf *icon, const gchar *program, const gchar *remote
 	                    CONN_COL_SERVICE, service,
 	                    CONN_COL_DIRECTION, direction,
 	                    CONN_COL_LOCAL, local,
+	                    CONN_COL_LOCAL_END, local_end,
+	                    CONN_COL_STATE, state,
 	                    -1);
+}
+
+/* A connection whose owner could not be read: the backends write "?"
+ * (another user's socket without root, a protected process), or
+ * nothing at all. */
+static gboolean
+program_is_unknown (const gchar *program)
+{
+	return program == NULL || *program == '\0' ||
+	       strcmp (program, "?") == 0;
+}
+
+/* ---------------------------------------------------- busiest programs */
+
+typedef struct
+{
+	const gchar *name;
+	guint        count;
+} BusyEntry;
+
+/* Most connections first; the name settles a tie, so two polls of the
+ * same sockets give the same order. */
+static gint
+busy_compare (gconstpointer a, gconstpointer b)
+{
+	const BusyEntry *x = a, *y = b;
+
+	if (x->count != y->count)
+		return x->count > y->count ? -1 : 1;
+	return g_strcmp0 (x->name, y->name);
+}
+
+/* [ update_busiest ]
+ * Ranks the programs of the last sample (name -> open connections to
+ * other computers) and writes the top few into the card's rows, in
+ * place.  A NULL table means the backend cannot list connections. */
+static void
+update_busiest (GHashTable *counts)
+{
+	GArray *entries;
+	GHashTableIter iter;
+	gpointer key, value;
+
+	for (guint i = 0; i < BUSY_MAX; i++)
+		g_clear_pointer (&busy_name[i], g_free);
+	busy_n = 0;
+
+	if (counts == NULL)
+		return;
+
+	entries = g_array_new (FALSE, FALSE, sizeof (BusyEntry));
+	g_hash_table_iter_init (&iter, counts);
+	while (g_hash_table_iter_next (&iter, &key, &value)) {
+		BusyEntry entry = { key, GPOINTER_TO_UINT (value) };
+
+		g_array_append_val (entries, entry);
+	}
+	g_array_sort (entries, busy_compare);
+
+	for (guint i = 0; i < entries->len && i < BUSY_MAX; i++) {
+		const BusyEntry *entry = &g_array_index (entries, BusyEntry, i);
+
+		busy_name[i] = g_strdup (entry->name);
+		busy_count[i] = entry->count;
+		busy_n++;
+	}
+	g_array_free (entries, TRUE);
+
+	if (busy_card == NULL)
+		return;
+
+	for (guint i = 0; i < BUSY_MAX; i++) {
+		BusyRow *row = &busy_rows[i];
+		gboolean used = i < busy_n;
+
+		if (used) {
+			gchar *count = g_strdup_printf ("%u", busy_count[i]);
+
+			gtk_label_set_text (GTK_LABEL (row->name), busy_name[i]);
+			gtk_widget_set_tooltip_text (row->name, busy_name[i]);
+			gtk_label_set_text (GTK_LABEL (row->count), count);
+			g_free (count);
+			gtk_widget_queue_draw (row->bar);
+		}
+		gtk_widget_set_visible (row->box, used);
+	}
+	gtk_widget_set_visible (busy_list, busy_n > 0);
+	gtk_widget_set_visible (busy_empty, busy_n == 0);
+}
+
+gchar **
+fs_statusview_busiest_programs (void)
+{
+	gchar **out = g_new0 (gchar *, busy_n + 1);
+
+	for (guint i = 0; i < busy_n; i++)
+		out[i] = g_strdup_printf ("%s\t%u", busy_name[i], busy_count[i]);
+	return out;
+}
+
+/* [ on_busy_bar_draw ]
+ * A row's bar: its share of the busiest program's connections, so the
+ * first row is always full and the rest are read against it. */
+static gboolean
+on_busy_bar_draw (GtkWidget *widget, cairo_t *cr, gpointer data)
+{
+	guint n = GPOINTER_TO_UINT (data);
+	gdouble w = (gdouble) gtk_widget_get_allocated_width (widget);
+	gdouble h = (gdouble) gtk_widget_get_allocated_height (widget);
+	gdouble len, r = 3.0, y;
+
+	if (n >= busy_n || busy_count[0] == 0 || w < 4 || h < 4)
+		return FALSE;
+
+	y = (gdouble) (gint) ((h - 2 * r) / 2);
+	len = (gdouble) busy_count[n] / (gdouble) busy_count[0] * w;
+	/* Never less than a dot: one connection beside two hundred is
+	 * still a connection. */
+	len = MAX (len, 2 * r);
+
+	cairo_new_sub_path (cr);
+	cairo_arc (cr, len - r, y + r, r, -G_PI / 2, G_PI / 2);
+	cairo_arc (cr, r, y + r, r, G_PI / 2, 3 * G_PI / 2);
+	cairo_close_path (cr);
+	fs_theme_source (cr, "fs_accent", "#5aa2ff", 0.40);
+	cairo_fill (cr);
+	return FALSE;
 }
 
 static void
@@ -1343,6 +2094,8 @@ refresh_connections (void)
 	const FsBackend *backend = fs_backend ();
 	GList *conns, *l;
 	GHashTable *programs;
+	/* One name for every connection whose owner could not be read. */
+	const gchar *unknown = _("Unknown program");
 	guint row = 0, local = 0, remote_count = 0;
 
 	if (conn_store == NULL || connections_card == NULL)
@@ -1351,19 +2104,34 @@ refresh_connections (void)
 	if (backend->list_connections == NULL) {
 		gtk_widget_set_no_show_all (connections_card, TRUE);
 		gtk_widget_hide (connections_card);
+		/* The ranking is of the same list: no list, no card. */
+		gtk_widget_set_no_show_all (busy_card, TRUE);
+		gtk_widget_hide (busy_card);
+		update_busiest (NULL);
 		set_total (TOTAL_CONN, "-", _("Not reported here"));
 		return;
 	}
 
 	conns = backend->list_connections ();
+	/* Program -> how many connections to other computers it has open. */
 	programs = g_hash_table_new (g_str_hash, g_str_equal);
 
 	for (l = conns; l != NULL; l = l->next) {
 		FsConnection *c = l->data;
-		gboolean inbound = g_strcmp0 (c->direction, "Inbound") == 0;
-		const gchar *remote = inbound ? c->source : c->destination;
+		/* Both backends put this computer's end in `source' and
+		 * the other computer's in `destination', whichever side
+		 * opened the connection. */
+		const gchar *remote = c->destination;
+		const gchar *here = c->source;
 		gboolean is_local = fs_util_is_loopback_address (c->source) &&
 		                    fs_util_is_loopback_address (c->destination);
+		gchar *local_end = NULL;
+
+		if (here != NULL && *here != '\0')
+			local_end = c->local_port != 0
+				? g_strdup_printf (_("%s, port %u"), here,
+				                   c->local_port)
+				: g_strdup (here);
 
 		conn_set_nth ((gint) row,
 			              NULL,
@@ -1372,17 +2140,27 @@ refresh_connections (void)
 		              c->port != NULL ? c->port : "",
 		              c->service != NULL ? c->service : "",
 		              c->direction != NULL ? c->direction : "",
-		              is_local);
+		              is_local,
+		              local_end != NULL ? local_end : "",
+		              c->state != NULL ? c->state : "");
+		g_free (local_end);
 		row++;
 
 		if (is_local) {
 			local++;
 		} else {
+			const gchar *name = program_is_unknown (c->program)
+			                    ? unknown : c->program;
+			guint n = GPOINTER_TO_UINT (g_hash_table_lookup (programs,
+			                                                 name));
+
 			remote_count++;
-			if (c->program != NULL && *c->program != '\0')
-				g_hash_table_add (programs, c->program);
+			g_hash_table_insert (programs, (gpointer) name,
+			                     GUINT_TO_POINTER (n + 1));
 		}
 	}
+
+	update_busiest (programs);
 
 	conn_trim ((gint) row);
 	conn_total = row;
@@ -1433,6 +2211,150 @@ on_conn_toggle (GtkButton *button, gpointer data)
 
 	show_local = !show_local;
 	refilter_connections ();
+}
+
+/* The drawer's "Show in Events": the Events page, filtered to the
+ * connection's remote address (as the Copilot's button of that name
+ * filters to its finding). */
+static void
+on_conn_show_events (gpointer data)
+{
+	const gchar *remote = data;
+
+	if (remote != NULL && *remote != '\0')
+		fs_hitview_set_filter (remote);
+	fs_app_show_page (FS_PAGE_EVENTS);
+}
+
+/* [ on_conn_activated ]
+ * Enter or a double click on a connection: its details open in the
+ * drawer, with what the list has no column for (this computer's end,
+ * the TCP state) and how many connections the same program holds. */
+static void
+on_conn_activated (GtkTreeView *view, GtkTreePath *path,
+                   GtkTreeViewColumn *column, gpointer data)
+{
+	GtkTreeModel *model = gtk_tree_view_get_model (view);
+	GtkTreeIter iter, it;
+	gchar *program = NULL, *remote = NULL, *port = NULL, *service = NULL;
+	gchar *direction = NULL, *local_end = NULL, *state = NULL;
+	gchar *subtitle, *count, *stamp, *note_text, *remote_copy;
+	const gchar *title;
+	guint same = 0, same_local = 0;
+	gboolean unknown, more;
+	GtkWidget *body, *fields, *tally, *note;
+	GDateTime *now;
+	FsDrawerAction action;
+
+	(void) column;
+	(void) data;
+
+	if (conn_store == NULL || !gtk_tree_model_get_iter (model, &iter, path))
+		return;
+
+	gtk_tree_model_get (model, &iter,
+	                    CONN_COL_PROGRAM, &program,
+	                    CONN_COL_REMOTE, &remote,
+	                    CONN_COL_PORT, &port,
+	                    CONN_COL_SERVICE, &service,
+	                    CONN_COL_DIRECTION, &direction,
+	                    CONN_COL_LOCAL_END, &local_end,
+	                    CONN_COL_STATE, &state, -1);
+	unknown = program_is_unknown (program);
+	title = unknown ? _("Unknown program") : program;
+
+	/* The same program's connections in the sample on show.  Programs
+	 * that could not be named count as one, as on the Busiest programs
+	 * card. */
+	more = gtk_tree_model_get_iter_first (GTK_TREE_MODEL (conn_store), &it);
+	while (more) {
+		gchar *other = NULL;
+		gboolean is_local = FALSE;
+
+		gtk_tree_model_get (GTK_TREE_MODEL (conn_store), &it,
+		                    CONN_COL_PROGRAM, &other,
+		                    CONN_COL_LOCAL, &is_local, -1);
+		if (unknown ? program_is_unknown (other)
+		            : g_strcmp0 (other, program) == 0) {
+			if (is_local)
+				same_local++;
+			else
+				same++;
+		}
+		g_free (other);
+		more = gtk_tree_model_iter_next (GTK_TREE_MODEL (conn_store), &it);
+	}
+
+	if (port != NULL && *port != '\0')
+		subtitle = g_strdup_printf (_("%s, port %s"), remote, port);
+	else
+		subtitle = g_strdup (remote);
+
+	if (same_local > 0)
+		count = g_strdup_printf (_("%u to other computers, and %u "
+		                           "between programs on this computer"),
+		                         same, same_local);
+	else
+		count = g_strdup_printf (_("%u to other computers"), same);
+
+	body = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
+	fields = fs_drawer_fields_new ();
+	fs_drawer_field (fields, _("Program"), title, !unknown);
+	fs_drawer_field (fields, _("Remote address"), remote, TRUE);
+	fs_drawer_field (fields, _("Port"), port, TRUE);
+	fs_drawer_field (fields, _("Service"), service, FALSE);
+	fs_drawer_field (fields, _("Direction"), direction, FALSE);
+	fs_drawer_field (fields, _("Local address"), local_end, TRUE);
+	fs_drawer_field (fields, _("State"), state, FALSE);
+	gtk_box_pack_start (GTK_BOX (body), fields, FALSE, FALSE, 0);
+
+	/* The program's count sits under a heading of its own, not in the
+	 * grid: a name that long would take the width the addresses need. */
+	tally = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+	gtk_box_pack_start (GTK_BOX (tally),
+	                    fs_drawer_section (unknown
+	                        ? _("Open connections of unnamed programs")
+	                        : _("Open connections of this program")),
+	                    FALSE, FALSE, 0);
+	note = label_new (count, "fs-drawer-value", 0.0);
+	gtk_label_set_line_wrap (GTK_LABEL (note), TRUE);
+	gtk_label_set_max_width_chars (GTK_LABEL (note), 40);
+	gtk_box_pack_start (GTK_BOX (tally), note, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (body), tally, FALSE, FALSE, 0);
+
+	/* A connection is a moment: say which one this was. */
+	now = g_date_time_new_now_local ();
+	stamp = g_date_time_format (now, "%H:%M:%S");
+	note_text = g_strdup_printf (_("As listed at %s. The connection may "
+	                               "have closed since."), stamp);
+	note = label_new (note_text, "muted", 0.0);
+	gtk_label_set_line_wrap (GTK_LABEL (note), TRUE);
+	gtk_label_set_max_width_chars (GTK_LABEL (note), 40);
+	gtk_box_pack_start (GTK_BOX (body), note, FALSE, FALSE, 0);
+	g_date_time_unref (now);
+	g_free (stamp);
+	g_free (note_text);
+
+	/* The action's address lives as long as the body it belongs to. */
+	remote_copy = g_strdup (remote);
+	g_object_set_data_full (G_OBJECT (body), "fs-conn-remote", remote_copy,
+	                        g_free);
+	action.label = _("Show in Events");
+	action.klass = "btn-subtle";
+	action.run = on_conn_show_events;
+	action.data = remote_copy;
+
+	fs_drawer_open (&conn_drawer_owner, title, subtitle, body, &action, 1);
+
+	g_free (subtitle);
+	g_free (count);
+	g_free (program);
+	g_free (remote);
+	g_free (port);
+	g_free (service);
+	g_free (direction);
+	g_free (local_end);
+	g_free (state);
 }
 
 void
@@ -1960,13 +2882,16 @@ build_hero (void)
 		N_("IPv4 traffic"), N_("IPv6 traffic"), N_("Policy"),
 		N_("Engine")
 	};
-	GtkWidget *left, *tile, *text, *buttons, *grid, *events_button;
+	GtkWidget *top, *tile, *text, *facts;
 
-	hero = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 24);
+	/* The board: the answer and its one button on top, the four facts
+	 * in a strip along the foot.  One card, no boxes inside it. */
+	hero = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
 	add_class (hero, "hero");
 	add_class (hero, "level-unknown");
 
-	left = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 18);
+	top = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 18);
+	add_class (top, "hero-top");
 
 	tile = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
 	gtk_widget_set_size_request (tile, 56, 56);
@@ -1975,48 +2900,46 @@ build_hero (void)
 	hero_icon = fs_icon_new (FS_ICON_SHIELD_QUESTION, 30);
 	add_class (hero_icon, "hero-icon");
 	gtk_box_pack_start (GTK_BOX (tile), hero_icon, TRUE, TRUE, 0);
-	gtk_box_pack_start (GTK_BOX (left), tile, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (top), tile, FALSE, FALSE, 0);
 
-	text = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+	text = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+	/* The state in one word, large enough to read from across the
+	 * room; update_overview () writes the verdict's own word into it
+	 * and the card's level colours it. */
+	state_word = label_new (NULL, "state-word", 0.0);
+	gtk_label_set_ellipsize (GTK_LABEL (state_word), PANGO_ELLIPSIZE_END);
+	gtk_box_pack_start (GTK_BOX (text), state_word, FALSE, FALSE, 0);
 	hero_title = label_new (NULL, "hero-title", 0.0);
 	gtk_label_set_line_wrap (GTK_LABEL (hero_title), TRUE);
 	gtk_box_pack_start (GTK_BOX (text), hero_title, FALSE, FALSE, 0);
 	hero_body = label_new (NULL, "hero-body", 0.0);
 	gtk_label_set_line_wrap (GTK_LABEL (hero_body), TRUE);
-	gtk_label_set_max_width_chars (GTK_LABEL (hero_body), 60);
+	gtk_label_set_max_width_chars (GTK_LABEL (hero_body), 76);
 	gtk_box_pack_start (GTK_BOX (text), hero_body, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (top), text, TRUE, TRUE, 0);
 
-	buttons = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
-	gtk_widget_set_margin_top (buttons, 10);
+	/* The one control that changes the state. */
 	power_button = icon_button_new (FS_ICON_PLAY, _("Start firewall"),
 	                                &power_icon, &power_label, FALSE);
 	add_class (power_button, "btn-primary");
+	add_class (power_button, "power-button");
+	gtk_widget_set_valign (power_button, GTK_ALIGN_CENTER);
 	g_signal_connect (power_button, "clicked",
 	                  G_CALLBACK (on_power_clicked), NULL);
-	gtk_box_pack_start (GTK_BOX (buttons), power_button, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (top), power_button, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (hero), top, FALSE, FALSE, 0);
 
-	events_button = gtk_button_new_with_label (_("View events"));
-	add_class (events_button, "btn-subtle");
-	g_signal_connect (events_button, "clicked",
-	                  G_CALLBACK (on_view_events), NULL);
-	gtk_box_pack_start (GTK_BOX (buttons), events_button, FALSE, FALSE, 0);
-	gtk_box_pack_start (GTK_BOX (text), buttons, FALSE, FALSE, 0);
-
-	gtk_box_pack_start (GTK_BOX (left), text, TRUE, TRUE, 0);
-	gtk_box_pack_start (GTK_BOX (hero), left, TRUE, TRUE, 0);
-
-	/* Four facts, two by two. */
-	grid = gtk_grid_new ();
-	gtk_grid_set_row_spacing (GTK_GRID (grid), 10);
-	gtk_grid_set_column_spacing (GTK_GRID (grid), 10);
-	gtk_grid_set_column_homogeneous (GTK_GRID (grid), TRUE);
-	gtk_widget_set_size_request (grid, 360, -1);
-	gtk_widget_set_valign (grid, GTK_ALIGN_CENTER);
+	/* Four facts, side by side. */
+	facts = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+	add_class (facts, "hero-facts");
+	gtk_box_set_homogeneous (GTK_BOX (facts), TRUE);
 
 	for (gint i = 0; i < N_TILES; i++) {
-		GtkWidget *fact = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+		GtkWidget *fact = gtk_box_new (GTK_ORIENTATION_VERTICAL, 3);
 
 		add_class (fact, "hero-tile");
+		if (i > 0)
+			add_class (fact, "hero-tile-next");
 		gtk_box_pack_start (GTK_BOX (fact),
 		                    label_new (_(captions[i]), "tile-caption", 0.0),
 		                    FALSE, FALSE, 0);
@@ -2024,11 +2947,158 @@ build_hero (void)
 		gtk_label_set_ellipsize (GTK_LABEL (tile_value[i]),
 		                         PANGO_ELLIPSIZE_END);
 		gtk_box_pack_start (GTK_BOX (fact), tile_value[i], FALSE, FALSE, 0);
-		gtk_grid_attach (GTK_GRID (grid), fact, i % 2, i / 2, 1, 1);
+		gtk_box_pack_start (GTK_BOX (facts), fact, TRUE, TRUE, 0);
 	}
-	gtk_box_pack_start (GTK_BOX (hero), grid, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (hero), facts, FALSE, FALSE, 0);
 
 	return hero;
+}
+
+/* [ build_traffic ]
+ * The live graph: what the real adapters received and sent, one point
+ * per network refresh, two minutes wide. */
+static GtkWidget *
+build_traffic (void)
+{
+	GtkWidget *card = card_new (GTK_ORIENTATION_VERTICAL, 8);
+	GtkWidget *head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+	GtkWidget *dot, *label;
+	AtkObject *atk;
+
+	add_class (card, "padded-card");
+	add_class (card, "traffic-card");
+
+	gtk_box_pack_start (GTK_BOX (head),
+	                    label_new (_("Traffic"), "card-heading", 0.0),
+	                    FALSE, FALSE, 0);
+
+	/* The legend, with the two newest numbers, straight after the
+	 * heading.  The numbers have a fixed width, so the legend does not
+	 * shift as they change every two seconds. */
+	traffic_legend = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+	gtk_widget_set_margin_start (traffic_legend, 8);
+
+	dot = fs_icon_new (FS_ICON_DOT, 8);
+	add_class (dot, "legend-received");
+	gtk_widget_set_valign (dot, GTK_ALIGN_CENTER);
+	gtk_box_pack_start (GTK_BOX (traffic_legend), dot, FALSE, FALSE, 0);
+	label = label_new (_("Received"), "legend-name", 0.0);
+	gtk_box_pack_start (GTK_BOX (traffic_legend), label, FALSE, FALSE, 0);
+	traffic_rx_value = label_new ("-", "legend-value", 0.0);
+	gtk_label_set_width_chars (GTK_LABEL (traffic_rx_value), 12);
+	gtk_box_pack_start (GTK_BOX (traffic_legend), traffic_rx_value,
+	                    FALSE, FALSE, 0);
+
+	dot = fs_icon_new (FS_ICON_DOT, 8);
+	add_class (dot, "legend-sent");
+	gtk_widget_set_valign (dot, GTK_ALIGN_CENTER);
+	gtk_box_pack_start (GTK_BOX (traffic_legend), dot, FALSE, FALSE, 0);
+	label = label_new (_("Sent"), "legend-name", 0.0);
+	gtk_box_pack_start (GTK_BOX (traffic_legend), label, FALSE, FALSE, 0);
+	traffic_tx_value = label_new ("-", "legend-value", 0.0);
+	gtk_label_set_width_chars (GTK_LABEL (traffic_tx_value), 12);
+	gtk_box_pack_start (GTK_BOX (traffic_legend), traffic_tx_value,
+	                    FALSE, FALSE, 0);
+	/* Shown by update_traffic_labels (), while there are counters. */
+	gtk_widget_show_all (traffic_legend);
+	gtk_widget_hide (traffic_legend);
+	gtk_widget_set_no_show_all (traffic_legend, TRUE);
+	gtk_box_pack_start (GTK_BOX (head), traffic_legend, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (card), head, FALSE, FALSE, 0);
+
+	traffic_area = gtk_drawing_area_new ();
+	gtk_widget_set_size_request (traffic_area, -1, 150);
+	gtk_widget_set_has_tooltip (traffic_area, TRUE);
+	atk = gtk_widget_get_accessible (traffic_area);
+	if (atk != NULL)
+		atk_object_set_name (atk, _("Graph of adapter traffic over the "
+		                            "last two minutes"));
+	g_signal_connect (traffic_area, "draw", G_CALLBACK (on_traffic_draw),
+	                  NULL);
+	g_signal_connect (traffic_area, "query-tooltip",
+	                  G_CALLBACK (on_traffic_tooltip), NULL);
+	gtk_box_pack_start (GTK_BOX (card), traffic_area, FALSE, FALSE, 0);
+
+	traffic_note = label_new (NULL, "muted", 0.0);
+	gtk_label_set_line_wrap (GTK_LABEL (traffic_note), TRUE);
+	gtk_label_set_max_width_chars (GTK_LABEL (traffic_note), 90);
+	gtk_widget_set_tooltip_text (traffic_note,
+		_("Bytes per second over the real adapters, read every two "
+		  "seconds. Virtual adapters are left out so bridged traffic is "
+		  "not counted twice."));
+	gtk_box_pack_start (GTK_BOX (card), traffic_note, FALSE, FALSE, 0);
+
+	update_traffic_labels ();
+	return card;
+}
+
+/* [ build_busiest ]
+ * The programs with the most open connections, as a small bar chart. */
+static GtkWidget *
+build_busiest (void)
+{
+	GtkWidget *note;
+
+	busy_card = card_new (GTK_ORIENTATION_VERTICAL, 10);
+	add_class (busy_card, "padded-card");
+	gtk_box_pack_start (GTK_BOX (busy_card),
+	                    label_new (_("Busiest programs"), "card-heading",
+	                               0.0),
+	                    FALSE, FALSE, 0);
+
+	/* One row per rank, there from the start and filled in place by
+	 * update_busiest (): the name and the count on a line, the bar
+	 * under them across the card, so a long name has the whole width. */
+	busy_list = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
+	add_class (busy_list, "busy-list");
+	gtk_widget_set_no_show_all (busy_list, TRUE);
+
+	for (guint i = 0; i < BUSY_MAX; i++) {
+		BusyRow *row = &busy_rows[i];
+		GtkWidget *line = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+
+		row->box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 5);
+
+		row->name = label_new (NULL, "busy-name", 0.0);
+		gtk_label_set_ellipsize (GTK_LABEL (row->name),
+		                         PANGO_ELLIPSIZE_MIDDLE);
+		gtk_box_pack_start (GTK_BOX (line), row->name, TRUE, TRUE, 0);
+		row->count = label_new (NULL, "busy-count", 1.0);
+		gtk_box_pack_start (GTK_BOX (line), row->count, FALSE, FALSE, 0);
+		gtk_box_pack_start (GTK_BOX (row->box), line, FALSE, FALSE, 0);
+
+		row->bar = gtk_drawing_area_new ();
+		gtk_widget_set_size_request (row->bar, 60, 6);
+		g_signal_connect (row->bar, "draw",
+		                  G_CALLBACK (on_busy_bar_draw),
+		                  GUINT_TO_POINTER (i));
+		gtk_box_pack_start (GTK_BOX (row->box), row->bar, FALSE, FALSE, 0);
+
+		gtk_widget_show_all (row->box);
+		gtk_widget_hide (row->box);
+		gtk_widget_set_no_show_all (row->box, TRUE);
+		gtk_box_pack_start (GTK_BOX (busy_list), row->box, FALSE, FALSE, 0);
+	}
+	gtk_box_pack_start (GTK_BOX (busy_card), busy_list, FALSE, FALSE, 0);
+
+	busy_empty = label_new (_("No open connections right now."), "muted",
+	                        0.0);
+	gtk_label_set_line_wrap (GTK_LABEL (busy_empty), TRUE);
+	gtk_label_set_max_width_chars (GTK_LABEL (busy_empty), 40);
+	gtk_widget_set_no_show_all (busy_empty, TRUE);
+	gtk_widget_show (busy_empty);
+	gtk_box_pack_start (GTK_BOX (busy_card), busy_empty, FALSE, FALSE, 0);
+
+	/* What the bars are, and what they are not. */
+	note = label_new (_("By number of open TCP connections to other "
+	                    "computers, not by data volume."), "muted", 0.0);
+	add_class (note, "card-note");
+	gtk_label_set_line_wrap (GTK_LABEL (note), TRUE);
+	gtk_label_set_max_width_chars (GTK_LABEL (note), 40);
+	gtk_widget_set_valign (note, GTK_ALIGN_END);
+	gtk_box_pack_end (GTK_BOX (busy_card), note, FALSE, FALSE, 0);
+
+	return busy_card;
 }
 
 static GtkWidget *
@@ -2119,7 +3189,7 @@ build_totals (void)
 	};
 	GtkWidget *grid = gtk_grid_new ();
 
-	gtk_grid_set_column_spacing (GTK_GRID (grid), 14);
+	gtk_grid_set_column_spacing (GTK_GRID (grid), 16);
 	gtk_grid_set_column_homogeneous (GTK_GRID (grid), TRUE);
 
 	for (gint i = 0; i < N_TOTALS; i++) {
@@ -2240,7 +3310,8 @@ build_connections (void)
 	conn_store = gtk_list_store_new (CONN_N_COLS, GDK_TYPE_PIXBUF,
 	                                 G_TYPE_STRING, G_TYPE_STRING,
 	                                 G_TYPE_STRING, G_TYPE_STRING,
-	                                 G_TYPE_STRING, G_TYPE_BOOLEAN);
+	                                 G_TYPE_STRING, G_TYPE_BOOLEAN,
+	                                 G_TYPE_STRING, G_TYPE_STRING);
 	conn_filter = gtk_tree_model_filter_new (GTK_TREE_MODEL (conn_store),
 	                                         NULL);
 	gtk_tree_model_filter_set_visible_func (GTK_TREE_MODEL_FILTER (conn_filter),
@@ -2251,6 +3322,17 @@ build_connections (void)
 	g_object_unref (sorted);
 	add_class (view, "overview-grid");
 	gtk_tree_view_set_enable_search (GTK_TREE_VIEW (view), FALSE);
+	/* Enter or a double click opens the row's details in the drawer. */
+	g_signal_connect (view, "row-activated",
+	                  G_CALLBACK (on_conn_activated), NULL);
+	gtk_widget_set_tooltip_text (view, _("Press Enter or double-click a "
+	                                     "connection for its details."));
+	{
+		AtkObject *atk = gtk_widget_get_accessible (view);
+
+		if (atk != NULL)
+			atk_object_set_name (atk, _("Open connections"));
+	}
 	conn_icon_column (view, CONN_COL_ICON);
 	conn_column (view, _("Program"), CONN_COL_PROGRAM, "bold");
 	conn_column (view, _("Remote address"), CONN_COL_REMOTE, "mono");
@@ -2319,53 +3401,127 @@ static GtkWidget *
 build_recent (void)
 {
 	GtkWidget *card = card_new (GTK_ORIENTATION_VERTICAL, 10);
-	GtkWidget *head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+	GtkWidget *foot = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
 	GtkWidget *all = link_button_new (_("All events"));
 
-	add_class (card, "padded-card");
-	gtk_box_pack_start (GTK_BOX (head),
-	                    label_new (_("Recent blocks"), "card-heading", 0.0),
-	                    TRUE, TRUE, 0);
-	g_signal_connect (all, "clicked", G_CALLBACK (on_view_events), NULL);
-	gtk_box_pack_start (GTK_BOX (head), all, FALSE, FALSE, 0);
-	gtk_box_pack_start (GTK_BOX (card), head, FALSE, FALSE, 0);
+	/* Not "padded-card": the rows carry the side padding themselves
+	 * (see .recent-card in the theme). */
+	add_class (card, "recent-card");
+	gtk_box_pack_start (GTK_BOX (card),
+	                    label_new (_("Latest blocks"), "card-heading", 0.0),
+	                    FALSE, FALSE, 0);
 
+	/* The rows exist from the start; update_recent () fills them. */
 	recent_list = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+	add_class (recent_list, "recent-list");
+	for (guint i = 0; i < RECENT_MAX; i++)
+		recent_row_build (i);
 	gtk_box_pack_start (GTK_BOX (card), recent_list, FALSE, FALSE, 0);
 
 	recent_empty = label_new (_("Nothing has been blocked since StockFW "
 	                            "opened."), "muted", 0.0);
 	gtk_label_set_line_wrap (GTK_LABEL (recent_empty), TRUE);
-	gtk_label_set_max_width_chars (GTK_LABEL (recent_empty), 30);
+	gtk_label_set_max_width_chars (GTK_LABEL (recent_empty), 40);
 	gtk_widget_set_no_show_all (recent_empty, TRUE);
 	gtk_widget_show (recent_empty);
 	gtk_box_pack_start (GTK_BOX (card), recent_empty, FALSE, FALSE, 0);
 
-	rebuild_recent ();
+	/* The whole list is one page away. */
+	gtk_widget_set_tooltip_text (all, _("Open the Events page"));
+	g_signal_connect (all, "clicked", G_CALLBACK (on_view_events), NULL);
+	add_class (foot, "recent-foot");
+	gtk_box_pack_start (GTK_BOX (foot), all, FALSE, FALSE, 0);
+	gtk_widget_set_valign (foot, GTK_ALIGN_END);
+	gtk_box_pack_end (GTK_BOX (card), foot, FALSE, FALSE, 0);
+
+	update_recent ();
 	return card;
+}
+
+/* [ on_page_destroy ]
+ * The page is going: its timers stop and every pointer into it is
+ * forgotten, so a late state change or a block noted afterwards finds
+ * nothing to write to instead of a freed widget.  What the page has
+ * measured (the latest blocks, the event counters) is kept. */
+static void
+on_page_destroy (GtkWidget *widget, gpointer data)
+{
+	(void) widget;
+	(void) data;
+
+	if (net_timer != 0)
+		g_source_remove (net_timer);
+	if (conn_timer != 0)
+		g_source_remove (conn_timer);
+	if (place_timer != 0)
+		g_source_remove (place_timer);
+	net_timer = conn_timer = place_timer = 0;
+
+	subtitle_label = NULL;
+	lock_button = lock_icon = lock_label = NULL;
+	hero = hero_icon = hero_title = hero_body = state_word = NULL;
+	power_button = power_icon = power_label = NULL;
+	profiles_frame = NULL;
+	for (gint i = 0; i < N_TILES; i++)
+		tile_value[i] = NULL;
+	for (gint i = 0; i < FS_PROFILE_COUNT; i++)
+		profile_switches[i] = profile_in_use[i] = NULL;
+	for (gint i = 0; i < N_TOTALS; i++)
+		total_value[i] = total_note[i] = sparkline_area[i] = NULL;
+
+	connections_card = conn_search = conn_note = conn_toggle = NULL;
+	g_clear_object (&conn_filter);
+	g_clear_object (&conn_store);
+
+	adapters_card = adapters_list = adapters_note = adapters_toggle = NULL;
+	g_clear_pointer (&net_samples, g_hash_table_destroy);
+
+	traffic_area = traffic_legend = traffic_note = NULL;
+	traffic_rx_value = traffic_tx_value = NULL;
+	traffic_known = traffic_started = FALSE;
+	traffic_count = 0;
+
+	busy_card = busy_list = busy_empty = NULL;
+	memset (busy_rows, 0, sizeof busy_rows);
+	for (guint i = 0; i < BUSY_MAX; i++)
+		g_clear_pointer (&busy_name[i], g_free);
+	busy_n = 0;
+
+	recent_list = recent_empty = NULL;
+	memset (recent_rows, 0, sizeof recent_rows);
 }
 
 /* [ fs_statusview_page ] */
 GtkWidget *
 fs_statusview_page (void)
 {
-	GtkWidget *scroll, *page, *lower, *side;
+	GtkWidget *scroll, *page, *now_row, *lower, *side;
 
-	page = gtk_box_new (GTK_ORIENTATION_VERTICAL, 20);
+	page = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
 	add_class (page, "overview");
 
+	/* The answer first: the board, then (Windows) the profiles that
+	 * explain and fix it. */
 	gtk_box_pack_start (GTK_BOX (page), build_header (), FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (page), build_hero (), FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (page), build_profiles (), FALSE, FALSE, 0);
-	gtk_box_pack_start (GTK_BOX (page), build_totals (), FALSE, FALSE, 0);
 
-	lower = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 20);
+	/* What is happening now: the traffic, then who and what. */
+	gtk_box_pack_start (GTK_BOX (page), build_traffic (), FALSE, FALSE, 0);
+	now_row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 16);
+	gtk_box_set_homogeneous (GTK_BOX (now_row), TRUE);
+	gtk_box_pack_start (GTK_BOX (now_row), build_busiest (), TRUE, TRUE, 0);
+	gtk_box_pack_start (GTK_BOX (now_row), build_recent (), TRUE, TRUE, 0);
+	gtk_box_pack_start (GTK_BOX (page), now_row, FALSE, FALSE, 0);
+
+	/* The detail: the totals, every connection, every adapter. */
+	gtk_box_pack_start (GTK_BOX (page), build_totals (), FALSE, FALSE, 0);
+	lower = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 16);
 	gtk_box_pack_start (GTK_BOX (lower), build_connections (),
 	                    TRUE, TRUE, 0);
-	side = gtk_box_new (GTK_ORIENTATION_VERTICAL, 20);
+	side = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
 	gtk_widget_set_size_request (side, 300, -1);
 	gtk_box_pack_start (GTK_BOX (side), build_adapters (), FALSE, FALSE, 0);
-	gtk_box_pack_start (GTK_BOX (side), build_recent (), FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (lower), side, FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (page), lower, TRUE, TRUE, 0);
 
@@ -2374,6 +3530,7 @@ fs_statusview_page (void)
 	                                GTK_POLICY_AUTOMATIC,
 	                                GTK_POLICY_AUTOMATIC);
 	gtk_container_add (GTK_CONTAINER (scroll), page);
+	g_signal_connect (scroll, "destroy", G_CALLBACK (on_page_destroy), NULL);
 
 	net_samples = g_hash_table_new_full (g_str_hash, g_str_equal,
 	                                     g_free, g_free);
@@ -2381,10 +3538,11 @@ fs_statusview_page (void)
 	update_counters ();
 	fs_statusview_set_state (FS_FW_NONE);
 
-	g_timeout_add (NET_REFRESH_MS,  on_net_timeout,  NULL);
-	g_timeout_add (CONN_REFRESH_MS, on_conn_timeout, NULL);
+	net_timer = g_timeout_add (NET_REFRESH_MS, on_net_timeout, NULL);
+	conn_timer = g_timeout_add (CONN_REFRESH_MS, on_conn_timeout, NULL);
 	if (fs_backend ()->network_place != NULL)
-		g_timeout_add (PLACE_REFRESH_MS, on_place_timeout, NULL);
+		place_timer = g_timeout_add (PLACE_REFRESH_MS, on_place_timeout,
+		                             NULL);
 
 	/* First sample immediately so the panels are not empty for two
 	 * seconds after startup. */

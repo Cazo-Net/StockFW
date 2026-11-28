@@ -46,6 +46,8 @@ typedef enum
 	FS_ICON_KEYBOARD,     /* a keyboard: shortcuts */
 	FS_ICON_MONITOR,      /* a screen on a stand: platforms */
 	FS_ICON_CLOCK,        /* a clock face: running in the background */
+	FS_ICON_SIDEBAR,      /* a window with its side panel: collapse it */
+	FS_ICON_CLOSE,        /* a cross: close a panel */
 	FS_ICON_N_KINDS
 } FsIconKind;
 

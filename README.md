@@ -33,7 +33,12 @@ built.
 
 ## Features
 
-- **Overview** — real profile state at a glance: on Windows the three
+- **Overview** — a status board *(2.0.0)*: the firewall's state in one
+  large word with a single Start or Stop button, a live graph of what
+  the network adapters carried over the last two minutes (all of it,
+  filtered or not), the five programs with the most open connections,
+  and the latest blocks, each of which opens its details. Real profile
+  state at a glance too: on Windows the three
   firewall profiles (Domain, Private, Public) with enable/disable, on
   Linux the filter-table posture. The app's logo is embedded in the
   executable, so an installed copy and a development build render
@@ -142,6 +147,21 @@ built.
   time, the stretch before the app started is shaded *no data* rather
   than drawn as a quiet zero, a crosshair reads any interval (mouse or
   arrow keys), and every graph has a table view.
+- **Topology** *(2.0.0)* — this computer's open connections as a
+  diagram: the programs that hold them, this computer and the firewall,
+  the local network and the internet, read every three seconds while
+  the page is on screen. Lines move the way a connection was opened
+  (direction, not volume), and an address the firewall blocked since
+  StockFW opened stays in red for 10 minutes after its last block. A
+  table view lists the same, and nothing moves when the desktop's
+  animations are off.
+- **The window** *(2.0.0)* — dark by default, light with Dark mode
+  off, with an accent colour (Blue, Green or Amber) and a row density
+  (Compact or Comfortable) in Preferences > General. `Ctrl+B` collapses
+  the sidebar to a strip of icons and `Ctrl+K` opens a command palette.
+  Details of an event, a rule, a Trust file or an open connection open
+  in a **details panel** at the right of the page (Enter or a double
+  click; on Policy the Details button), and Escape closes it.
 - **Command line and local dashboard** *(Linux, 1.0.6)* — `stockfw`
   drives the same policy files, what-if simulator and apply gate as the
   desktop app: `status`, `policy list|add|remove`, `apply [--dry-run]`,

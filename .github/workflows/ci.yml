@@ -229,7 +229,8 @@ jobs:
           NO_AT_BRIDGE: "1"
         run: |
           smokes="fs-copilot-smoke fs-statusview-smoke fs-activity-smoke
-                  fs-overview-place-smoke fs-verdict-smoke fs-startup-smoke"
+                  fs-overview-place-smoke fs-topology-smoke fs-verdict-smoke
+                  fs-startup-smoke"
           ninja -C build-linux $smokes
           for t in $smokes; do
             echo "== $t"
@@ -537,14 +538,15 @@ jobs:
         run: |
           cd port
           cmake -S . -B build -G Ninja
-          cmake --build build --target fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-overview-place-smoke fs-verdict-smoke fs-startup-smoke
+          cmake --build build --target fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-overview-place-smoke fs-topology-smoke fs-verdict-smoke fs-startup-smoke
 
       - name: Run UI smokes group 2
         run: |
           cd port
           export STOCKFW_TRAY_SMOKE=1
           smokes="fs-copilot-smoke fs-statusview-smoke fs-activity-smoke
-                  fs-overview-place-smoke fs-verdict-smoke fs-startup-smoke"
+                  fs-overview-place-smoke fs-topology-smoke fs-verdict-smoke
+                  fs-startup-smoke"
           for t in $smokes; do
             echo "== $t"
             ./build/$t.exe

@@ -149,7 +149,7 @@ test_topics (void)
 	GString *o4 = g_string_new (NULL);
 	gchar *first_left = NULL;
 
-	CHECK (n == 25, "topics: 25 of them (%u)", n);
+	CHECK (n == 26, "topics: 26 of them (%u)", n);
 
 	for (guint i = 0; i < n; i++) {
 		const FsHelpTopic *t = fs_help_topic_nth (i);

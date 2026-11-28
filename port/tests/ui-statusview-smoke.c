@@ -5,7 +5,11 @@
  * what the firewall state and the backend's IPv6 answer mean, that the
  * sidebar's copy of the verdict is told about every change, that the
  * Lock button is the real gate, and that Recent blocks keeps the newest
- * few in words.
+ * few in words.  Part 3 (2.0.0, the status board) checks the board's
+ * large word is the verdict's own word in every state, that the board
+ * holds exactly one button, and that a row of Latest blocks is a button
+ * that opens its event in the detail drawer and is re-labelled in
+ * place when a new block arrives.
  *
  * The regression this guards: the "Firewall profiles" frame was built
  * unconditionally, then hidden with gtk_widget_hide().  fs-app.c calls
@@ -32,6 +36,7 @@
 #include "core/fs-backend.h"
 #include "core/fs-types.h"
 #include "ui/fs-statusview.h"
+#include "ui/fs-drawer.h"
 #include "ui/fs-icons.h"
 
 static int failures = 0;
@@ -238,6 +243,177 @@ free_hit (FsHit *hit)
 	g_free (hit);
 }
 
+/* Every widget of `type' under widget carrying klass (NULL: any), in
+ * tree order. */
+static void
+collect (GtkWidget *widget, GType type, const gchar *klass, GPtrArray *out)
+{
+	if (G_TYPE_CHECK_INSTANCE_TYPE (widget, type) &&
+	    (klass == NULL || has_class (widget, klass)))
+		g_ptr_array_add (out, widget);
+
+	if (GTK_IS_CONTAINER (widget)) {
+		GList *children = gtk_container_get_children (GTK_CONTAINER (widget));
+
+		for (GList *l = children; l != NULL; l = l->next)
+			collect (GTK_WIDGET (l->data), type, klass, out);
+		g_list_free (children);
+	}
+}
+
+/* The widget named `name' (gtk_widget_set_name) under widget. */
+static GtkWidget *
+find_by_name (GtkWidget *widget, const gchar *name)
+{
+	GtkWidget *found = NULL;
+
+	if (widget == NULL)
+		return NULL;
+	if (g_strcmp0 (gtk_widget_get_name (widget), name) == 0)
+		return widget;
+	if (GTK_IS_CONTAINER (widget)) {
+		GList *children = gtk_container_get_children (GTK_CONTAINER (widget));
+
+		for (GList *l = children; l != NULL && found == NULL; l = l->next)
+			found = find_by_name (GTK_WIDGET (l->data), name);
+		g_list_free (children);
+	}
+	return found;
+}
+
+/* The first label under widget whose text contains `needle'. */
+static GtkWidget *
+find_label (GtkWidget *widget, const gchar *needle)
+{
+	GPtrArray *labels = g_ptr_array_new ();
+	GtkWidget *found = NULL;
+
+	if (widget != NULL)
+		collect (widget, GTK_TYPE_LABEL, NULL, labels);
+	for (guint i = 0; i < labels->len && found == NULL; i++)
+		if (strstr (gtk_label_get_text (GTK_LABEL (labels->pdata[i])),
+		            needle) != NULL)
+			found = labels->pdata[i];
+	g_ptr_array_unref (labels);
+	return found;
+}
+
+static guint
+count_buttons (GtkWidget *under)
+{
+	GPtrArray *found = g_ptr_array_new ();
+	guint n;
+
+	collect (under, GTK_TYPE_BUTTON, NULL, found);
+	n = found->len;
+	g_ptr_array_unref (found);
+	return n;
+}
+
+/* The status board (2.0.0): the verdict's own word, large, and the one
+ * button.  Called in each state the page is put in. */
+static void
+check_board (GtkWidget *page, const gchar *when)
+{
+	GtkWidget *hero = find_by_class (page, "hero");
+	GtkWidget *word = find_by_class (page, "state-word");
+
+	CHECK (word != NULL && GTK_IS_LABEL (word) &&
+	       gtk_widget_is_ancestor (word, hero) &&
+	       strcmp (gtk_label_get_text (GTK_LABEL (word)),
+	               fs_statusview_verdict (NULL)) == 0,
+	       "%s: the board's large word is the verdict's word, \"%s\" "
+	       "(got \"%s\")", when, fs_statusview_verdict (NULL),
+	       label_text (page, "state-word"));
+	CHECK (hero != NULL && count_buttons (hero) == 1,
+	       "%s: the board holds exactly one button (got %u)", when,
+	       hero != NULL ? count_buttons (hero) : 0);
+}
+
+/* Latest blocks (2.0.0): five rows that are buttons, re-labelled in
+ * place, each opening its event in the drawer. */
+static void
+check_latest_blocks (GtkWidget *page)
+{
+	GPtrArray *rows = g_ptr_array_new ();
+	GPtrArray *titles = g_ptr_array_new ();
+	GtkWidget *first, *title, *body;
+	FsHit *hit;
+	guint shown = 0;
+
+	collect (page, GTK_TYPE_BUTTON, "recent-row", rows);
+	for (guint i = 0; i < rows->len; i++)
+		if (shown_up_to (rows->pdata[i], page))
+			shown++;
+	CHECK (rows->len == 5 && shown == 5,
+	       "Latest blocks shows the five as five buttons (%u built, %u "
+	       "shown)", rows->len, shown);
+	if (rows->len == 0) {
+		g_ptr_array_unref (rows);
+		g_ptr_array_unref (titles);
+		return;
+	}
+
+	first = rows->pdata[0];
+	collect (first, GTK_TYPE_LABEL, "recent-title", titles);
+	title = titles->len > 0 ? titles->pdata[0] : NULL;
+	CHECK (title != NULL &&
+	       strcmp (gtk_label_get_text (GTK_LABEL (title)),
+	               "Blocked outbound SSH") == 0,
+	       "its first row is the newest block");
+	CHECK (gtk_widget_get_can_focus (first) &&
+	       atk_object_get_name (gtk_widget_get_accessible (first)) != NULL &&
+	       strstr (atk_object_get_name (gtk_widget_get_accessible (first)),
+	               "198.51.100.7") != NULL,
+	       "a row takes the keyboard and has an accessible name that "
+	       "says what was blocked");
+
+	/* Activating a row (a click, Enter or Space on a button) opens the
+	 * event's details. */
+	fs_drawer_close ();
+	CHECK (!fs_drawer_is_open (), "the drawer starts closed");
+	gtk_button_clicked (GTK_BUTTON (first));
+	CHECK (fs_drawer_is_open (),
+	       "activating a Latest blocks row opens the drawer");
+	body = find_by_name (fs_drawer_widget (), "fs-drawer-body");
+	CHECK (body != NULL && find_label (body, "198.51.100.7") != NULL,
+	       "and the drawer shows that event (its destination)");
+	fs_drawer_close ();
+
+	/* A block arriving re-labels the rows; it does not rebuild them,
+	 * so the pointer's hover and the keyboard's focus stay put. */
+	hit = blocked_hit (9, NULL);
+	fs_statusview_note_block (hit);
+	free_hit (hit);
+	g_ptr_array_set_size (rows, 0);
+	collect (page, GTK_TYPE_BUTTON, "recent-row", rows);
+	CHECK (rows->len == 5 && rows->pdata[0] == first &&
+	       title != NULL &&
+	       strstr (atk_object_get_name (gtk_widget_get_accessible (first)),
+	               "198.51.100.9") != NULL,
+	       "a new block re-labels the same row widgets in place");
+	gtk_button_clicked (GTK_BUTTON (first));
+	CHECK (fs_drawer_is_open () &&
+	       find_label (find_by_name (fs_drawer_widget (), "fs-drawer-body"),
+	                   "198.51.100.9") != NULL,
+	       "and the row now opens the new event");
+	fs_drawer_close ();
+
+	CHECK (find_button (page, "All events") != NULL,
+	       "the card keeps its All events link");
+
+	g_ptr_array_unref (rows);
+	g_ptr_array_unref (titles);
+}
+
+/* The page's clock, two seconds ahead: the next reading of the adapter
+ * counters is then a full interval after the last. */
+static gint64
+two_seconds_on (void)
+{
+	return g_get_monotonic_time () + 2 * G_USEC_PER_SEC;
+}
+
 static void
 check_overview (GtkWidget *page)
 {
@@ -268,6 +444,13 @@ check_overview (GtkWidget *page)
 	CHECK (find_button (page, "Start firewall") != NULL &&
 	       find_button (page, "Stop firewall") == NULL,
 	       "stopped: the one power button offers Start");
+	CHECK (has_class (find_button (page, "Start firewall"), "power-button") &&
+	       gtk_widget_is_ancestor (find_button (page, "Start firewall"),
+	                               hero),
+	       "stopped: it is the board's button");
+	CHECK (find_button (page, "View events") == NULL,
+	       "the board no longer carries a second button (View events)");
+	check_board (page, "stopped");
 	CHECK (changes > before, "stopped: the sidebar listener was told");
 
 	/* Running: green unless the backend says IPv6 passes unfiltered,
@@ -302,6 +485,9 @@ check_overview (GtkWidget *page)
 	       "running: the red class is gone, not stacked");
 	CHECK (find_button (page, "Stop firewall") != NULL,
 	       "running: the power button offers Stop");
+	CHECK (find_button (page, "Start firewall") == NULL,
+	       "running: and no second button still offers Start");
+	check_board (page, "running");
 	CHECK (changes > before, "running: the sidebar listener was told");
 
 	/* Unknown. */
@@ -309,6 +495,10 @@ check_overview (GtkWidget *page)
 	fs_statusview_verdict (&level);
 	CHECK (level == FS_VERDICT_UNKNOWN && has_class (hero, "level-unknown"),
 	       "unknown state: the verdict is UNKNOWN");
+	CHECK (strcmp (label_text (page, "state-word"), "State unknown") == 0,
+	       "unknown state: the board says \"State unknown\" (got \"%s\")",
+	       label_text (page, "state-word"));
+	check_board (page, "unknown");
 
 	/* The Lock button is the gate the Policy page asks about. */
 	fs_statusview_set_state (FS_FW_RUNNING);
@@ -364,6 +554,43 @@ check_overview (GtkWidget *page)
 		CHECK (strstr (rows[i], "[BLOCKED]") == NULL,
 		       "row %u: the parser's marker is not shown", i);
 	g_strfreev (rows);
+
+	check_latest_blocks (page);
+
+	/* The live cards, on whatever this machine reports.  The numbers
+	 * themselves, and the two minutes the graph keeps, are checked
+	 * against a fake backend in ui-overview-place-smoke.c; here it is
+	 * the real backend's counters that must reach the graph.  One more
+	 * reading, two seconds on by the page's clock, is one more point
+	 * where this machine has adapter counters and none where it has
+	 * not. */
+	{
+		GList *stats = backend->list_interface_stats != NULL
+		               ? backend->list_interface_stats () : NULL;
+		gboolean counters = stats != NULL;
+		guint had = fs_statusview_traffic_points (NULL, NULL), n, want;
+		gchar **busy;
+
+		g_list_free_full (stats, (GDestroyNotify) fs_iface_stat_free);
+		fs_statusview_set_clock (two_seconds_on);
+		fs_statusview_refresh ();
+		fs_statusview_set_clock (NULL);
+		n = fs_statusview_traffic_points (NULL, NULL);
+		want = counters ? MIN (had + 1, 60) : 0;
+		CHECK (n == want,
+		       "a reading two seconds on: %s (%u points before, %u "
+		       "after)", counters ? "this machine's adapter counters "
+		       "give the Traffic graph one more point"
+		       : "no adapter counters here, and the Traffic graph "
+		       "stays empty", had, n);
+		CHECK (fs_statusview_traffic_scale () >= 1024,
+		       "its scale is never under 1 KiB/s");
+		busy = fs_statusview_busiest_programs ();
+		CHECK (g_strv_length (busy) <= 5,
+		       "Busiest programs ranks at most five (%u)",
+		       g_strv_length (busy));
+		g_strfreev (busy);
+	}
 
 	fs_statusview_set_changed_cb (NULL, NULL);
 }

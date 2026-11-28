@@ -16,6 +16,12 @@ G_BEGIN_DECLS
  * real instead of only printing a success message. */
 GtkWidget *fs_copilot_page (FsCopilot *copilot, FsPolicy *policy);
 
+/* The same page as the main window hosts it.  The page draws its own
+ * header (its title row carries the Sentinel switch), so the window
+ * adds no title of its own: this puts the page on the page margins and
+ * in a scroller that scrolls it up and down, header included. */
+GtkWidget *fs_copilot_page_framed (FsCopilot *copilot, FsPolicy *policy);
+
 void fs_copilot_view_refresh (void);
 
 /* Called from the events feed to update the stats counter. */

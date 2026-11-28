@@ -312,6 +312,19 @@ fs_icon_draw (cairo_t *cr, FsIconKind kind, gdouble size)
 		cairo_line_to (cr, 15.5, 14);
 		break;
 
+	case FS_ICON_SIDEBAR:
+		rounded_rect (cr, 3, 4, 18, 16, 2.5);
+		cairo_move_to (cr, 9, 4);
+		cairo_line_to (cr, 9, 20);
+		break;
+
+	case FS_ICON_CLOSE:
+		cairo_move_to (cr, 6, 6);
+		cairo_line_to (cr, 18, 18);
+		cairo_move_to (cr, 18, 6);
+		cairo_line_to (cr, 6, 18);
+		break;
+
 	case FS_ICON_N_KINDS:
 	default:
 		break;

@@ -29,6 +29,7 @@
 #include "ui/fs-nexora.h"
 #include "ui/fs-tray.h"
 #include "ui/fs-icons.h"
+#include "ui/fs-drawer.h"
 #include "core/fs-apply.h"
 #include "core/fs-backend.h"
 #include "core/fs-prefs.h"
@@ -43,6 +44,7 @@
 #include "stockfw-logo-128.h"
 #include "fs-theme-css.h"        /* generated from src/ui/fs-theme.css */
 #include "ui/fs-theme-light.h"   /* the light values of its colours */
+#include "ui/fs-theme-accent.h"  /* the accents, the comfortable rows */
 
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #include <gdk/gdkkeysyms.h>
@@ -112,6 +114,29 @@ static gboolean nav_syncing = FALSE;
 static GtkWidget *side_dot = NULL;
 static GtkWidget *side_state = NULL;
 static GtkWidget *side_backend = NULL;
+
+/* The sidebar folds to a rail of icons (Ctrl+B) and remembers it.  The
+ * key is not in the settings table: like the Events columns' keys it
+ * is how the window was left, not a setting Preferences offers. */
+#define FS_SIDEBAR_COLLAPSED_KEY "/apps/stockfw/client/ui/sidebar_collapsed"
+#define FS_SIDEBAR_WIDTH 232
+#define FS_SIDEBAR_RAIL_WIDTH 52
+
+static gboolean   side_collapsed = FALSE;
+static GtkWidget *side_bar = NULL;
+static GtkWidget *side_brand = NULL;
+static GtkWidget *side_toggle = NULL;
+static GtkWidget *side_search = NULL;
+static GtkWidget *side_search_row = NULL;
+static GtkWidget *side_footer = NULL;
+static GtkWidget *side_footer_row = NULL;
+/* What the rail hides (names, shortcut hints, group headings), what
+ * only the rail shows (the rules that stand in for the headings), and
+ * the items, whose tooltips name them once their labels are gone.
+ * None of the arrays owns its widgets; the sidebar does. */
+static GPtrArray *side_texts = NULL;
+static GPtrArray *side_rules = NULL;
+static GPtrArray *side_items = NULL;
 
 /* The traffic policy, shared by the Policy page and Apply. */
 static FsPolicy *policy = NULL;
@@ -220,6 +245,7 @@ on_action_help (GSimpleAction *action, GVariant *parameter, gpointer data)
 }
 
 static void palette_toggle (void);
+static void sidebar_toggle (void);
 static void on_action_page (GSimpleAction *action, GVariant *parameter,
                             gpointer data);
 
@@ -232,11 +258,22 @@ on_action_palette (GSimpleAction *action, GVariant *parameter, gpointer data)
 	palette_toggle ();
 }
 
+/* [ on_action_sidebar ]
+ * "app.sidebar" (Ctrl+B) */
+static void
+on_action_sidebar (GSimpleAction *action, GVariant *parameter, gpointer data)
+{
+	(void) action;
+	(void) parameter;
+	(void) data;
+	sidebar_toggle ();
+}
+
 /* [ register_actions ] */
 static void
 register_actions (void)
 {
-	GSimpleAction *quit, *about, *preferences, *help, *palette;
+	GSimpleAction *quit, *about, *preferences, *help, *palette, *sidebar;
 
 	quit = g_simple_action_new ("quit", NULL);
 	g_signal_connect (quit, "activate", G_CALLBACK (on_action_quit), NULL);
@@ -263,6 +300,11 @@ register_actions (void)
 	g_action_map_add_action (G_ACTION_MAP (fsapp.app), G_ACTION (palette));
 	g_object_unref (palette);
 
+	sidebar = g_simple_action_new ("sidebar", NULL);
+	g_signal_connect (sidebar, "activate", G_CALLBACK (on_action_sidebar), NULL);
+	g_action_map_add_action (G_ACTION_MAP (fsapp.app), G_ACTION (sidebar));
+	g_object_unref (sidebar);
+
 	/* Ctrl+1 .. Ctrl+9: the sidebar's items, top to bottom. */
 	for (guint i = 0; i < FS_PAGE_COUNT && i < 9; i++) {
 		gchar *name = g_strdup_printf ("page%u", i + 1);
@@ -286,9 +328,12 @@ register_actions (void)
 		const gchar *palette_keys[] = { "<Primary>k",
 		                                "<Primary><Shift>p", NULL };
 		const gchar *quit_keys[] = { "<Primary>q", NULL };
+		const gchar *sidebar_keys[] = { "<Primary>b", NULL };
 
 		gtk_application_set_accels_for_action (fsapp.app, "app.palette",
 		                                       palette_keys);
+		gtk_application_set_accels_for_action (fsapp.app, "app.sidebar",
+		                                       sidebar_keys);
 		const gchar *pref_keys[] = { "<Primary>comma", NULL };
 		const gchar *help_keys[] = { "F1", NULL };
 
@@ -437,7 +482,9 @@ fs_app_current_page (void)
 	                                         : FS_PAGE_COUNT;
 }
 
-/* [ on_page_switched ] -- keep the sidebar in step with the notebook. */
+/* [ on_page_switched ] -- keep the sidebar in step with the notebook.
+ * The detail drawer shows something the page left behind had selected,
+ * so it goes with that page. */
 static void
 on_page_switched (GtkNotebook *notebook, GtkWidget *page, guint page_num,
                   gpointer data)
@@ -447,31 +494,116 @@ on_page_switched (GtkNotebook *notebook, GtkWidget *page, guint page_num,
 	(void) data;
 
 	sync_nav (page_num);
+	fs_drawer_close ();
+}
+
+/* [ on_window_key_after ]
+ * Escape closes the detail drawer.  Connected AFTER the window's own
+ * handler, so this only sees an Escape that nothing used: the command
+ * palette's entry, a search field, a cell being edited and the focused
+ * Activity graph all keep theirs. */
+static gboolean
+on_window_key_after (GtkWidget *widget, GdkEventKey *event, gpointer data)
+{
+	(void) widget;
+	(void) data;
+
+	if (event->keyval != GDK_KEY_Escape ||
+	    (event->state & gtk_accelerator_get_default_mod_mask ()) != 0 ||
+	    !fs_drawer_is_open ())
+		return FALSE;
+
+	fs_drawer_close ();
+	return TRUE;
+}
+
+/* [ on_window_focus_moved ]
+ * The open drawer lies over the right-hand edge of the page, and what
+ * is under it can still be reached with Tab.  When the keyboard goes
+ * to a control of the page that is wholly under the drawer, the drawer
+ * closes, so the control that has the keyboard can be seen.  (The
+ * mouse cannot get there: the drawer takes it over its own rectangle.)
+ *
+ * Left alone: the drawer's own buttons; the sidebar; a list or a
+ * diagram that only runs under the drawer with its right-hand part;
+ * and anything while the drawer is still sliding in, when it is the
+ * control that opened the drawer taking the keyboard.  A control
+ * that already has the keyboard when the drawer opens over it is not
+ * a move, and is left alone too.  Connected AFTER the window's own
+ * handler, so the keyboard is already where it is going and the
+ * close has nothing to give back. */
+static void
+on_window_focus_moved (GtkWindow *window, GtkWidget *focus, gpointer data)
+{
+	GtkWidget *drawer, *pages, *panel;
+	gint x = 0, y = 0, width = 0;
+
+	(void) data;
+
+	if (focus == NULL || fsapp.notebook == NULL || !fs_drawer_is_open ())
+		return;
+
+	drawer = fs_drawer_widget ();
+	pages = gtk_widget_get_parent (drawer);
+	panel = gtk_bin_get_child (GTK_BIN (drawer));
+	if (pages == NULL || panel == NULL ||
+	    gtk_widget_get_toplevel (drawer) != GTK_WIDGET (window) ||
+	    !gtk_widget_get_mapped (drawer) ||
+	    !gtk_revealer_get_child_revealed (GTK_REVEALER (drawer)) ||
+	    !gtk_widget_is_ancestor (focus, fsapp.notebook))
+		return;
+
+	/* The drawer is as tall as the pages and ends at their right edge,
+	 * so a control that starts at or past the drawer's left edge is
+	 * all under it.  Where that edge is comes from the width the
+	 * drawer's panel asks for, not from where the drawer was last
+	 * laid out: one shown a moment ago has not been laid out again. */
+	gtk_widget_get_preferred_width (panel, &width, NULL);
+	if (gtk_widget_translate_coordinates (focus, pages, 0, 0, &x, &y) &&
+	    x >= gtk_widget_get_allocated_width (pages) - width)
+		fs_drawer_close ();
+}
+
+/* [ side_text ] -- a label the rail hides. */
+static GtkWidget *
+side_text (GtkWidget *label)
+{
+	if (side_texts == NULL)
+		side_texts = g_ptr_array_new ();
+	g_ptr_array_add (side_texts, label);
+	return label;
 }
 
 /* [ nav_button ]
  * One sidebar item: a drawn icon, a label and (optionally) its
  * shortcut in quiet monospace at the end of the row, in a flat button.
  * The icon is drawn in the button's CSS colour, so hover and selection
- * recolour it along with the text. */
+ * recolour it along with the text.
+ *
+ * In the rail only the icon is left, so the item also carries what the
+ * rail needs to stay usable: its name for a screen reader, set here
+ * instead of read off a label that may be hidden, and a tooltip with
+ * the name and the shortcut ("fs-rail-tip"). */
 static GtkWidget *
 nav_button (GtkWidget *button, FsIconKind icon, const gchar *text,
             const gchar *keys)
 {
 	GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
 	GtkWidget *label = gtk_label_new (text);
+	AtkObject *atk = gtk_widget_get_accessible (button);
 
 	gtk_label_set_xalign (GTK_LABEL (label), 0.0);
 	gtk_label_set_ellipsize (GTK_LABEL (label), PANGO_ELLIPSIZE_END);
 	gtk_box_pack_start (GTK_BOX (row), fs_icon_new (icon, 16),
 	                    FALSE, FALSE, 0);
-	gtk_box_pack_start (GTK_BOX (row), label, TRUE, TRUE, 0);
+	gtk_box_pack_start (GTK_BOX (row), side_text (label), TRUE, TRUE, 0);
 	if (keys != NULL) {
 		GtkWidget *hint = gtk_label_new (keys);
 
 		gtk_style_context_add_class (
 			gtk_widget_get_style_context (hint), "fs-kbd");
-		gtk_box_pack_end (GTK_BOX (row), hint, FALSE, FALSE, 0);
+		gtk_box_pack_end (GTK_BOX (row), side_text (hint),
+		                  FALSE, FALSE, 0);
 	}
 	gtk_container_add (GTK_CONTAINER (button), row);
 
@@ -479,6 +611,18 @@ nav_button (GtkWidget *button, FsIconKind icon, const gchar *text,
 	gtk_widget_set_can_focus (button, TRUE);
 	gtk_style_context_add_class (gtk_widget_get_style_context (button),
 	                             "nav-item");
+
+	if (atk != NULL)
+		atk_object_set_name (atk, text);
+	g_object_set_data (G_OBJECT (button), "fs-nav-row", row);
+	g_object_set_data_full (G_OBJECT (button), "fs-rail-tip",
+	                        keys != NULL
+	                        ? g_strdup_printf ("%s (%s)", text, keys)
+	                        : g_strdup (text),
+	                        g_free);
+	if (side_items == NULL)
+		side_items = g_ptr_array_new ();
+	g_ptr_array_add (side_items, button);
 	return button;
 }
 
@@ -504,6 +648,28 @@ on_nav_about (GtkButton *button, gpointer data)
 	(void) button;
 	(void) data;
 	fs_dialogs_about (fsapp.window);
+}
+
+/* [ sync_footer_tip ]
+ * In the rail the footer is the dot alone, so its tooltip says what the
+ * two hidden lines say: the verdict, and who enforces it. */
+static void
+sync_footer_tip (void)
+{
+	const gchar *state, *backend_name;
+	gchar *tip = NULL;
+
+	if (side_footer == NULL || side_state == NULL)
+		return;
+
+	state = gtk_label_get_text (GTK_LABEL (side_state));
+	backend_name = gtk_label_get_text (GTK_LABEL (side_backend));
+	if (side_collapsed && *state != '\0')
+		tip = *backend_name != '\0'
+		    ? g_strdup_printf ("%s\n%s", state, backend_name)
+		    : g_strdup (state);
+	gtk_widget_set_tooltip_text (side_footer, tip);
+	g_free (tip);
 }
 
 /* [ sync_sidebar_state ]
@@ -534,6 +700,101 @@ sync_sidebar_state (gpointer data)
 		gtk_style_context_remove_class (ctx, dot_classes[i]);
 	if ((guint) level < G_N_ELEMENTS (dot_classes))
 		gtk_style_context_add_class (ctx, dot_classes[level]);
+
+	sync_footer_tip ();
+}
+
+/* [ sidebar_apply ]
+ * Lay the sidebar out as side_collapsed says: the full list, or a rail
+ * of icons.  The rail is the same widgets with their text hidden, not
+ * a second sidebar, so the selected page, the verdict dot and the
+ * keyboard focus carry over; an item's geometry is the same in both
+ * (tests/ui-theme-smoke.c measures it), only its row is centred. */
+static void
+sidebar_apply (void)
+{
+	GtkStyleContext *ctx;
+	AtkObject *atk;
+
+	if (side_bar == NULL)
+		return;
+
+	ctx = gtk_widget_get_style_context (side_bar);
+	if (side_collapsed)
+		gtk_style_context_add_class (ctx, "rail");
+	else
+		gtk_style_context_remove_class (ctx, "rail");
+	gtk_widget_set_size_request (side_bar,
+	                             side_collapsed ? FS_SIDEBAR_RAIL_WIDTH
+	                                            : FS_SIDEBAR_WIDTH, -1);
+
+	for (guint i = 0; side_texts != NULL && i < side_texts->len; i++)
+		gtk_widget_set_visible (g_ptr_array_index (side_texts, i),
+		                        !side_collapsed);
+	for (guint i = 0; side_rules != NULL && i < side_rules->len; i++)
+		gtk_widget_set_visible (g_ptr_array_index (side_rules, i),
+		                        side_collapsed);
+
+	for (guint i = 0; side_items != NULL && i < side_items->len; i++) {
+		GtkWidget *item = g_ptr_array_index (side_items, i);
+		GtkWidget *row = g_object_get_data (G_OBJECT (item),
+		                                    "fs-nav-row");
+
+		gtk_widget_set_halign (row, side_collapsed ? GTK_ALIGN_CENTER
+		                                           : GTK_ALIGN_FILL);
+		/* Expanded, an item keeps the tooltip it was built with
+		 * (most have none: the label says it). */
+		gtk_widget_set_tooltip_text (
+			item, g_object_get_data (G_OBJECT (item),
+			                         side_collapsed ? "fs-rail-tip"
+			                                        : "fs-wide-tip"));
+	}
+
+	/* In the rail the brand row stands on end: the tile, then the
+	 * fold button under it. */
+	gtk_orientable_set_orientation (GTK_ORIENTABLE (side_brand),
+	                                side_collapsed
+	                                ? GTK_ORIENTATION_VERTICAL
+	                                : GTK_ORIENTATION_HORIZONTAL);
+	gtk_widget_set_halign (side_search_row,
+	                       side_collapsed ? GTK_ALIGN_CENTER
+	                                      : GTK_ALIGN_FILL);
+	gtk_widget_set_halign (side_footer_row,
+	                       side_collapsed ? GTK_ALIGN_CENTER
+	                                      : GTK_ALIGN_FILL);
+
+	gtk_widget_set_tooltip_text (side_toggle,
+	                             side_collapsed
+	                             ? _("Expand the sidebar (Ctrl+B)")
+	                             : _("Collapse the sidebar (Ctrl+B)"));
+	atk = gtk_widget_get_accessible (side_toggle);
+	if (atk != NULL)
+		atk_object_set_name (atk, side_collapsed
+		                          ? _("Expand the sidebar")
+		                          : _("Collapse the sidebar"));
+
+	sync_footer_tip ();
+}
+
+/* [ sidebar_toggle ] -- the brand row's button, Ctrl+B and the command
+ * palette.  Remembered for the next start. */
+static void
+sidebar_toggle (void)
+{
+	if (side_bar == NULL)
+		return;
+
+	side_collapsed = !side_collapsed;
+	fs_prefs_set_bool (FS_SIDEBAR_COLLAPSED_KEY, side_collapsed);
+	sidebar_apply ();
+}
+
+static void
+on_side_toggle (GtkButton *button, gpointer data)
+{
+	(void) button;
+	(void) data;
+	sidebar_toggle ();
 }
 
 /* The sidebar's order, which is also the order of the page shortcuts
@@ -598,7 +859,7 @@ static GtkWidget *palette_empty = NULL;
  * widget may be gone by the time the palette closes. */
 static GtkWidget *palette_prev_focus = NULL;
 
-static void apply_dark_mode (void);
+static void apply_appearance (void);
 
 static void
 palette_forget_focus (void)
@@ -877,13 +1138,42 @@ palette_about (gpointer data)
 	fs_dialogs_about (fsapp.window);
 }
 
+/* The Appearance settings of Preferences, one command away: stored
+ * like a Save there would (the periodic save and the one at quit write
+ * the file) and applied at once.  `data' is the accent's stored word. */
+static void
+palette_accent (gpointer data)
+{
+	fs_prefs_set_string (FS_PREFS_ACCENT, data);
+	apply_appearance ();
+}
+
+static void
+palette_density (gpointer data)
+{
+	gboolean comfortable = strcmp (fs_prefs_choice (FS_PREFS_DENSITY),
+	                               "comfortable") == 0;
+
+	(void) data;
+	fs_prefs_set_string (FS_PREFS_DENSITY,
+	                     comfortable ? "compact" : "comfortable");
+	apply_appearance ();
+}
+
 static void
 palette_theme (gpointer data)
 {
 	(void) data;
 	fs_prefs_set_bool (FS_PREFS_DARK_MODE,
 	                   !fs_prefs_bool (FS_PREFS_DARK_MODE));
-	apply_dark_mode ();
+	apply_appearance ();
+}
+
+static void
+palette_sidebar (gpointer data)
+{
+	(void) data;
+	sidebar_toggle ();
 }
 
 static void
@@ -1039,8 +1329,18 @@ build_palette (void)
 	             GINT_TO_POINTER (FALSE));
 	palette_add (_("App"), _("Preferences"), FS_ICON_SETTINGS, "Ctrl+,",
 	             palette_preferences, NULL);
+	palette_add (_("App"), _("Accent: blue"), FS_ICON_MONITOR, NULL,
+	             palette_accent, "blue");
+	palette_add (_("App"), _("Accent: green"), FS_ICON_MONITOR, NULL,
+	             palette_accent, "green");
+	palette_add (_("App"), _("Accent: amber"), FS_ICON_MONITOR, NULL,
+	             palette_accent, "amber");
+	palette_add (_("App"), _("Toggle row density"), FS_ICON_LIST, NULL,
+	             palette_density, NULL);
 	palette_add (_("App"), _("Toggle dark mode"), FS_ICON_MONITOR, NULL,
 	             palette_theme, NULL);
+	palette_add (_("App"), _("Toggle sidebar"), FS_ICON_SIDEBAR, "Ctrl+B",
+	             palette_sidebar, NULL);
 	palette_add (_("App"), _("Help"), FS_ICON_HELP, "F1",
 	             palette_help, NULL);
 	palette_add (_("App"), _("About StockFW"), FS_ICON_INFO, NULL,
@@ -1090,7 +1390,10 @@ on_side_search (GtkButton *button, gpointer data)
  * A dense list in the manner of OpenCode's session list: the name and
  * version on one line, the command palette's trigger where a search
  * field would be, the pages in three quiet groups with their
- * shortcuts, then Preferences, Help and About, then the verdict. */
+ * shortcuts, then Preferences, Help and About, then the verdict.
+ *
+ * The button at the end of the first line (and Ctrl+B) folds all of it
+ * to a rail of icons; sidebar_apply () has the two layouts. */
 static GtkWidget *
 build_sidebar (void)
 {
@@ -1101,18 +1404,24 @@ build_sidebar (void)
 	GtkWidget *bar, *brand, *tile, *label, *spacer, *footer, *row;
 	const gchar *group = NULL;
 
+	side_collapsed = fs_prefs_get_bool (FS_SIDEBAR_COLLAPSED_KEY, FALSE);
+
 	bar = gtk_box_new (GTK_ORIENTATION_VERTICAL, 1);
-	gtk_widget_set_size_request (bar, 232, -1);
+	gtk_widget_set_name (bar, "fs-sidebar");
+	gtk_widget_set_size_request (bar, FS_SIDEBAR_WIDTH, -1);
 	gtk_style_context_add_class (gtk_widget_get_style_context (bar),
 	                             "fs-sidebar");
+	side_bar = bar;
 
 	/* ---- brand ---- */
 	brand = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
 	gtk_style_context_add_class (gtk_widget_get_style_context (brand),
 	                             "fs-brand");
+	side_brand = brand;
 
 	tile = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
 	gtk_widget_set_size_request (tile, 24, 24);
+	gtk_widget_set_halign (tile, GTK_ALIGN_CENTER);
 	gtk_widget_set_valign (tile, GTK_ALIGN_CENTER);
 	gtk_style_context_add_class (gtk_widget_get_style_context (tile),
 	                             "fs-brand-tile");
@@ -1139,7 +1448,23 @@ build_sidebar (void)
 	gtk_label_set_xalign (GTK_LABEL (label), 0.0);
 	gtk_style_context_add_class (gtk_widget_get_style_context (label),
 	                             "fs-brand-name");
-	gtk_box_pack_start (GTK_BOX (brand), label, TRUE, TRUE, 0);
+	gtk_box_pack_start (GTK_BOX (brand), side_text (label), TRUE, TRUE, 0);
+
+	/* The fold button, at the end of the row; its tooltip and name
+	 * say which way it goes (sidebar_apply). */
+	side_toggle = gtk_button_new ();
+	gtk_container_add (GTK_CONTAINER (side_toggle),
+	                   fs_icon_new (FS_ICON_SIDEBAR, 16));
+	gtk_widget_set_name (side_toggle, "nav-collapse");
+	gtk_button_set_relief (GTK_BUTTON (side_toggle), GTK_RELIEF_NONE);
+	gtk_widget_set_halign (side_toggle, GTK_ALIGN_CENTER);
+	gtk_widget_set_valign (side_toggle, GTK_ALIGN_CENTER);
+	gtk_style_context_add_class (
+		gtk_widget_get_style_context (side_toggle), "fs-side-toggle");
+	g_signal_connect (side_toggle, "clicked",
+	                  G_CALLBACK (on_side_toggle), NULL);
+	gtk_box_pack_end (GTK_BOX (brand), side_toggle, FALSE, FALSE, 0);
+
 #ifdef FS_VERSION
 	label = gtk_label_new (FS_VERSION);
 #else
@@ -1147,7 +1472,7 @@ build_sidebar (void)
 #endif
 	gtk_style_context_add_class (gtk_widget_get_style_context (label),
 	                             "fs-brand-version");
-	gtk_box_pack_end (GTK_BOX (brand), label, FALSE, FALSE, 0);
+	gtk_box_pack_end (GTK_BOX (brand), side_text (label), FALSE, FALSE, 0);
 
 	gtk_box_pack_start (GTK_BOX (bar), brand, FALSE, FALSE, 0);
 
@@ -1156,23 +1481,31 @@ build_sidebar (void)
 		GtkWidget *item = gtk_button_new ();
 		GtkWidget *inner = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
 		GtkStyleContext *ctx;
+		AtkObject *atk = gtk_widget_get_accessible (item);
 
 		gtk_box_pack_start (GTK_BOX (inner),
 		                    fs_icon_new (FS_ICON_SEARCH, 14),
 		                    FALSE, FALSE, 0);
 		label = gtk_label_new (_("Search"));
 		gtk_label_set_xalign (GTK_LABEL (label), 0.0);
-		gtk_box_pack_start (GTK_BOX (inner), label, TRUE, TRUE, 0);
+		gtk_box_pack_start (GTK_BOX (inner), side_text (label),
+		                    TRUE, TRUE, 0);
 		label = gtk_label_new ("Ctrl+K");
 		ctx = gtk_widget_get_style_context (label);
 		gtk_style_context_add_class (ctx, "fs-kbd");
 		gtk_style_context_add_class (ctx, "boxed");
-		gtk_box_pack_end (GTK_BOX (inner), label, FALSE, FALSE, 0);
+		gtk_box_pack_end (GTK_BOX (inner), side_text (label),
+		                  FALSE, FALSE, 0);
 		gtk_container_add (GTK_CONTAINER (item), inner);
+		side_search = item;
+		side_search_row = inner;
 
 		gtk_widget_set_name (item, "nav-search");
 		gtk_widget_set_tooltip_text (
 			item, _("Search pages and commands (Ctrl+K)"));
+		/* Its name does not hang on a label the rail hides. */
+		if (atk != NULL)
+			atk_object_set_name (atk, _("Search"));
 		gtk_style_context_add_class (
 			gtk_widget_get_style_context (item), "fs-side-search");
 		g_signal_connect (item, "clicked",
@@ -1185,18 +1518,42 @@ build_sidebar (void)
 		GtkWidget *item;
 
 		if (group == NULL || strcmp (group, nav_order[i].group) != 0) {
+			/* In the rail a thin rule stands where the heading
+			 * was; the first group needs none, the search
+			 * button is above it. */
+			if (group != NULL) {
+				GtkWidget *rule = gtk_box_new (
+					GTK_ORIENTATION_HORIZONTAL, 0);
+
+				gtk_style_context_add_class (
+					gtk_widget_get_style_context (rule),
+					"fs-side-rule");
+				gtk_widget_set_no_show_all (rule, TRUE);
+				gtk_box_pack_start (GTK_BOX (bar), rule,
+				                    FALSE, FALSE, 0);
+				if (side_rules == NULL)
+					side_rules = g_ptr_array_new ();
+				g_ptr_array_add (side_rules, rule);
+			}
+
 			group = nav_order[i].group;
 			label = gtk_label_new (_(group));
 			gtk_label_set_xalign (GTK_LABEL (label), 0.0);
 			gtk_style_context_add_class (
 				gtk_widget_get_style_context (label),
 				"fs-side-group");
-			gtk_box_pack_start (GTK_BOX (bar), label,
+			gtk_box_pack_start (GTK_BOX (bar), side_text (label),
 			                    FALSE, FALSE, 0);
 		}
 
 		item = nav_button (gtk_toggle_button_new (), nav_order[i].icon,
 		                   _(nav_order[i].label), page_keys[i]);
+		{
+			gchar *name = g_strdup_printf ("nav-page%u", i + 1);
+
+			gtk_widget_set_name (item, name);
+			g_free (name);
+		}
 		g_signal_connect (item, "toggled", G_CALLBACK (on_nav_toggled),
 		                  GUINT_TO_POINTER (nav_order[i].page));
 		gtk_box_pack_start (GTK_BOX (bar), item, FALSE, FALSE, 0);
@@ -1247,17 +1604,31 @@ build_sidebar (void)
 	gtk_label_set_ellipsize (GTK_LABEL (side_state), PANGO_ELLIPSIZE_END);
 	gtk_style_context_add_class (gtk_widget_get_style_context (side_state),
 	                             "fs-side-state");
-	gtk_box_pack_start (GTK_BOX (row), side_state, TRUE, TRUE, 0);
+	gtk_box_pack_start (GTK_BOX (row), side_text (side_state),
+	                    TRUE, TRUE, 0);
 	gtk_box_pack_start (GTK_BOX (footer), row, FALSE, FALSE, 0);
+	side_footer_row = row;
 
 	side_backend = gtk_label_new (NULL);
 	gtk_label_set_xalign (GTK_LABEL (side_backend), 0.0);
 	gtk_label_set_line_wrap (GTK_LABEL (side_backend), TRUE);
 	gtk_style_context_add_class (gtk_widget_get_style_context (side_backend),
 	                             "fs-side-backend");
-	gtk_box_pack_start (GTK_BOX (footer), side_backend, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (footer), side_text (side_backend),
+	                    FALSE, FALSE, 0);
 
 	gtk_box_pack_start (GTK_BOX (bar), footer, FALSE, FALSE, 0);
+	side_footer = footer;
+
+	/* The tooltips the items were built with are the ones they show
+	 * expanded; the rail swaps in its own and puts these back. */
+	for (guint i = 0; side_items != NULL && i < side_items->len; i++) {
+		GtkWidget *item = g_ptr_array_index (side_items, i);
+
+		g_object_set_data_full (G_OBJECT (item), "fs-wide-tip",
+		                        gtk_widget_get_tooltip_text (item),
+		                        g_free);
+	}
 
 	return bar;
 }
@@ -1306,6 +1677,233 @@ apply_dark_mode (void)
 		else
 			gtk_style_context_remove_class (ctx, "dark");
 	}
+}
+
+/* [ appearance_sheet ]
+ * One of the two small sheets of ui/fs-theme-accent.h over the whole
+ * screen, or none of it: `css' is the sheet wanted now (NULL for
+ * none), *provider and *installed remember what is up.  They sit two
+ * priority steps above fs-theme.css, so above the light palette too,
+ * which names the accent colours itself.  Nothing is touched when the
+ * sheet wanted is the one installed: every Save of Preferences comes
+ * through here, and re-installing would restyle every window for
+ * nothing.  TRUE when what is installed changed. */
+static gboolean
+appearance_sheet (GtkCssProvider **provider, const gchar **installed,
+                  const gchar *css, const gchar *what)
+{
+	GdkScreen *screen = gdk_screen_get_default ();
+
+	if (screen == NULL || css == *installed)
+		return FALSE;
+
+	if (*provider != NULL) {
+		gtk_style_context_remove_provider_for_screen (
+			screen, GTK_STYLE_PROVIDER (*provider));
+		g_clear_object (provider);
+	}
+	*installed = NULL;
+	if (css == NULL)
+		return TRUE;
+
+	*provider = gtk_css_provider_new ();
+	if (gtk_css_provider_load_from_data (*provider, css, -1, NULL)) {
+		gtk_style_context_add_provider_for_screen (
+			screen, GTK_STYLE_PROVIDER (*provider),
+			GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 2);
+		*installed = css;
+	} else {
+		g_warning ("StockFW %s failed to load", what);
+		g_clear_object (provider);
+	}
+	return TRUE;
+}
+
+/* [ apply_accent ]
+ * The accent colour of Preferences: blue is what the stylesheet and
+ * the light palette say already and installs nothing; green and amber
+ * rename fs_accent and fs_accent_fill, with the values of the mode
+ * that is on.  So it runs after apply_dark_mode, and again whenever
+ * either changes.  Everything painted by hand asks the theme for
+ * "fs_accent" at each draw (ui/fs-themecolor.h) and follows too. */
+static void
+apply_accent (void)
+{
+	static GtkCssProvider *provider = NULL;
+	static const gchar *installed = NULL;
+	const gchar *accent = fs_prefs_choice (FS_PREFS_ACCENT);
+	gboolean dark = fs_prefs_bool (FS_PREFS_DARK_MODE);
+	const gchar *css = NULL;
+
+	/* Row 0 is blue. */
+	for (guint i = 1; i < G_N_ELEMENTS (fs_theme_accents); i++)
+		if (strcmp (accent, fs_theme_accents[i].id) == 0)
+			css = dark ? fs_theme_accents[i].dark
+			           : fs_theme_accents[i].light;
+
+	appearance_sheet (&provider, &installed, css, "accent colour");
+}
+
+/* What density_tree is told: how much to add to every row above and
+ * below, and whether the column headings have just been restyled (the
+ * comfortable sheet went up or came down). */
+typedef struct
+{
+	gint     extra;
+	gboolean restyled;
+} DensityPass;
+
+/* [ density_tree ]
+ * The rows of every tree view under `widget': a cell renderer takes no
+ * padding from CSS, the row is as tall as its tallest cell plus that
+ * cell's ypad twice.  So each renderer's ypad becomes the one it was
+ * built with (remembered on it the first time it is raised, +1 so that
+ * 0 can be told from "never seen") plus the pass's extra.
+ *
+ * Then the view has to measure its rows again, which it does not do
+ * for a renderer property on its own.  Queueing a resize on a column
+ * marks every row's height stale.  The Events list is in fixed-height
+ * mode, where one measured row stands for all and that height is kept
+ * until the mode itself is set: so the mode is switched off and on
+ * again around it.
+ *
+ * The headings are CSS, but need a hand as well.  A scrolled window
+ * leaves room for its list's heading from the height the list worked
+ * out the last time it was measured, and asks for that before it
+ * measures the list again: after the headings grow (and before the
+ * very first layout) its answer is one step behind, and a list that
+ * is only as tall as it must be (the Policy page's) gave its scrollbar
+ * less room than a scrollbar takes, which GTK reports on stderr.  So
+ * the headings are measured here, now, and the next layout starts
+ * from the right height. */
+static void
+density_tree (GtkWidget *widget, gpointer data)
+{
+	const DensityPass *pass = data;
+
+	if (GTK_IS_TREE_VIEW (widget)) {
+		GtkTreeView *view = GTK_TREE_VIEW (widget);
+		GList *columns = gtk_tree_view_get_columns (view);
+		gboolean moved = FALSE;
+
+		for (GList *c = columns; c != NULL; c = c->next) {
+			GList *cells = gtk_cell_layout_get_cells (
+				GTK_CELL_LAYOUT (c->data));
+
+			for (GList *r = cells; r != NULL; r = r->next) {
+				GObject *cell = r->data;
+				gpointer seen = g_object_get_data (
+					cell, "fs-density-ypad");
+				gint xpad = 0, ypad = 0, built;
+
+				gtk_cell_renderer_get_padding (
+					GTK_CELL_RENDERER (cell), &xpad, &ypad);
+				if (seen != NULL) {
+					built = GPOINTER_TO_INT (seen) - 1;
+				} else if (pass->extra == 0) {
+					/* Compact, and never raised: as built. */
+					continue;
+				} else {
+					built = ypad;
+					g_object_set_data (
+						cell, "fs-density-ypad",
+						GINT_TO_POINTER (built + 1));
+				}
+				if (ypad != built + pass->extra) {
+					gtk_cell_renderer_set_padding (
+						GTK_CELL_RENDERER (cell), xpad,
+						built + pass->extra);
+					moved = TRUE;
+				}
+			}
+			g_list_free (cells);
+		}
+
+		if (moved) {
+			gboolean fixed =
+				gtk_tree_view_get_fixed_height_mode (view);
+
+			if (fixed)
+				gtk_tree_view_set_fixed_height_mode (view, FALSE);
+			for (GList *c = columns; c != NULL; c = c->next)
+				gtk_tree_view_column_queue_resize (c->data);
+			if (fixed)
+				gtk_tree_view_set_fixed_height_mode (view, TRUE);
+		}
+
+		if (moved || pass->restyled) {
+			gint height = 0;
+
+			for (GList *c = columns; c != NULL; c = c->next) {
+				GtkWidget *heading =
+					gtk_tree_view_column_get_button (c->data);
+
+				if (heading != NULL)
+					gtk_widget_queue_resize (heading);
+			}
+			gtk_widget_get_preferred_height (widget, &height, NULL);
+			gtk_widget_queue_resize (widget);
+		}
+
+		g_list_free (columns);
+	}
+
+	if (GTK_IS_CONTAINER (widget))
+		gtk_container_forall (GTK_CONTAINER (widget), density_tree,
+		                      data);
+}
+
+/* [ density_rows ]
+ * The row density of Preferences, for the lists CSS does not reach:
+ * every tree view in every window that is open now (the main window's
+ * pages hold all of them; there may be no window at all, in a test of
+ * the Preferences window alone).  Runs once the pages are built and
+ * after every change of the setting.  Compact, with nothing ever
+ * raised, changes nothing. */
+static void
+density_rows (gboolean restyled)
+{
+	gboolean comfortable = strcmp (fs_prefs_choice (FS_PREFS_DENSITY),
+	                               "comfortable") == 0;
+	DensityPass pass = { comfortable ? FS_THEME_COMFORTABLE_YPAD : 0,
+	                     restyled };
+	GList *tops = gtk_window_list_toplevels ();
+
+	for (GList *l = tops; l != NULL; l = l->next)
+		density_tree (l->data, &pass);
+	g_list_free (tops);
+}
+
+/* [ apply_density ]
+ * Compact is the stylesheet as written.  Comfortable lays the second
+ * sheet of ui/fs-theme-accent.h over it (a little more room in the
+ * rows of the sidebars, the lists and the menus, in every window) and
+ * raises the rows of the tree views to match. */
+static void
+apply_density (void)
+{
+	static GtkCssProvider *provider = NULL;
+	static const gchar *installed = NULL;
+	gboolean comfortable = strcmp (fs_prefs_choice (FS_PREFS_DENSITY),
+	                               "comfortable") == 0;
+
+	density_rows (appearance_sheet (&provider, &installed,
+	                                comfortable ? fs_theme_comfortable_css
+	                                            : NULL,
+	                                "comfortable density"));
+}
+
+/* [ apply_appearance ]
+ * Everything Preferences > General > Appearance offers, from what is
+ * stored: Dark mode, then the accent (whose values depend on the
+ * mode), then the row density.  At startup, after a Save in
+ * Preferences, and from the command palette. */
+static void
+apply_appearance (void)
+{
+	apply_dark_mode ();
+	apply_accent ();
+	apply_density ();
 }
 
 /* [ install_theme ]
@@ -1851,7 +2449,7 @@ fs_app_activate (GtkApplication *app)
 
 	/* Theme first: everything built below picks up the classes. */
 	install_theme ();
-	apply_dark_mode ();
+	apply_appearance ();
 
 	{
 		GtkWidget *overlay = gtk_overlay_new ();
@@ -1892,10 +2490,41 @@ fs_app_activate (GtkApplication *app)
 	gtk_notebook_set_show_border (GTK_NOTEBOOK (fsapp.notebook), FALSE);
 	gtk_widget_set_hexpand (fsapp.notebook, TRUE);
 	gtk_widget_set_vexpand (fsapp.notebook, TRUE);
-	gtk_box_pack_start (GTK_BOX (box), fsapp.notebook, TRUE, TRUE, 0);
+
+	/* The pages sit in an overlay of their own, for the detail drawer
+	 * (ui/fs-drawer.h): it slides in over the right edge of the page
+	 * and never over the sidebar, and the toasts and the command
+	 * palette, which are in the window's overlay, stay above it.  The
+	 * drawer keeps to its own width at that edge (halign END), so the
+	 * rest of the page still takes the mouse. */
+	{
+		GtkWidget *pages = gtk_overlay_new ();
+		GList *chain = NULL;
+
+		gtk_container_add (GTK_CONTAINER (pages), fsapp.notebook);
+		gtk_overlay_add_overlay (GTK_OVERLAY (pages),
+		                         fs_drawer_widget ());
+		/* Tab goes through the page and then into the drawer, and
+		 * Shift+Tab back.  Left to sort the two by where they are,
+		 * GTK puts the drawer first (an overlay child counts as
+		 * being at 0,0), which is between the sidebar and the page:
+		 * a whole round of the window away from the list that
+		 * opened it.  While the drawer is hidden it is skipped. */
+		chain = g_list_append (chain, fsapp.notebook);
+		chain = g_list_append (chain, fs_drawer_widget ());
+		G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+		gtk_container_set_focus_chain (GTK_CONTAINER (pages), chain);
+		G_GNUC_END_IGNORE_DEPRECATIONS
+		g_list_free (chain);
+		gtk_box_pack_start (GTK_BOX (box), pages, TRUE, TRUE, 0);
+	}
 
 	g_signal_connect (fsapp.notebook, "switch-page",
 	                  G_CALLBACK (on_page_switched), NULL);
+	g_signal_connect_after (fsapp.window, "key-press-event",
+	                        G_CALLBACK (on_window_key_after), NULL);
+	g_signal_connect_after (fsapp.window, "set-focus",
+	                        G_CALLBACK (on_window_focus_moved), NULL);
 
 	add_page (_("Overview"), NULL, fs_statusview_page (), FALSE);
 	add_page (_("Events"),
@@ -1909,7 +2538,10 @@ fs_app_activate (GtkApplication *app)
 	            "time."),
 	          fs_activityview_page (), TRUE);
 
-	add_page (_("Topology"), _("Preview of a planned page. It shows a fixed example diagram, not your network."), fs_topology_page (), TRUE);
+	add_page (_("Topology"),
+	          _("This computer's open connections, and what the firewall "
+	            "blocked in the last 10 minutes."),
+	          fs_topology_page (), TRUE);
 	policy = fs_policy_new ();
 
 	/* The Events page was built above (before there was a policy to
@@ -1956,12 +2588,10 @@ fs_app_activate (GtkApplication *app)
 		g_free (baseline);
 	}
 
-	add_page (_("Copilot"),
-	          _("Checks the event log and the policy with fixed rules on "
-	            "this computer, shows the events and the rule behind each "
-	            "finding, and tries rule changes before you make them. "
-	            "Nothing is sent anywhere."),
-	          fs_copilot_page (copilot, policy), TRUE);
+	/* No subtitle: the Copilot page draws its own header (the title row
+	 * carries the Sentinel switch) and brings its own scroller. */
+	add_page (_("Copilot"), NULL,
+	          fs_copilot_page_framed (copilot, policy), FALSE);
 
 	/* P6 (false-outage hardening): the Sentinel staged-block list is
 	 * persisted, so a restart must reconcile it -- rows whose ten
@@ -1996,12 +2626,22 @@ fs_app_activate (GtkApplication *app)
 	gtk_widget_show_all (gtk_bin_get_child (GTK_BIN (fsapp.window)));
 	sync_nav ((guint) gtk_notebook_get_current_page (
 		GTK_NOTEBOOK (fsapp.notebook)));
+	/* After the show_all, which would bring back what the rail hides. */
+	sidebar_apply ();
+	/* The window opens with the keyboard on the search button, as it
+	 * did when that was the first control in it; the fold button
+	 * above it is not where a first Enter should land. */
+	gtk_widget_grab_focus (side_search);
 
 	/* The sidebar's verdict follows the Overview's. */
 	fs_statusview_set_changed_cb (sync_sidebar_state, NULL);
 
 	/* Reflect the real firewall state, if the backend knows it. */
 	fs_statusview_set_state (fs_backend ()->get_state ());
+
+	/* The lists exist now: give their rows the density Preferences
+	 * asks for (apply_appearance ran before there was a page). */
+	density_rows (FALSE);
 
 	/* The tray before the window: a hidden start needs the icon up
 	 * first, to come back from.  It reuses the window logo set above,
@@ -2053,8 +2693,8 @@ fs_app_reload_settings (void)
 	/* ... and changed the list size or the history settings. */
 	fs_hitview_apply_settings ();
 
-	/* ... and switched Dark mode. */
-	apply_dark_mode ();
+	/* ... and switched Dark mode, the accent or the row density. */
+	apply_appearance ();
 }
 
 /* [ settings_swap ]

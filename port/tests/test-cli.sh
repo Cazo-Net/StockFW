@@ -4122,8 +4122,8 @@ rm -rf "$D4"
 H="$TMP/pr4e"
 mkdir -p "$H"
 "$S" --json help topics > "$H/topics.json" 2> "$H/err"
-check "PR4-E: help --json topics is one JSON document of 25 topics" \
-  py "import json; d = json.load(open('$H/topics.json')); assert len(d['topics']) == 25, len(d['topics'])"
+check "PR4-E: help --json topics is one JSON document of 26 topics" \
+  py "import json; d = json.load(open('$H/topics.json')); assert len(d['topics']) == 26, len(d['topics'])"
 check "PR4-E: every topic id renders: exit 0, its title first, its summary, no markup left" py "
 import json, subprocess
 for t in json.load(open('$H/topics.json'))['topics']:
@@ -4140,7 +4140,7 @@ import glob, subprocess
 outs = [open(f).read() for f in glob.glob('$H/topic-*')]
 for args in (['help', 'topics'], ['help', '--search', 'ssh'], ['about'], ['help']):
     outs.append(subprocess.run(['$S'] + args, capture_output=True, text=True, timeout=20).stdout)
-assert len(outs) == 29, len(outs)
+assert len(outs) == 30, len(outs)
 long = [l for o in outs for l in o.split('\n') if len(l) > 80]
 assert not long, long"
 if command -v script > /dev/null; then

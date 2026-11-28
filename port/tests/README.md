@@ -323,6 +323,70 @@ live only while it is on and going up to the limits the app keeps to
 (3,650 days, 10,000 MB), values clamped to the row's range, and Delete
 history asking first, then deleting only history files.
 
+The same smoke checks the detail drawer (2.0.0, `ui/fs-drawer.h`) for
+the two pages it builds.  No window hosts the drawer here: it fills its
+own revealer, and the checks read the title, the fields and the buttons
+a user would see.
+
+- Events (`details:` checks): selecting a row opens nothing; activating
+  one opens the drawer titled with what happened ("Blocked outbound
+  HTTPS"), the remote address and the time under it.  Each field is the
+  event's, a field the log did not give has no row, and where the log
+  names no rule the drawer says so instead of naming one.  The buttons
+  are the right-click menu's for that event (an outbound event: block,
+  allow, block this service; an inbound one: Trust, or Remove trust
+  once the policy trusts the source; a blocklist's block: Add
+  exception).  Trust and Remove trust ask the menu's question first;
+  the smoke answers Cancel, so nothing is saved.  The drawer follows the
+  selection by event, not by row: an arriving event does not move it, a
+  filter that hides its event leaves it, and opening, following and
+  appending read no cell of the model.  Clear closes it, and when a
+  full list drops its event it closes rather than show the neighbour.
+  An event handed over by `fs_hitview_show_details` stays when the
+  list's selection changes.
+- Policy (`policy:` checks), over a scratch rules folder
+  (`STOCKFW_RULES_DIR`, `STOCKFW_RUN_DIR`) with nothing applied: every
+  group has a Details button, off until a rule of that group is
+  selected; neither a selection nor `fs_policyview_select ()` opens the
+  drawer; Details opens it titled with the group, the rule in one line
+  under it, one field for each column, what the rule covers with the
+  reason, and the twin in the other direction when the policy holds
+  it.  A sound rule shows no Problem field.  A host rule offers Remove
+  rule; a service rule offers Bind App as well.  Selecting a rule in
+  another group refreshes the open drawer, a reload that still has the
+  rule keeps it, Remove rule removes and saves as the page's button
+  does and closes the drawer, and a rule removed behind the page's back
+  closes it at the next reload.
+
+The smoke leaves the scratch rules folder set, with the Policy page
+alive, for the rest of its run.
+
+## The Trust page and its details (`fs-trustview-smoke`)
+
+```sh
+cd port
+ninja -C build-linux fs-trustview-smoke
+xvfb-run -a ./build-linux/fs-trustview-smoke
+```
+
+Builds the Trust page against a scratch store and audit file and
+drives it as a person would: type a path, Inspect, Attest (the confirm
+dialog is answered from an idle), change the file, inspect again and
+expect CHANGED, Forget.
+
+For the detail drawer (2.0.0) it checks that Inspect alone does not
+open it; that activating a row of the baseline list starts an
+inspection and the drawer opens once the result is in, titled with the
+file's name and its folder, with the full path, the whole SHA-256 (the
+list shows its first 16 characters), publisher, signature, size and
+date, and the baseline sentence the card shows; that it offers Attest
+and Forget while the card keeps its own; that an open drawer follows a
+new inspection (CHANGED, with the new digest); that the drawer's Attest
+and Forget ask in the confirm dialog first; that Forget, from the card
+or from the drawer, closes the drawer, and from the drawer acts on the
+file it shows, whatever the path entry holds by then; and that a closed
+drawer stays closed through an inspection.
+
 ## Where the computer is connected (`fs-netplace-test`, `fs-overview-place-smoke`)
 
 ```sh
@@ -351,6 +415,39 @@ internet-first; the verdict ignoring the profile in use; the "In use"
 marks never shown; switching a profile on from the card not re-judging
 until the next poll.
 
+Since 2.0.0 the smoke also checks the status board's live cards, on a
+second fake backend whose adapter counters and connections it sets,
+with the page's clock replaced (`fs_statusview_set_clock`):
+
+- Traffic: the first reading gives no point; 4096 and 1024 bytes over
+  two seconds are 2048 and 512 B/s, without the virtual bridge's
+  traffic; the legend says the two rates and the card says it is all
+  adapter traffic; the scale is the next round step (2 KiB/s, 5 KiB/s,
+  500 KiB/s, 1 MiB/s for the higher of the two series, never under
+  1 KiB/s); a reading half a second after the last adds no point and
+  its bytes go into the next; a counter that went backwards counts as
+  no traffic; the graph keeps 60 points; counters that go away empty
+  the graph and say so, and it starts again when they come back.
+- Busiest programs: the five with the most open connections, a "?" or
+  missing owner as one Unknown program, a tie by name, connections
+  between two local programs not counted, and the card's sentence that
+  it counts connections, not data.
+- Connection details: Enter or a double click on a connection opens
+  the drawer titled with the program, the remote end under it, this
+  computer's end, the state, the service, the direction and how many
+  connections the program holds; a connection with no known owner is
+  titled Unknown program and counted with the other unnamed ones; a
+  local connection's count says how many are local; the drawer offers
+  Show in Events.
+- On a backend without the adapter and connection slots: the Traffic
+  card says the counters are not available and has no point and no
+  legend, Busiest programs is left out even after `show_all`, Latest
+  blocks keeps its empty sentence, the page draws, and a state change
+  and a refresh after the page is destroyed touch nothing.
+
+It counts GTK warnings and criticals over all of this and fails on
+one.  `OVERVIEW_SMOKE_PNG=/some/file.png` saves the off-screen render.
+
 ## The verdict in both front ends (`fs-verdict-smoke`)
 
 ```sh
@@ -367,11 +464,116 @@ the core against every row, and this smoke builds the real Overview
 page against a fake Linux-shaped backend (and one with no IPv6 slot),
 sets each row's state and IPv6 answer that the window can be given, and
 checks the card's title, body, sidebar word and level against the row
-and against `fs_verdict_compute`, byte for byte.
+and against `fs_verdict_compute`, byte for byte.  Since 2.0.0 it also
+checks, for every golden row, that the status board's large word
+(`state-word`) is the verdict's own word.
 
 Teeth, each seen failing when re-injected: a sentence changed in the
 core's copy (row and parity checks), the same in the window's copy, and
 the core ignoring the IPv6 answer.
+
+## The Overview status board (`fs-statusview-smoke`)
+
+```sh
+cd port
+ninja -C build-linux fs-statusview-smoke
+xvfb-run -a ./build-linux/fs-statusview-smoke
+```
+
+Builds the real Overview page.  Its older parts check that a backend
+without profiles is offered no profile switches, that the verdict card
+says what the state and the IPv6 answer mean, that the sidebar's copy
+is told of every change, and that Lock is the real gate.  Part 3
+(2.0.0) checks the status board: the large word is the verdict's own
+in every state ("State unknown" when the state cannot be read); the
+board holds exactly one button, the Start or Stop button, and "View
+events" is gone from it; Latest blocks shows the newest five as five
+buttons, the newest first; activating one opens the detail drawer on
+that event, and when a new block arrives the same row is re-labelled
+in place and opens the new event; the card keeps its "All events"
+link.  It also checks the limits the page promises: the Traffic graph
+holds at most two minutes of points, its scale is never under 1 KiB/s,
+and Busiest programs ranks at most five.
+
+The traffic numbers, the ranking and the connection drawer are checked
+with made-up counters in `fs-overview-place-smoke` (above), and the
+word against every verdict in `fs-verdict-smoke`.
+
+## The Topology page (`fs-topology-smoke`)
+
+```sh
+cd port
+ninja -C build-linux fs-topology-smoke
+xvfb-run -a ./build-linux/fs-topology-smoke
+TOPOLOGY_SMOKE_PNG=/some/prefix xvfb-run -a ./build-linux/fs-topology-smoke
+```
+
+The Topology page draws this computer's open connections and the
+addresses the firewall blocked in the last ten minutes.  The smoke
+supplies `fs_backend()` itself, with a fake whose connection list it
+controls, feeds events through `fs_topology_note_hit_at` with a clock
+it sets, builds the real page in an off-screen window, and reads the
+page's model back through the accessors in `src/ui/fs-topology.h`.
+With `TOPOLOGY_SMOKE_PNG` it saves each render as `<prefix>-<tag>.png`.
+It is part of `tests/full-suite.sh`.
+
+What it pins down:
+
+- `fs_topology_address_is_local`: a table of private, loopback,
+  link-local, CGNAT, unique-local, IPv4-mapped and public addresses,
+  the addresses just past each private range, an address with a zone
+  or in brackets, and text that is no address.
+- Programs are ranked by their open connections; five get a node each
+  and the rest are merged into "Other programs" (one leftover keeps
+  its own name); a "?" owner reads "Unknown program"; a connection
+  between two loopback ends is counted in the caption and not drawn.
+- Remote addresses are sorted into "Local network" and "Internet", and
+  the caption counts connections and programs.
+- A blocked event adds a blocked node and a blocked line; a repeat
+  raises its count; an allowed event adds nothing; an outbound block is
+  filed under the address it was heading for; six blocked addresses
+  are remembered, the newest four drawn and all six listed in the
+  table; each address is forgotten ten minutes after its own last
+  block.
+- Both empty states, each with its own sentence: an empty list, and a
+  backend that cannot list connections (where blocked events are still
+  drawn).
+- The page draws at 900x500 and at 1400x800, and at both no two nodes
+  overlap and none leaves the diagram.
+- The lines are moved by a frame-clock callback only while the diagram
+  is on screen and GTK animations are on: none with animations off
+  (the still picture, with arrowheads, draws instead), none in the
+  table view, none on a page that is not shown.  The backend is asked
+  only while the page is shown, and at once when it is shown again; a
+  block noted meanwhile is remembered without asking it.
+- A click on a node, or the arrow keys and Enter, opens its details in
+  the drawer: a blocked address with what was blocked, where it is and
+  Show in Events; a program with its connections; "Other programs"
+  with the merged programs' connections; This computer.  A click on no
+  node opens nothing.
+- The legend names the open and the blocked line, and the old preview
+  notice is gone.
+- A node clicked or entered between a block and its repaint opens the
+  node that was painted, not the one that took its place.
+- A line whose connections were opened both ways is neither outbound
+  nor inbound: it stands still with an arrowhead at each end, and the
+  tooltip and the details count the two kinds.
+- Past the 32 addresses that are remembered, the caption and the
+  details say "more than 32" and no longer claim the table has all.
+- Open details follow the diagram: they are refilled when their node
+  changes, left alone when it did not, and closed when it is gone.
+- Hosted in a window beside the drawer, the diagram is laid out in the
+  width left of the open panel (never under 640 pixels), "Show as
+  table" stays clear of it, and the arrow keys take the panel along.
+- Destroying the page while it animates removes the callback and the
+  timer and closes the details it had opened; events are still taken
+  afterwards, and a page built again has the connections and the
+  remembered blocks back.  Nothing in the run raises a GTK warning or
+  critical.
+
+Teeth, as the test's header names them: make `anim_sync` ignore
+`area_mapped` (or the animation setting) and the "no callback" checks
+fail; make `expire_blocks` keep everything and the expiry checks fail.
 
 
 ## Preferences (`fs-ui-smoke`, `fs-prefs-fake-smoke`)
@@ -426,6 +628,23 @@ What it pins down, each seen failing when the old bug is put back:
   cannot act.
 - A switch with keyboard focus is ringed solid, at least 2px, at 3:1 or
   more against its slider, as the theme computes it.
+- Appearance (2.0.0; General, the card with Dark mode): Accent colour
+  offers blue, green and amber and Row density compact and
+  comfortable, the words `fs_prefs_choices` lists and the theme has
+  colours for, and no other setting is a choice of words.  Unset, the
+  accent is blue and the rows are compact.  A stored word nobody knows
+  shows the default, is not a change, and Save does not write the
+  default over it.  A choice marks its row, General's dot and the
+  footer, and choosing back clears them; until Save no row moves.
+  Save writes exactly the keys that changed
+  (`client/accent=green;`), and the screen's accent
+  (`fs_accent`, as the theme resolves it) is then the dark green, the
+  light mode's green with Dark mode off, the dark amber, and the
+  stylesheet's own colour for blue.  Comfortable makes a list row, a
+  row of a fixed-height list and a sidebar item taller by the same
+  amount, compact puts all three back, and neither setting moves the
+  other.  A word that is not on offer ("purple", "cosy") is refused,
+  and the refusal names the words that are.
 - Start at sign-in (General, Background card; scenarios `signin-*`,
   with `STOCKFW_AUTOSTART_DIR` and `STOCKFW_SYSTEMD_DIR` in the
   scratch directory; Linux only, since on Windows they would register
@@ -455,6 +674,45 @@ The settings apply itself (`fs_settings_apply_safe`) is covered in
 `test-core.sh`: an unchanged policy is applied whole under the new
 settings, a failure is rolled back under the previous ones and
 verified, and the audit log names it.
+
+## The theme, the accents and the row density (`fs-theme-smoke`)
+
+```sh
+cd port
+ninja -C build-linux fs-theme-smoke
+xvfb-run -a ./build-linux/fs-theme-smoke
+```
+
+Installs the stylesheet the application installs
+(`src/ui/fs-theme.css`, compiled in as `fs-theme-css.h`) at the same
+priority and asks GTK for sizes and painted pixels.  Four promises:
+
+1. Geometry: a sidebar item is one height in every state, with and
+   without `.nav-active`, so switching pages never shifts the page.
+2. Colour: every face is one of the stylesheet's named colours (the
+   primary button, the selected sidebar item, a selected list row, a
+   dialog's default and Cancel buttons), with no sliver of another
+   colour under a top border, no gradient and no glow.
+3. Two modes: the stylesheet alone is dark; the light palette
+   (`src/ui/fs-theme-light.h`) parses, defines every colour the
+   stylesheet names, turns the canvas light, and gives the dark canvas
+   back when it is taken away.
+4. Accents and density (2.0.0, `src/ui/fs-theme-accent.h`).  For each
+   accent in each mode: the sheet names `fs_accent` and
+   `fs_accent_fill` and nothing else, parses, changes what the screen
+   resolves and gives it back when removed; blue is what the palette
+   already says; `fs_info` and `fs_on_accent` stay as they were; accent
+   text is at 4.5:1 or more on each ground it is drawn on; the fill
+   stands off the card, a switch's slider and the white drawn on it,
+   and a focused switch's ring off its slider.  For the comfortable
+   sheet: every rule names one component, sets top and bottom padding
+   only and pads both alike; each measured component (sidebar items,
+   list headings, Help and palette rows, menu items, Preferences and
+   Overview rows) grows by the same amount, the one a tree row gets
+   (`FS_THEME_COMFORTABLE_YPAD` twice); a sidebar item is still one
+   height in every state; and taking the sheet away gives the compact
+   rows back.
+
 ## Threat-intel rule set in nftables (`fs-intelset-test`, `tests/test-intelset.sh`)
 
 ```sh
@@ -1058,7 +1316,8 @@ log, behaviour baseline, trust store) moved to a scratch directory.
 It runs under `GTK_THEME=Adwaita:dark` unless `GTK_THEME` is set, and
 fails on any GTK warning or critical.  With `STOCKFW_HELP_SHOTS` it
 saves three Help topics, Help opened from Preferences and About, named
-after the theme.
+after the theme, and (2.0.0) the sidebar as a rail (`sidebar-rail`)
+and the open detail drawer (`drawer`).
 
 What it pins down, each seen failing when its bug is put back (the
 check that failed is in brackets):
@@ -1197,6 +1456,47 @@ check that failed is in brackets):
   free; no column limit; chips 60 apart; a 250-pixel sidebar; the
   topic labels ellipsized at the end, which cuts "Running in the
   background" and "Command line and dashboard".)
+
+- S1 to S4 (2.0.0): the collapsible sidebar.  It starts expanded, 232
+  pixels wide, and its fold button (`nav-collapse`) has a name and a
+  tooltip with its shortcut; an expanded page item has no tooltip,
+  since its label says it.  Ctrl+B folds it to a rail of at most 60
+  pixels with no text left in it; the search button stays as an icon;
+  a page item is as tall in the rail as expanded and says its name
+  and shortcut in a tooltip ("Overview (Ctrl+1)"); every item has a
+  tooltip and a name for a screen reader; the footer's dot says the
+  firewall's state in a tooltip; the fold is written to the settings
+  and saved (`sidebar_collapsed=true`).  In the rail the search button
+  takes the keyboard, Ctrl+K opens the command palette over it and
+  Escape gives the keyboard back, and the palette lists "Toggle
+  sidebar" with Ctrl+B.  Ctrl+B again opens it as it was, which is
+  remembered too, and the fold button does both.
+- D1 to D5 (2.0.0): the detail drawer in the main window.  It is a
+  revealer with a title, a body and a close button, and starts closed.
+  `fs_hitview_show_details` opens it on the event it was given, 380
+  pixels wide at the right edge, the full height of the page and clear
+  of the sidebar, with the keyboard left in the Events list; its close
+  button is an icon with a name and a tooltip.  Escape closes it, and
+  once it has slid out it is off the page altogether; so do its close
+  button and a page switch, and coming back does not bring it back.
+  The command palette opens over the open drawer, and Escape then
+  closes the palette first and the drawer next.  An Escape typed in
+  the Events search field is the field's and the drawer stays; from
+  the list it closes it; on a focused Activity graph the drawer closes
+  only if the graph passed the key on.  Opened again while open, it
+  shows the new event in place of the old one.
+- D6 to D11 (2.0.0): the drawer and the keyboard.  Tab from the list
+  that opened it reaches its close button and then its actions without
+  passing the sidebar, and Shift+Tab comes back.  Focus on a control
+  that lies wholly under the open drawer closes it, so the control is
+  seen; focus in the drawer, on a wide list, or during the slide-in
+  does not.  Closing it never leaves the window without a focus
+  widget, also when the control that opened it has been made
+  insensitive or the slide is off.  A body that fits is not a Tab
+  stop; one that scrolls is, shows a ring and scrolls with Page Down.
+  On Policy, the row of Direction, Add, Remove and Details stays clear
+  of the open drawer, and after "Remove rule" the keyboard is back in
+  the group's list.
 
 The prefs smoke's Help-button check was seen failing with the button
 left out of the footer.
@@ -2295,8 +2595,28 @@ hands back the block just freed (any `LD_PRELOAD` shim that reuses
 same-size frees first) shows the old pointer check failing and the tag
 check passing.  A
 child process repeats the page under `GTK_THEME=Adwaita:dark` and
-checks that it stays light (no dark class, dark title text, light
-card).  Set `FS_SHOT_DIR` to save screenshots.
+checks that it wears the app's palette like the rest of the app (no
+dark class of its own, the cards the palette's surface, a finding's
+title and the evidence cells readable on the card).  Set `FS_SHOT_DIR`
+to save screenshots.
+
+The `layout:` checks (2.0.0) pin the page's two columns: the page
+opens with its own header, title and one sentence, with the Sentinel
+switch inside it; the switch says what auto-block does in its tooltip
+and names Sentinel to a screen reader; the Sentinel strip is hidden
+while it has nothing to say; the left column is What-If, then
+Findings, then Changes; one Findings card holds both lists as two
+labelled groups; "At a glance", in the side column, keeps the four
+figures by name, and a figure of zero is drawn calm; at 992 pixels
+there are two columns, the side one 300 pixels wide and level with the
+main one, and under 860 pixels they stack with the side one on top.
+The page checks add: the empty state offers its one action, Open
+Events; a health row and a finding row carry the class of their
+severity's edge (`sev-bad`, `sev-warn`, `sev-info`), and the severity
+mark is plain coloured text, not a boxed badge; Fix is the only
+primary button in its row; the Policy health figure's note says the
+notes are listed in Findings; and with a finding's drawer open the
+page still fits 900 pixels.
 
 `fs-hitview-smoke` checks the feed order as root: with "skip repeats"
 on, 10 identical log lines give the Copilot 10 events while the list
@@ -2365,7 +2685,7 @@ with `cmp`):
 | the drawer guard lets the click through | "page: a click inside the open drawer leaves it open" |
 | drawer text not selectable | "page: the evidence cells are selectable text ...", "page: what Sentinel did can be selected and copied" |
 | Show rule without its ATK name | "page: Show rule's accessible name names the row" |
-| the tile note does not say the notes are below | "page: the tile's note says the notes are below" |
+| the tile note does not say where the notes are | "page: the figure's note says the notes are listed in Findings" (when this was seen failing the check read "page: the tile's note says the notes are below") |
 | the auto pass does not judge the gates again (`fs-copilot.c`, UI) | "R1: resume does not block a host brave.exe now uses", "R1: the switch to auto-block does not block ...", "R2: resume does not stage a deny over the user's allow" and 3 more |
 | `fs_copilot_beacon_recheck` passes every beacon unjudged | "R1: another program's later use of the host withholds ...", "R2: an allow row added later ...", and the same 6 smoke checks |
 | the user's allow row not a gate | "R2: a beacon to a host the policy allows ...", "R2: an allow row added later ...", "R2: a new beacon to an allowed host stages nothing" and 4 more |

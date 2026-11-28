@@ -95,6 +95,7 @@ typedef enum
 	ROW_SWITCH,
 	ROW_CHOICE,           /* two-way combo over a boolean        */
 	ROW_DEVICE,           /* network device combo over a string  */
+	ROW_ENUM,             /* a few named options over a string   */
 	ROW_NUMBER            /* spin button over a number string    */
 } RowKind;
 
@@ -570,6 +571,44 @@ add_choice (PrefsWin *win, GtkWidget *card, const gchar *key,
 
 	row = row_new (win, card, key, ROW_CHOICE, title, about, NULL, combo);
 	row->true_id = true_id;
+	g_signal_connect (combo, "changed", G_CALLBACK (on_combo_changed), row);
+	return row;
+}
+
+/* [ add_enum ]
+ * A few named options over one string key: `labels' are the words the
+ * user reads for the key's stored words, in the order of
+ * fs_prefs_choices () (whose first word is the default).  Stored text
+ * that is none of them (a file edited by hand) shows as the default,
+ * which is how the application reads it too (fs_prefs_choice); the
+ * copy keeps the stored text until the user picks something, so
+ * opening the window and saving still writes nothing. */
+static Row *
+add_enum (PrefsWin *win, GtkWidget *card, const gchar *key,
+          const gchar *title, const gchar *about,
+          const gchar * const *labels)
+{
+	const gchar * const *ids = fs_prefs_choices (key);
+	const gchar *current = fs_prefs_edit_get_string (win->edit, key);
+	GtkWidget *combo = gtk_combo_box_text_new ();
+	const gchar *shown;
+	Row *row;
+
+	g_return_val_if_fail (ids != NULL, NULL);
+
+	shown = ids[0];
+	for (guint i = 0; ids[i] != NULL; i++) {
+		gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (combo), ids[i],
+		                           labels[i]);
+		if (g_strcmp0 (current, ids[i]) == 0)
+			shown = ids[i];
+	}
+	gtk_combo_box_set_active_id (GTK_COMBO_BOX (combo), shown);
+	/* One width for these choices, so two of them in a card line up
+	 * whatever their longest word is. */
+	gtk_widget_set_size_request (combo, 136, -1);
+
+	row = row_new (win, card, key, ROW_ENUM, title, about, NULL, combo);
 	g_signal_connect (combo, "changed", G_CALLBACK (on_combo_changed), row);
 	return row;
 }
@@ -1058,8 +1097,30 @@ build_general (PrefsWin *win, GtkWidget *nav)
 	card = card_new (cards, _("Appearance"));
 	add_switch (win, card, FS_PREFS_DARK_MODE,
 		_("Dark mode"),
-		_("Use a dark color palette for the StockFW window and dialogs."),
+		_("Use a dark colour palette for the StockFW window and dialogs."),
 		NULL);
+	{
+		/* In the order of fs_prefs_choices (). */
+		const gchar * const accents[] = {
+			_("Blue"), _("Green"), _("Amber"), NULL
+		};
+		const gchar * const densities[] = {
+			_("Compact"), _("Comfortable"), NULL
+		};
+
+		add_enum (win, card, FS_PREFS_ACCENT,
+			_("Accent colour"),
+			_("The colour of links, switches that are on, the focus "
+			  "ring and selected text. The green, amber and red "
+			  "that mark a verdict stay as they are."),
+			accents);
+		add_enum (win, card, FS_PREFS_DENSITY,
+			_("Row density"),
+			_("How much room a row gets in the lists, the sidebar "
+			  "and the menus. Compact shows more rows; Comfortable "
+			  "gives each one more space."),
+			densities);
+	}
 
 	card = card_new (cards, _("Firewall"));
 	add_switch (win, card, FS_PREFS_START_ON_GUI,

@@ -44,7 +44,14 @@
  *                             Policy-page edits, never an empty policy --
  *                             and after "Later" the next policy apply
  *                             brings the settings in; Cancel writes
- *                             nothing.
+ *                             nothing;
+ *                           - Appearance: the accent colour and the row
+ *                             density show what is stored (the default
+ *                             for a word nobody knows), Save writes only
+ *                             the one changed, and the screen follows on
+ *                             Save, not before: the accent's colours in
+ *                             the dark and in the light mode, the rows
+ *                             of a list taller and back again.
  *                         With STOCKFW_PREFS_SHOTS=<dir> it also saves a
  *                         PNG of every page (and a narrow window).
  *
@@ -70,6 +77,8 @@
 #include "ui/fs-hitview.h"
 #include "ui/fs-tray.h"
 #include "ui/fs-helpwindow.h"
+#include "ui/fs-themecolor.h"
+#include "ui/fs-theme-accent.h"
 #include "fs-theme-css.h"   /* generated from src/ui/fs-theme.css */
 
 #define SMOKE_STEP_MS  100
@@ -1011,6 +1020,95 @@ check_pages (GtkWidget *win, const gchar *tag)
 	g_free (have);
 }
 
+/* The card a row of the window sits in. */
+static GtkWidget *
+card_of (GtkWidget *w)
+{
+	while (w != NULL && !has_class (w, "pref-card"))
+		w = gtk_widget_get_parent (w);
+	return w;
+}
+
+static gboolean
+row_changed (GtkWidget *win, const gchar *key)
+{
+	gchar *name = g_strconcat ("row:", key, NULL);
+	gboolean changed = has_class (find_named (win, name), "pref-changed");
+
+	g_free (name);
+	return changed;
+}
+
+/* General > Appearance: Dark mode, then the accent colour and the row
+ * density, two choices that show `accent' and `density'. */
+static void
+check_appearance_rows (GtkWidget *win, const gchar *tag,
+                       const gchar *accent, const gchar *density)
+{
+	static const gchar *const keys[] = {
+		FS_PREFS_DARK_MODE, FS_PREFS_ACCENT, FS_PREFS_DENSITY,
+	};
+	GtkWidget *rows[G_N_ELEMENTS (keys)];
+	GtkWidget *card, *group;
+	GtkWidget *a = find_named (win, FS_PREFS_ACCENT);
+	GtkWidget *d = find_named (win, FS_PREFS_DENSITY);
+	gchar *ids, *text;
+
+	for (guint i = 0; i < G_N_ELEMENTS (keys); i++) {
+		gchar *name = g_strconcat ("row:", keys[i], NULL);
+
+		rows[i] = find_named (win, name);
+		g_free (name);
+	}
+	card = card_of (rows[0]);
+	group = card != NULL ? gtk_widget_get_parent (card) : NULL;
+
+	CHECK (card != NULL && group != NULL &&
+	       mentions (group, "Appearance") &&
+	       card_of (rows[1]) == card && card_of (rows[2]) == card &&
+	       mentions (rows[1], "Accent colour") &&
+	       mentions (rows[2], "Row density"),
+	       "[%s] the Appearance card holds Dark mode, \"Accent colour\" "
+	       "and \"Row density\"", tag);
+	CHECK (a != NULL && GTK_IS_COMBO_BOX (a) &&
+	       gtk_widget_is_ancestor (a, rows[1]) &&
+	       gtk_widget_get_sensitive (a) &&
+	       d != NULL && GTK_IS_COMBO_BOX (d) &&
+	       gtk_widget_is_ancestor (d, rows[2]) &&
+	       gtk_widget_get_sensitive (d) &&
+	       g_strcmp0 (atk_object_get_name (gtk_widget_get_accessible (a)),
+	                  "Accent colour") == 0 &&
+	       g_strcmp0 (atk_object_get_name (gtk_widget_get_accessible (d)),
+	                  "Row density") == 0,
+	       "[%s] each is a choice in its row, live, and named for a "
+	       "screen reader", tag);
+
+	ids = combo_ids (win, FS_PREFS_ACCENT);
+	text = combo_text (win, FS_PREFS_ACCENT);
+	CHECK (g_strcmp0 (ids, "blue,green,amber") == 0 &&
+	       g_strcmp0 (combo_id (win, FS_PREFS_ACCENT), accent) == 0 &&
+	       text != NULL && g_ascii_strcasecmp (text, accent) == 0,
+	       "[%s] the accent offers %s and shows %s (\"%s\")", tag, ids,
+	       accent, text != NULL ? text : "(none)");
+	g_free (ids);
+	g_free (text);
+
+	ids = combo_ids (win, FS_PREFS_DENSITY);
+	text = combo_text (win, FS_PREFS_DENSITY);
+	CHECK (g_strcmp0 (ids, "compact,comfortable") == 0 &&
+	       g_strcmp0 (combo_id (win, FS_PREFS_DENSITY), density) == 0 &&
+	       text != NULL && g_ascii_strcasecmp (text, density) == 0,
+	       "[%s] the row density offers %s and shows %s (\"%s\")", tag,
+	       ids, density, text != NULL ? text : "(none)");
+	g_free (ids);
+	g_free (text);
+
+	CHECK (!row_changed (win, FS_PREFS_ACCENT) &&
+	       !row_changed (win, FS_PREFS_DENSITY),
+	       "[%s] neither row is marked as changed when the window opens",
+	       tag);
+}
+
 /* ---------------------------------------------------- real backend */
 #ifndef FS_PREFS_FAKE_BACKEND
 
@@ -1037,6 +1135,7 @@ drive_real (GtkWidget *win)
 		       b->start_applies_policy);
 
 	check_pages (win, b->name);
+	check_appearance_rows (win, b->name, "blue", "compact");
 
 	/* Open and Save without touching anything: nothing is written. */
 	click (win, "prefs-save");
@@ -1342,6 +1441,290 @@ footer (GtkWidget *win)
 	GtkWidget *status = find_named (win, "prefs-status");
 
 	return status != NULL ? gtk_label_get_text (GTK_LABEL (status)) : "";
+}
+
+/* ---- Appearance: the accent colour and the row density ----
+ *
+ * The screen side is fs-app.c's (fs_app_reload_settings after a Save
+ * that wrote something), with no main window here: the accent is two
+ * named colours, read back the way the drawing code reads them
+ * (ui/fs-themecolor.h), and the density is measured on a window of the
+ * test's own, which holds two lists of the kind the pages hold and a
+ * sidebar item. */
+
+/* "#rrggbb" as a sheet of ui/fs-theme-accent.h gives it to a name. */
+static gchar *
+sheet_hex (const gchar *sheet, const gchar *name)
+{
+	gchar *needle = g_strconcat ("@define-color ", name, " ", NULL);
+	const gchar *at = strstr (sheet, needle);
+	gchar *hex = NULL;
+
+	if (at != NULL) {
+		at += strlen (needle);
+		at += strspn (at, " ");
+		hex = g_strndup (at, strcspn (at, ";"));
+	}
+	g_free (needle);
+	return hex;
+}
+
+/* Is the screen's accent the one of row `accent' of the header, in the
+ * dark or the light mode?  *got is what the screen says (free it). */
+static gboolean
+screen_accent_is (guint accent, gboolean dark, gchar **got)
+{
+	const gchar *sheet = dark ? fs_theme_accents[accent].dark
+	                          : fs_theme_accents[accent].light;
+	gchar *text = fs_theme_hex ("fs_accent", "#000000");
+	gchar *fill = fs_theme_hex ("fs_accent_fill", "#000000");
+	gchar *want_text = sheet_hex (sheet, "fs_accent");
+	gchar *want_fill = sheet_hex (sheet, "fs_accent_fill");
+	gboolean is = g_strcmp0 (text, want_text) == 0 &&
+	              g_strcmp0 (fill, want_fill) == 0;
+
+	*got = g_strdup_printf ("%s and %s, want %s and %s", text, fill,
+	                        want_text != NULL ? want_text : "(none)",
+	                        want_fill != NULL ? want_fill : "(none)");
+	g_free (text);
+	g_free (fill);
+	g_free (want_text);
+	g_free (want_fill);
+	return is;
+}
+
+#define PROBE_BUILT_YPAD 4      /* GTK builds a text cell with 2 */
+
+static GtkWidget *probe_window = NULL;
+static GtkWidget *probe_plain = NULL;   /* measures every row          */
+static GtkWidget *probe_fixed = NULL;   /* fixed-height mode (Events)  */
+static GtkWidget *probe_nav = NULL;     /* a sidebar item              */
+static GtkCellRenderer *probe_cell = NULL;
+static gint probe_compact[3];           /* plain, fixed, nav           */
+
+static GtkWidget *
+probe_list (GtkWidget *box, gboolean fixed)
+{
+	GtkListStore *store = gtk_list_store_new (1, G_TYPE_STRING);
+	GtkWidget *view = gtk_tree_view_new_with_model (GTK_TREE_MODEL (store));
+	GtkCellRenderer *cell = gtk_cell_renderer_text_new ();
+	GtkTreeViewColumn *column = gtk_tree_view_column_new_with_attributes (
+		"Name", cell, "text", 0, NULL);
+	GtkWidget *scroll = gtk_scrolled_window_new (NULL, NULL);
+
+	for (guint i = 0; i < 4; i++)
+		gtk_list_store_insert_with_values (store, NULL, -1,
+		                                   0, "row", -1);
+	g_object_unref (store);
+
+	if (fixed) {
+		gtk_tree_view_column_set_sizing (column,
+		                                 GTK_TREE_VIEW_COLUMN_FIXED);
+		gtk_tree_view_column_set_fixed_width (column, 160);
+	} else {
+		/* A cell built with a padding of its own: comfortable adds
+		 * to it, compact gives exactly it back. */
+		gtk_cell_renderer_set_padding (cell, 0, PROBE_BUILT_YPAD);
+		probe_cell = cell;
+	}
+	gtk_tree_view_append_column (GTK_TREE_VIEW (view), column);
+	if (fixed)
+		gtk_tree_view_set_fixed_height_mode (GTK_TREE_VIEW (view), TRUE);
+
+	gtk_container_add (GTK_CONTAINER (scroll), view);
+	gtk_box_pack_start (GTK_BOX (box), scroll, TRUE, TRUE, 0);
+	return view;
+}
+
+static gint
+probe_row_height (GtkWidget *view)
+{
+	GtkTreePath *path = gtk_tree_path_new_from_indices (1, -1);
+	GdkRectangle area = { 0, 0, 0, 0 };
+
+	gtk_tree_view_get_background_area (
+		GTK_TREE_VIEW (view), path,
+		gtk_tree_view_get_column (GTK_TREE_VIEW (view), 0), &area);
+	gtk_tree_path_free (path);
+	return area.height;
+}
+
+/* The system theme animates a button's padding over 200ms, and this
+ * stylesheet leaves that alone: the sidebar item is measured once the
+ * animation has had its time and two readings agree. */
+static void
+probe_measure (gint out[3])
+{
+	gint before = -2;
+
+	pump ();
+	pump ();
+	out[2] = -1;
+	for (guint i = 0; i < 20 && before != out[2]; i++) {
+		before = out[2];
+		pump ();
+		gtk_widget_get_preferred_height (probe_nav, &out[2], NULL);
+	}
+	out[0] = probe_row_height (probe_plain);
+	out[1] = probe_row_height (probe_fixed);
+}
+
+static void
+probe_open (void)
+{
+	GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+
+	probe_window = gtk_window_new (GTK_WINDOW_TOPLEVEL);
+	gtk_widget_set_name (probe_window, "density-probe");
+	gtk_window_set_default_size (GTK_WINDOW (probe_window), 320, 420);
+	probe_nav = gtk_button_new_with_label ("Events");
+	gtk_style_context_add_class (
+		gtk_widget_get_style_context (probe_nav), "nav-item");
+	gtk_box_pack_start (GTK_BOX (box), probe_nav, FALSE, FALSE, 0);
+	probe_plain = probe_list (box, FALSE);
+	probe_fixed = probe_list (box, TRUE);
+	gtk_container_add (GTK_CONTAINER (probe_window), box);
+	gtk_widget_show_all (probe_window);
+	probe_measure (probe_compact);
+}
+
+static void
+probe_close (void)
+{
+	gtk_widget_destroy (probe_window);
+	probe_window = probe_plain = probe_fixed = probe_nav = NULL;
+	probe_cell = NULL;
+}
+
+/* The probe against its compact measure plus `extra' above and below. */
+static gboolean
+probe_is (gint extra, gchar **got)
+{
+	gint now[3], ypad = -1;
+	gboolean is = TRUE;
+
+	probe_measure (now);
+	gtk_cell_renderer_get_padding (probe_cell, NULL, &ypad);
+	for (guint i = 0; i < 3; i++)
+		is = is && probe_compact[i] > 0 &&
+		     now[i] == probe_compact[i] + 2 * extra;
+	is = is && ypad == PROBE_BUILT_YPAD + extra;
+	*got = g_strdup_printf ("a row %d (compact %d), a fixed-height row "
+	                        "%d (%d), a sidebar item %d (%d), the built "
+	                        "cell padding %d now %d", now[0],
+	                        probe_compact[0], now[1], probe_compact[1],
+	                        now[2], probe_compact[2], PROBE_BUILT_YPAD,
+	                        ypad);
+	return is;
+}
+
+static void
+drive_appearance_stored (GtkWidget *win)
+{
+	check_appearance_rows (win, "appearance-stored", "green",
+	                       "comfortable");
+	CHECK (g_strcmp0 (footer (win), "No changes") == 0,
+	       "stored choices are not changes (\"%s\")", footer (win));
+	click (win, "prefs-save");
+}
+
+static void
+drive_appearance_unknown (GtkWidget *win)
+{
+	check_appearance_rows (win, "appearance-unknown", "blue", "compact");
+	CHECK (g_strcmp0 (footer (win), "No changes") == 0 &&
+	       !gtk_widget_get_visible (find_named (win, "nav-dot:general")),
+	       "a stored word nobody knows shows the default and is not "
+	       "counted as a change (\"%s\")", footer (win));
+	click (win, "prefs-save");
+}
+
+static void
+drive_accent_green (GtkWidget *win)
+{
+	gchar *got = NULL;
+	gboolean is;
+
+	check_appearance_rows (win, "appearance-defaults", "blue", "compact");
+	set_combo (win, FS_PREFS_ACCENT, "green");
+	pump ();
+	CHECK (row_changed (win, FS_PREFS_ACCENT) &&
+	       !row_changed (win, FS_PREFS_DENSITY) &&
+	       !row_changed (win, FS_PREFS_DARK_MODE) &&
+	       gtk_widget_get_visible (find_named (win, "nav-dot:general")) &&
+	       g_strcmp0 (footer (win), "1 unsaved change") == 0,
+	       "choosing Green marks its row (and no other), its page and "
+	       "the footer (\"%s\")", footer (win));
+	is = screen_accent_is (0, TRUE, &got);
+	CHECK (is &&
+	       strcmp (fs_prefs_choice (FS_PREFS_ACCENT), "blue") == 0 &&
+	       !disk_has (FS_PREFS_ACCENT, NULL),
+	       "...and until Save nothing is stored and the screen keeps its "
+	       "blue (%s)", got);
+	g_free (got);
+	set_combo (win, FS_PREFS_ACCENT, "blue");
+	pump ();
+	CHECK (!row_changed (win, FS_PREFS_ACCENT) &&
+	       g_strcmp0 (footer (win), "No changes") == 0,
+	       "chosen back, the mark goes (\"%s\")", footer (win));
+	set_combo (win, FS_PREFS_ACCENT, "green");
+	click (win, "prefs-save");
+}
+
+static void
+drive_light (GtkWidget *win)
+{
+	check_appearance_rows (win, "appearance-green", "green", "compact");
+	set_switch (win, FS_PREFS_DARK_MODE, FALSE);
+	click (win, "prefs-save");
+}
+
+static void
+drive_dark_amber (GtkWidget *win)
+{
+	set_switch (win, FS_PREFS_DARK_MODE, TRUE);
+	set_combo (win, FS_PREFS_ACCENT, "amber");
+	CHECK (g_strcmp0 (footer (win), "2 unsaved changes") == 0,
+	       "Dark mode and the accent count as two changes (\"%s\")",
+	       footer (win));
+	click (win, "prefs-save");
+}
+
+static void
+drive_accent_blue (GtkWidget *win)
+{
+	set_combo (win, FS_PREFS_ACCENT, "blue");
+	click (win, "prefs-save");
+}
+
+static void
+drive_comfortable (GtkWidget *win)
+{
+	gchar *got = NULL;
+	gboolean is;
+
+	set_combo (win, FS_PREFS_DENSITY, "comfortable");
+	pump ();
+	CHECK (row_changed (win, FS_PREFS_DENSITY) &&
+	       !row_changed (win, FS_PREFS_ACCENT) &&
+	       g_strcmp0 (footer (win), "1 unsaved change") == 0,
+	       "choosing Comfortable marks its row and the footer (\"%s\")",
+	       footer (win));
+	is = probe_is (0, &got);
+	CHECK (is &&
+	       strcmp (fs_prefs_choice (FS_PREFS_DENSITY), "compact") == 0,
+	       "...and until Save no row moves (%s)", got);
+	g_free (got);
+	click (win, "prefs-save");
+}
+
+static void
+drive_compact (GtkWidget *win)
+{
+	check_appearance_rows (win, "appearance-comfortable", "blue",
+	                       "comfortable");
+	set_combo (win, FS_PREFS_DENSITY, "compact");
+	click (win, "prefs-save");
 }
 
 /* Sharing stored on with only the Internet device: the switch must
@@ -2276,6 +2659,86 @@ check_about_and_theme (void)
 	check_switch_focus_ring ();
 }
 
+/* The two Appearance choices as settings: the words on offer, what a
+ * file that holds neither or another word reads as, and what
+ * fs_prefs_validate (`stockfw config set accent ...') says to a word
+ * that is not on offer. */
+static void
+check_appearance_settings (void)
+{
+	const gchar * const *accents = fs_prefs_choices (FS_PREFS_ACCENT);
+	const gchar * const *densities = fs_prefs_choices (FS_PREFS_DENSITY);
+	const gchar *keys[2] = { FS_PREFS_ACCENT, FS_PREFS_DENSITY };
+	const gchar *bad[2] = { "purple", "cosy" };
+	const gchar *good[2] = { "Green", "COMFORTABLE" };
+	gboolean rows = accents != NULL;
+	FsPrefsCheck *check;
+	guint told = 0;
+
+	/* Every accent on offer has its colours, in the same order. */
+	for (guint i = 0; rows && i < G_N_ELEMENTS (fs_theme_accents); i++)
+		rows = accents[i] != NULL &&
+		       strcmp (accents[i], fs_theme_accents[i].id) == 0 &&
+		       fs_theme_accents[i].dark != NULL &&
+		       fs_theme_accents[i].light != NULL;
+	CHECK (rows && accents[G_N_ELEMENTS (fs_theme_accents)] == NULL &&
+	       strcmp (accents[0], "blue") == 0,
+	       "the accents on offer are the ones the theme has colours for, "
+	       "blue first");
+	CHECK (densities != NULL && g_strv_length ((gchar **) densities) == 2 &&
+	       strcmp (densities[0], "compact") == 0 &&
+	       strcmp (densities[1], "comfortable") == 0 &&
+	       strstr (fs_theme_comfortable_css, "padding-top") != NULL,
+	       "the row densities on offer are compact and comfortable");
+	CHECK (fs_prefs_choices (FS_PREFS_DARK_MODE) == NULL &&
+	       fs_prefs_choices (FS_PREFS_FW_EXT_IF) == NULL,
+	       "no other setting is a choice of words");
+
+	seed ("");
+	CHECK (strcmp (fs_prefs_choice (FS_PREFS_ACCENT), "blue") == 0 &&
+	       strcmp (fs_prefs_choice (FS_PREFS_DENSITY), "compact") == 0,
+	       "unset, the accent is blue and the rows are compact");
+	seed ("[client]\naccent=purple\ndensity=cosy\n");
+	CHECK (strcmp (fs_prefs_choice (FS_PREFS_ACCENT), "blue") == 0 &&
+	       strcmp (fs_prefs_choice (FS_PREFS_DENSITY), "compact") == 0,
+	       "a stored word nobody knows reads as the default");
+	seed ("[client]\naccent=amber\ndensity=comfortable\n");
+	CHECK (strcmp (fs_prefs_choice (FS_PREFS_ACCENT), "amber") == 0 &&
+	       strcmp (fs_prefs_choice (FS_PREFS_DENSITY), "comfortable") == 0,
+	       "a stored word on offer reads as itself");
+	seed ("");
+
+	check = fs_prefs_validate (keys, bad, 2, 0, 0, NULL);
+	for (guint i = 0; i < check->refusals->len; i++) {
+		const FsPrefsIssue *is = g_ptr_array_index (check->refusals, i);
+		const gchar *words = g_strcmp0 (is->key, FS_PREFS_ACCENT) == 0
+			? "is not one of: blue, green, amber."
+			: "is not one of: compact, comfortable.";
+
+		g_print ("       refused: %s\n", is->reason);
+		if (is->reason != NULL && strstr (is->reason, words) != NULL &&
+		    strstr (is->reason, bad[g_strcmp0 (is->key, FS_PREFS_ACCENT)
+		                            == 0 ? 0 : 1]) != NULL)
+			told++;
+	}
+	CHECK (check->refusals->len == 2 && told == 2 &&
+	       g_hash_table_size (check->values) == 0,
+	       "a word that is not on offer is refused, the refusal names "
+	       "it and lists the ones that are (%u of %u)", told,
+	       check->refusals->len);
+	fs_prefs_check_free (check);
+
+	check = fs_prefs_validate (keys, good, 2, 0, 0, NULL);
+	CHECK (check->refusals->len == 0 &&
+	       g_strcmp0 (g_hash_table_lookup (check->values, FS_PREFS_ACCENT),
+	                  "green") == 0 &&
+	       g_strcmp0 (g_hash_table_lookup (check->values, FS_PREFS_DENSITY),
+	                  "comfortable") == 0,
+	       "a word on offer is taken in any case of letters and stored "
+	       "as the list spells it");
+	fs_prefs_check_free (check);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -2294,6 +2757,7 @@ main (int argc, char **argv)
 	g_mkdir_with_parents (g_path_get_dirname (fs_prefs_path ()), 0700);
 
 	check_about_and_theme ();
+	check_appearance_settings ();
 
 #ifndef FS_PREFS_FAKE_BACKEND
 	{
@@ -2493,6 +2957,147 @@ main (int argc, char **argv)
 			       "change exactly where the window disables the row: "
 			       "sharing, the ICMP types, the history limits "
 			       "(%u/%u cases)", parity_agree, parity_cases);
+		}
+
+		/* ---- Appearance: the accent colour and the row density ----
+		 * Dark mode is on and nothing is laid over the stylesheet
+		 * when this starts, and again when it ends. */
+		{
+			static Scenario stored = { "appearance-stored",
+			                           drive_appearance_stored,
+			                           ANSWER_NONE,
+			                           FALSE, FALSE, FALSE, NULL };
+			static Scenario unknown = { "appearance-unknown",
+			                            drive_appearance_unknown,
+			                            ANSWER_NONE,
+			                            FALSE, FALSE, FALSE, NULL };
+			static Scenario green = { "accent-green", drive_accent_green,
+			                          ANSWER_NONE,
+			                          FALSE, FALSE, FALSE, NULL };
+			static Scenario light = { "accent-green-light", drive_light,
+			                          ANSWER_NONE,
+			                          FALSE, FALSE, FALSE, NULL };
+			static Scenario amber = { "accent-amber-dark",
+			                          drive_dark_amber, ANSWER_NONE,
+			                          FALSE, FALSE, FALSE, NULL };
+			static Scenario blue = { "accent-blue", drive_accent_blue,
+			                         ANSWER_NONE,
+			                         FALSE, FALSE, FALSE, NULL };
+			static Scenario comfortable = { "density-comfortable",
+			                                drive_comfortable,
+			                                ANSWER_NONE,
+			                                FALSE, FALSE, FALSE, NULL };
+			static Scenario compact = { "density-compact", drive_compact,
+			                            ANSWER_NONE,
+			                            FALSE, FALSE, FALSE, NULL };
+			gchar *got = NULL;
+			GdkRGBA canvas;
+			gboolean is;
+
+			fake_as_linux ();
+			fake_state = FS_FW_STOPPED;
+			probe_open ();
+			CHECK (probe_compact[0] > 0 && probe_compact[1] > 0 &&
+			       probe_compact[2] > 0,
+			       "(the density probe measures: a row %d, a fixed-height "
+			       "row %d, a sidebar item %d)", probe_compact[0],
+			       probe_compact[1], probe_compact[2]);
+
+			seed ("[client]\naccent=green\ndensity=comfortable\n");
+			run_scenario (&stored);
+			keys = disk_table_keys ();
+			CHECK (g_strcmp0 (keys, "client/accent=green;"
+			                        "client/density=comfortable;") == 0,
+			       "the stored accent and density are shown, and Save "
+			       "without a change writes nothing (%s)", keys);
+			g_free (keys);
+
+			seed ("[client]\naccent=purple\ndensity=cosy\n");
+			run_scenario (&unknown);
+			keys = disk_table_keys ();
+			CHECK (g_strcmp0 (keys, "client/accent=purple;"
+			                        "client/density=cosy;") == 0,
+			       "Save does not write the default over a word it does "
+			       "not know (%s)", keys);
+			g_free (keys);
+
+			seed ("");
+			run_scenario (&green);
+			keys = disk_table_keys ();
+			CHECK (g_strcmp0 (keys, "client/accent=green;") == 0,
+			       "Save wrote the accent and nothing else (%s)", keys);
+			g_free (keys);
+			is = screen_accent_is (1, TRUE, &got);
+			CHECK (is,
+			       "saved, the screen's accent is the dark green (%s)",
+			       got);
+			g_free (got);
+
+			run_scenario (&light);
+			keys = disk_table_keys ();
+			CHECK (g_strcmp0 (keys, "client/dark_mode=false;"
+			                        "client/accent=green;") == 0,
+			       "Dark mode off wrote only itself (%s)", keys);
+			g_free (keys);
+			fs_theme_color ("fs_bg", "#000000", &canvas);
+			is = screen_accent_is (1, FALSE, &got);
+			CHECK (is && luminance (&canvas) > 0.8,
+			       "in the light mode the accent is still green, the "
+			       "light mode's (%s)", got);
+			g_free (got);
+			g_print ("       under the light green:\n");
+			check_switch_focus_ring ();
+
+			run_scenario (&amber);
+			keys = disk_table_keys ();
+			CHECK (g_strcmp0 (keys, "client/dark_mode=true;"
+			                        "client/accent=amber;") == 0,
+			       "Dark mode and the accent were both written (%s)",
+			       keys);
+			g_free (keys);
+			fs_theme_color ("fs_bg", "#ffffff", &canvas);
+			is = screen_accent_is (2, TRUE, &got);
+			CHECK (is && luminance (&canvas) < 0.2,
+			       "dark again and amber: the dark amber (%s)", got);
+			g_free (got);
+			g_print ("       under the dark amber:\n");
+			check_switch_focus_ring ();
+
+			run_scenario (&blue);
+			is = screen_accent_is (0, TRUE, &got);
+			CHECK (is,
+			       "blue again: the accent is the stylesheet's own (%s)",
+			       got);
+			g_free (got);
+			is = probe_is (0, &got);
+			CHECK (is, "no accent moved a row (%s)", got);
+			g_free (got);
+
+			run_scenario (&comfortable);
+			keys = disk_table_keys ();
+			CHECK (g_strcmp0 (keys, "client/dark_mode=true;"
+			                        "client/accent=blue;"
+			                        "client/density=comfortable;") == 0,
+			       "Save added the density and nothing else (%s)", keys);
+			g_free (keys);
+			is = probe_is (FS_THEME_COMFORTABLE_YPAD, &got);
+			CHECK (is,
+			       "comfortable: a list row, a fixed-height list row and "
+			       "a sidebar item are each %dpx taller (%s)",
+			       2 * FS_THEME_COMFORTABLE_YPAD, got);
+			g_free (got);
+
+			run_scenario (&compact);
+			is = probe_is (0, &got);
+			CHECK (is,
+			       "compact again: all of them are back where they were "
+			       "(%s)", got);
+			g_free (got);
+			is = screen_accent_is (0, TRUE, &got);
+			CHECK (is,
+			       "...and the density left the accent alone (%s)", got);
+			g_free (got);
+			probe_close ();
 		}
 
 		/* ---- Events: list size, history, Delete history ---- */
