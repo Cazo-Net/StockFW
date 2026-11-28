@@ -379,11 +379,17 @@ static const FsHelpBlock copilot[] = {
 	  "policy. Each rule is a count compared with a written limit, so the "
 	  "same events always give the same findings. Nothing is sent "
 	  "anywhere, and no language model is involved.") },
-	{ FS_HELP_PARA, N_("Four tiles sit at the top: <b>Needs attention</b> "
-	  "(the Critical and Warning findings, from the events and from the "
-	  "policy), <b>Policy health</b>, <b>Auto-blocks active</b>, and "
-	  "<b>Apps learned</b>, which reads <b>Services learned</b> on Linux, "
-	  "where the log names a port's service rather than a program.") },
+	{ FS_HELP_PARA, N_("The page has two columns. On the left, the "
+	  "<a href=\"help:whatif\">What-If</a> simulator comes first, then "
+	  "one <b>Findings</b> card with two groups, <b>From events</b> and "
+	  "<b>From the policy</b>, then <b>Changes made by the Copilot</b>. "
+	  "On the right, <b>At a glance</b> lists four figures: <b>Needs "
+	  "attention</b> (the Critical and Warning findings, from the events "
+	  "and from the policy), <b>Policy health</b>, <b>Auto-blocks "
+	  "active</b>, and <b>Apps learned</b>, which reads <b>Services "
+	  "learned</b> on Linux, where the log names a port's service rather "
+	  "than a program. In a narrow window the figures move above the "
+	  "rest.") },
 	{ FS_HELP_HEAD, N_("What it looks for") },
 	{ FS_HELP_ITEM, N_("<b>Beacon</b> and <b>Fan-Out</b> in outgoing "
 	  "traffic: see <a href=\"help:sentinel\">Sentinel</a>.") },
@@ -416,8 +422,9 @@ static const FsHelpBlock copilot[] = {
 	  "Allow. Two different checks on the same address within an hour "
 	  "make both findings Critical.") },
 	{ FS_HELP_HEAD, N_("A finding") },
-	{ FS_HELP_PARA, N_("Each finding has a severity in a word (Info, "
-	  "Warning or Critical). Click it, or press Enter, to open what was "
+	{ FS_HELP_PARA, N_("Each finding shows its severity as a word (Info, "
+	  "Warning or Critical) with an icon, and as a coloured edge on its "
+	  "row. Click it, or press Enter, to open what was "
 	  "seen, why it was flagged with the numbers next to the limits, what "
 	  "could make it harmless, what Sentinel did, and the events behind "
 	  "it.") },
@@ -428,7 +435,8 @@ static const FsHelpBlock copilot[] = {
 	  "nothing. Findings are kept while StockFW runs; dismissals are not "
 	  "saved.") },
 	{ FS_HELP_HEAD, N_("Policy health") },
-	{ FS_HELP_PARA, N_("The Policy health card checks your saved rules: "
+	{ FS_HELP_PARA, N_("The <b>From the policy</b> group of the Findings "
+	  "card checks your saved rules: "
 	  "duplicates, rules another rule already covers, allows a deny "
 	  "cancels, outbound allows that have no effect while outbound is "
 	  "open, inbound allows over more than 100 ports, risky services "
@@ -463,7 +471,7 @@ static const FsHelpBlock copilot[] = {
 
 static const FsHelpBlock whatif[] = {
 	{ FS_HELP_PARA, N_("Describe a connection in the What-If box at the "
-	  "bottom of the Copilot page and press <b>Simulate</b>. StockFW "
+	  "top of the Copilot page and press <b>Simulate</b>. StockFW "
 	  "answers <b>ALLOWED</b>, <b>BLOCKED</b> or <b>DEPENDS</b> the way "
 	  "the firewall on this computer would decide, names the rule that "
 	  "decided, and offers fixes it has checked. Asking writes nothing: "
@@ -559,7 +567,8 @@ static const FsHelpBlock sentinel[] = {
 	  "On Linux only the blocked ones count, because one port's service "
 	  "covers every browser.") },
 	{ FS_HELP_HEAD, N_("Modes") },
-	{ FS_HELP_PARA, N_("The switch at the top of the Copilot page has two "
+	{ FS_HELP_PARA, N_("The <b>Sentinel</b> switch, in the header of the "
+	  "Copilot page, has two "
 	  "modes. <b>Detect only</b> reports what it sees and changes "
 	  "nothing. <b>Detect + auto-block</b>, the default, can also block "
 	  "a beacon's destination for ten minutes.") },

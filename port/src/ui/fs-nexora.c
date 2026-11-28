@@ -73,67 +73,199 @@ card_new (GtkOrientation orientation, gint spacing)
 	return box;
 }
 
+/* ---- the sample chart ------------------------------------------------
+ *
+ * Bars: the connections of each one-minute slot, on the left scale.
+ * Line: the flagged connections, on the right scale.  Every colour is
+ * the theme's by name, asked for at each paint, so the chart follows
+ * Dark mode and the accent colour like the rest of the window. */
+
+/* The two scales share the gridlines: five lines, four steps each. */
+#define CHART_LEFT_MAX   400.0   /* connections */
+#define CHART_RIGHT_MAX  8.0     /* flagged     */
+#define CHART_STEPS      4
+
+#define CHART_PAD_LEFT   36
+#define CHART_PAD_RIGHT  26
+#define CHART_PAD_TOP    10
+#define CHART_PAD_BOTTOM 24
+
+/* A small label; anchor: 0 left, 0.5 centre, 1 right; y is the centre. */
+static void
+chart_text (cairo_t *cr, GtkWidget *widget, const gchar *text, gdouble x,
+            gdouble y, gdouble anchor)
+{
+	PangoLayout *layout = gtk_widget_create_pango_layout (widget, text);
+	PangoFontDescription *desc = pango_font_description_copy (
+		pango_context_get_font_description (
+			pango_layout_get_context (layout)));
+	gint tw, th;
+
+	pango_font_description_set_size (desc, 8.5 * PANGO_SCALE);
+	pango_layout_set_font_description (layout, desc);
+	pango_font_description_free (desc);
+
+	pango_layout_get_pixel_size (layout, &tw, &th);
+	fs_theme_source (cr, "fs_text_weak", "#a8a4a4", 1.0);
+	cairo_move_to (cr, x - anchor * tw, y - th / 2.0);
+	pango_cairo_show_layout (cr, layout);
+	g_object_unref (layout);
+}
+
+/* A bar with its two top corners rounded. */
+static void
+chart_bar (cairo_t *cr, gdouble x, gdouble y, gdouble w, gdouble h)
+{
+	gdouble r = MIN (3.0, MIN (w / 2.0, h));
+
+	cairo_new_sub_path (cr);
+	cairo_arc (cr, x + r, y + r, r, G_PI, 3 * G_PI / 2);
+	cairo_arc (cr, x + w - r, y + r, r, -G_PI / 2, 0);
+	cairo_line_to (cr, x + w, y + h);
+	cairo_line_to (cr, x, y + h);
+	cairo_close_path (cr);
+}
+
 static gboolean
 on_chart_draw (GtkWidget *widget, cairo_t *cr, gpointer user_data)
 {
-	GtkAllocation alloc;
-	gint width, height;
+	gint width = gtk_widget_get_allocated_width (widget);
+	gint height = gtk_widget_get_allocated_height (widget);
+	gdouble left = CHART_PAD_LEFT;
+	gdouble right = width - CHART_PAD_RIGHT;
+	gdouble top = CHART_PAD_TOP;
+	gdouble bottom = height - CHART_PAD_BOTTOM;
+	gdouble plot_w = right - left, plot_h = bottom - top;
+	gdouble col_width, bar_w;
 	gint i;
-	gdouble max_val = 400.0;
-	gdouble col_width;
 
 	(void) user_data;
 
-	gtk_widget_get_allocation (widget, &alloc);
-	width = alloc.width;
-	height = alloc.height;
+	if (plot_w < 60 || plot_h < 40)
+		return FALSE;
+
+/* One mapping for the gridlines, the bars and the line. */
+#define Y_AT(frac) (top + plot_h * (1.0 - (frac)))
+#define X_MID(slot) (left + ((slot) + 0.5) * col_width)
+
+	col_width = plot_w / WINDOW_POINTS;
+	bar_w = CLAMP (col_width * 0.56, 4.0, 36.0);
 
 	/* Background */
 	fs_theme_source (cr, "fs_surface", "#211e1e", 1.0);
 	cairo_paint (cr);
 
-	/* Gridlines */
-	fs_theme_source (cr, "fs_border", "#2f2b2b", 1.0);
+	/* Gridlines on whole pixels, with both scales' labels. */
 	cairo_set_line_width (cr, 1.0);
-	for (i = 1; i <= 4; i++) {
-		gdouble y = (height - 30) * (i / 4.0);
-		cairo_move_to (cr, 40, y);
-		cairo_line_to (cr, width - 20, y);
+	for (i = 0; i <= CHART_STEPS; i++) {
+		gdouble frac = (gdouble) i / CHART_STEPS;
+		gdouble y = (gint) Y_AT (frac) + 0.5;
+		gchar buf[16];
+
+		if (i == 0)
+			fs_theme_source (cr, "fs_border_strong", "#4a4545", 1.0);
+		else
+			fs_theme_source (cr, "fs_border", "#2f2b2b", 1.0);
+		cairo_move_to (cr, left, y);
+		cairo_line_to (cr, right, y);
 		cairo_stroke (cr);
+
+		g_snprintf (buf, sizeof buf, "%d",
+		            (gint) (CHART_LEFT_MAX * frac + 0.5));
+		chart_text (cr, widget, buf, left - 8, y, 1.0);
+		g_snprintf (buf, sizeof buf, "%d",
+		            (gint) (CHART_RIGHT_MAX * frac + 0.5));
+		chart_text (cr, widget, buf, right + 8, y, 0.0);
 	}
 
-	col_width = (width - 60.0) / WINDOW_POINTS;
+	/* Time under every fifth slot; the last slot is now. */
+	for (i = WINDOW_POINTS - 1; i >= 0; i -= 5) {
+		gint ago = WINDOW_POINTS - 1 - i;
+		gchar *t = ago == 0 ? g_strdup (_("now"))
+		                    : g_strdup_printf (_("-%d min"), ago);
 
-	/* Draw sliding window bars (Requests) */
+		chart_text (cr, widget, t, X_MID (i), bottom + 12, 0.5);
+		g_free (t);
+	}
+
+	/* Bars: connections. */
+	fs_theme_source (cr, "fs_accent_fill", "#007aff", 0.55);
 	for (i = 0; i < WINDOW_POINTS; i++) {
-		gdouble val = window_requests[i];
-		gdouble h = (val / max_val) * (height - 50);
-		gdouble x = 50 + i * col_width + 4;
-		gdouble y = height - 30 - h;
+		gdouble y = Y_AT (window_requests[i] / CHART_LEFT_MAX);
 
-		cairo_set_source_rgba (cr, 0.16, 0.47, 0.84, 0.90); /* Blue */
-		cairo_rectangle (cr, x, y, col_width - 8, h);
-		cairo_fill (cr);
+		chart_bar (cr, X_MID (i) - bar_w / 2.0, y, bar_w,
+		           (gint) bottom - y);
 	}
+	cairo_fill (cr);
 
-	/* Draw sliding window threat line */
-	cairo_set_source_rgb (cr, 0.89, 0.29, 0.28); /* Red/Orange threat */
-	cairo_set_line_width (cr, 2.5);
+	/* Line: flagged connections, a point per slot. */
+	fs_theme_source (cr, "fs_bad", "#ff6259", 1.0);
+	cairo_set_line_width (cr, 1.5);
 	cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
 	cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
 	for (i = 0; i < WINDOW_POINTS; i++) {
-		gdouble val = window_threats[i] * 25.0; /* scale for visibility */
-		gdouble x = 50 + i * col_width + (col_width / 2.0);
-		gdouble y = height - 30 - ((val / max_val) * (height - 50));
+		gdouble y = Y_AT (window_threats[i] / CHART_RIGHT_MAX);
 
 		if (i == 0)
-			cairo_move_to (cr, x, y);
+			cairo_move_to (cr, X_MID (i), y);
 		else
-			cairo_line_to (cr, x, y);
+			cairo_line_to (cr, X_MID (i), y);
 	}
 	cairo_stroke (cr);
+	for (i = 0; i < WINDOW_POINTS; i++) {
+		gdouble y = Y_AT (window_threats[i] / CHART_RIGHT_MAX);
 
+		fs_theme_source (cr, "fs_surface", "#211e1e", 1.0);
+		cairo_arc (cr, X_MID (i), y, 4.0, 0, 2 * G_PI);
+		cairo_fill (cr);
+		fs_theme_source (cr, "fs_bad", "#ff6259", 1.0);
+		cairo_arc (cr, X_MID (i), y, 2.5, 0, 2 * G_PI);
+		cairo_fill (cr);
+	}
+
+#undef Y_AT
+#undef X_MID
 	return FALSE;
+}
+
+/* A legend mark: the bar's fill, or the line with its point. */
+static gboolean
+on_legend_draw (GtkWidget *widget, cairo_t *cr, gpointer user_data)
+{
+	gint w = gtk_widget_get_allocated_width (widget);
+	gint h = gtk_widget_get_allocated_height (widget);
+
+	if (GPOINTER_TO_INT (user_data) == 0) {
+		fs_theme_source (cr, "fs_accent_fill", "#007aff", 0.55);
+		chart_bar (cr, (w - 8) / 2.0, (h - 10) / 2.0, 8, 10);
+		cairo_fill (cr);
+	} else {
+		fs_theme_source (cr, "fs_bad", "#ff6259", 1.0);
+		cairo_set_line_width (cr, 1.5);
+		cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+		cairo_move_to (cr, 1, h / 2.0);
+		cairo_line_to (cr, w - 1, h / 2.0);
+		cairo_stroke (cr);
+		cairo_arc (cr, w / 2.0, h / 2.0, 2.5, 0, 2 * G_PI);
+		cairo_fill (cr);
+	}
+	return FALSE;
+}
+
+/* One legend entry: its mark and what it stands for. */
+static void
+legend_add (GtkWidget *legend, gint mark, const gchar *text)
+{
+	GtkWidget *sw = gtk_drawing_area_new ();
+	GtkWidget *lb = label_new (text, "chart-legend", 0.0);
+
+	gtk_widget_set_size_request (sw, 16, 12);
+	gtk_widget_set_valign (sw, GTK_ALIGN_CENTER);
+	g_signal_connect (sw, "draw", G_CALLBACK (on_legend_draw),
+	                  GINT_TO_POINTER (mark));
+	gtk_widget_set_margin_start (sw, 12);
+	gtk_box_pack_start (GTK_BOX (legend), sw, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (legend), lb, FALSE, FALSE, 0);
 }
 
 static GtkWidget *
@@ -233,17 +365,31 @@ fs_nexora_page (void)
 	add_class (card, "padded-card");
 	{
 		GtkWidget *head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+		GtkWidget *legend = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 5);
+
 		gtk_box_pack_start (GTK_BOX (head),
 		                    label_new (_("15-minute window (sample)"), "card-heading", 0.0),
 		                    TRUE, TRUE, 0);
+		/* Which mark is which, and which scale it is read on. */
+		legend_add (legend, 0, _("Connections (left scale)"));
+		legend_add (legend, 1, _("Flagged (right scale)"));
+		gtk_widget_set_valign (legend, GTK_ALIGN_CENTER);
+		gtk_box_pack_end (GTK_BOX (head), legend, FALSE, FALSE, 0);
 		gtk_box_pack_start (GTK_BOX (card), head, FALSE, FALSE, 0);
 
 		chart_area = gtk_drawing_area_new ();
 		gtk_widget_set_size_request (chart_area, -1, 240);
+		atk_object_set_name (gtk_widget_get_accessible (chart_area),
+		                     _("Sample chart"));
+		atk_object_set_description (
+			gtk_widget_get_accessible (chart_area),
+			_("Sample chart of 15 one-minute slots. Bars: connections. Line: flagged connections."));
 		g_signal_connect (G_OBJECT (chart_area), "draw", G_CALLBACK (on_chart_draw), NULL);
 		gtk_box_pack_start (GTK_BOX (card), chart_area, TRUE, TRUE, 0);
 
-		window_stats_label = label_new (_("Sample chart of 15 one-minute slots. Blue bars: connections, red line: flagged connections."), "muted", 0.0);
+		/* No colour names: the bars take the accent colour, and both
+		 * marks change with Dark mode. */
+		window_stats_label = label_new (_("Sample chart of 15 one-minute slots. Bars: connections. Line: flagged connections."), "muted", 0.0);
 		gtk_label_set_line_wrap (GTK_LABEL (window_stats_label), TRUE);
 		gtk_box_pack_start (GTK_BOX (card), window_stats_label, FALSE, FALSE, 0);
 	}

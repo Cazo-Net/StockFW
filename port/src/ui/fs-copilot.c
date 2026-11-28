@@ -4,24 +4,28 @@
  * Rule-based checks of the event log and the policy, run on this
  * computer.  Nothing here learns a model or sends anything anywhere;
  * every finding names the check that raised it and the events behind
- * it.  The page has:
+ * it.  The page draws its own header and lays out two columns under
+ * it (FsCpCols; they stack when the page is narrow):
  *
- *   - Sentinel: Detect only, or Detect + auto-block (outbound blocks to
- *     unknown public addresses, ten minutes each);
- *   - four tiles: findings that need attention, policy health findings,
- *     auto-blocks active, and apps (services on Linux) learned;
- *   - Findings: one row per finding with a severity pill (icon and
- *     word); Enter or a click opens its drawer: what was seen, why it
- *     was flagged, why it could be harmless, and what Sentinel did;
- *   - Policy health (core/fs-health.h): overlaps, conflicts and risky
- *     open services, each fix checked with What-If before it is
+ *   - header: the title, one line on what the page does, and the
+ *     Sentinel switch: Detect only, or Detect + auto-block (outbound
+ *     blocks to unknown public addresses, ten minutes each);
+ *   - left, the What-If card first: the question, examples, the answer;
+ *   - left, Findings, one card with two groups.  "From events": one
+ *     row per finding with its severity (a coloured edge, an icon and
+ *     the word); Enter or a click opens its drawer: what was seen, why
+ *     it was flagged, why it could be harmless, and what Sentinel did.
+ *     "From the policy" (core/fs-health.h): overlaps, conflicts and
+ *     risky open services, each fix checked with What-If before it is
  *     offered, asked again before it is written, confirmed, and undone
  *     from the Changes card;
- *   - the What-If card;
- *   - Changes made by the Copilot, newest first, each with Undo.
+ *   - left, Changes made by the Copilot, newest first, each with Undo;
+ *   - right, "At a glance": findings that need attention, policy
+ *     health findings, auto-blocks active, and apps (services on
+ *     Linux) learned.
  *
  * Colours come from the theme classes (fs-theme.css, and the What-If
- * styles for the pills); a dark desktop theme gets the dark variants.
+ * styles for its chips); a dark desktop theme gets the dark variants.
  *--------------------------------------------------------------------*/
 
 #include "fs-copilot.h"
@@ -77,6 +81,8 @@ static GtkWidget     *findings_frame   = NULL;   /* the list's card */
 static GtkWidget     *findings_count   = NULL;
 static GtkWidget     *findings_empty   = NULL;
 static GtkWidget     *findings_empty_text = NULL;
+static GtkWidget     *findings_empty_new = NULL;   /* icon: no events yet */
+static GtkWidget     *findings_empty_clear = NULL; /* icon: all clear     */
 static GtkWidget     *findings_reason  = NULL;
 static GtkWidget     *findings_checked = NULL;
 static GtkWidget     *findings_strip   = NULL;
@@ -85,11 +91,14 @@ static GtkWidget     *health_list      = NULL;
 static GtkWidget     *health_frame     = NULL;
 static GtkWidget     *health_summary   = NULL;
 static GtkWidget     *health_empty     = NULL;
+static GtkWidget     *health_empty_box = NULL;   /* icon and sentence   */
+static GtkWidget     *health_empty_ok  = NULL;   /* icon: all clear     */
+static GtkWidget     *health_empty_none = NULL;  /* icon: no policy     */
 static GtkWidget     *health_strip     = NULL;
 
 static GtkWidget     *changes_list     = NULL;
 static GtkWidget     *changes_frame    = NULL;
-static GtkWidget     *changes_empty    = NULL;
+static GtkWidget     *changes_empty    = NULL;   /* icon and sentence   */
 static GtkWidget     *changes_strip    = NULL;
 
 static FsCopilot     *global_copilot   = NULL;
@@ -145,6 +154,8 @@ static void update_stats (void);
 static void health_run (void);
 static void changes_render (void);
 static GtkWidget *whatif_card_new (void);
+static GtkWidget *whatif_flow_new (void);
+static void wrap_put_first (GtkWidget *wrap, GtkWidget *child);
 static void whatif_ask (const gchar *line);
 static void on_simulate_clicked (GtkButton *btn, gpointer data);
 static FsWhatIfContext *whatif_context_build (FsSettings *settings);
@@ -327,29 +338,62 @@ severity_word (FsCopilotSeverity sev)
     }
 }
 
-/* A severity pill: an icon and the word, in the What-If badge styles,
- * so it never depends on colour alone. */
+/* The class a severity is drawn in: "bad", "warn" or "info". */
+static const gchar *
+severity_class (FsCopilotSeverity sev)
+{
+    return sev == FS_COPILOT_CRITICAL ? "bad"
+           : sev == FS_COPILOT_WARNING ? "warn" : "info";
+}
+
+/* A row's severity mark: an icon and the word in the level's colour,
+ * so it never depends on colour alone.  The marks of a list are one
+ * width, which lines up the titles beside them. */
+#define CP_PILL_WIDTH 72
+
 static GtkWidget *
 severity_pill (FsCopilotSeverity sev)
 {
-    GtkWidget *pill = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
+    GtkWidget *pill = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 5);
+    GtkWidget *word = gtk_label_new (severity_word (sev));
     FsIconKind icon = sev == FS_COPILOT_CRITICAL ? FS_ICON_SHIELD_X
                       : sev == FS_COPILOT_WARNING ? FS_ICON_SHIELD_ALERT
                                                   : FS_ICON_INFO;
 
-    fs_simviz_install_css ();
-    add_class (pill, "fs-wi-badge");
     add_class (pill, "cp-pill");
-    add_class (pill, sev == FS_COPILOT_CRITICAL ? "bad"
-                     : sev == FS_COPILOT_WARNING ? "warn" : "ok");
-    gtk_box_pack_start (GTK_BOX (pill), fs_icon_new (icon, 12),
+    add_class (pill, severity_class (sev));
+    gtk_box_pack_start (GTK_BOX (pill), fs_icon_new (icon, 14),
                         FALSE, FALSE, 0);
-    gtk_box_pack_start (GTK_BOX (pill), gtk_label_new (severity_word (sev)),
-                        FALSE, FALSE, 0);
+    gtk_label_set_xalign (GTK_LABEL (word), 0.0);
+    gtk_box_pack_start (GTK_BOX (pill), word, FALSE, FALSE, 0);
     gtk_widget_set_name (pill, "cp-pill");
+    gtk_widget_set_size_request (pill, CP_PILL_WIDTH, -1);
     gtk_widget_set_valign (pill, GTK_ALIGN_START);
     gtk_widget_set_halign (pill, GTK_ALIGN_START);
     return pill;
+}
+
+/* The row's coloured left edge: "sev-bad", "sev-warn" or "sev-info". */
+static void
+row_set_severity (GtkWidget *row, FsCopilotSeverity sev)
+{
+    gchar *cls = g_strdup_printf ("sev-%s", severity_class (sev));
+
+    add_class (row, cls);
+    g_free (cls);
+}
+
+/* An empty state's icon: small, weak, level with the sentence's first
+ * line (empty_box_new makes the state itself). */
+static GtkWidget *
+empty_icon_new (FsIconKind kind)
+{
+    GtkWidget *icon = fs_icon_new (kind, 16);
+
+    add_class (icon, "cp-empty-icon");
+    gtk_widget_set_valign (icon, GTK_ALIGN_START);
+    gtk_widget_set_margin_top (icon, 1);
+    return icon;
 }
 
 static const gchar *
@@ -1020,9 +1064,15 @@ evidence_table (const FsInsight *ins)
                                     N_("Protocol"), N_("Verdict") };
     guint n = ins->evidence != NULL ? ins->evidence->len : 0;
 
+    /* Six columns of unbroken text would set the narrowest the whole
+     * page can be (a revealer asks for its child's width even while
+     * closed), and an IPv6 address or a long rule name would push the
+     * page past the window.  So the two columns that can be long give
+     * way: they are cut with an ellipsis when the row is short, and
+     * say the whole value in a tooltip. */
     gtk_widget_set_name (grid, "cp-evidence");
     gtk_grid_set_column_spacing (GTK_GRID (grid), 16);
-    gtk_grid_set_row_spacing (GTK_GRID (grid), 2);
+    gtk_grid_set_row_spacing (GTK_GRID (grid), 3);
     for (guint c = 0; c < G_N_ELEMENTS (heads); c++)
         gtk_grid_attach (GTK_GRID (grid),
                          text_new (_(heads[c]), "cp-caption", FALSE),
@@ -1048,10 +1098,22 @@ evidence_table (const FsInsight *ins)
         cells[3] = port;
         cells[4] = ev->protocol != NULL ? ev->protocol : "-";
         cells[5] = verdict;
-        for (guint c = 0; c < 6; c++)
-            gtk_grid_attach (GTK_GRID (grid),
-                             drawer_text_new (cells[c], "mono", FALSE, FALSE),
+        for (guint c = 0; c < 6; c++) {
+            GtkWidget *cell = drawer_text_new (cells[c], "mono", FALSE,
+                                               FALSE);
+
+            if (c == 2 || c == 5) {
+                gtk_label_set_ellipsize (GTK_LABEL (cell),
+                                         PANGO_ELLIPSIZE_END);
+                /* Never narrower than an IPv4 address, or the word. */
+                gtk_label_set_width_chars (GTK_LABEL (cell),
+                                           c == 2 ? 15 : 7);
+                gtk_widget_set_tooltip_text (cell, cells[c]);
+                gtk_widget_set_hexpand (cell, c == 5);
+            }
+            gtk_grid_attach (GTK_GRID (grid), cell,
                              (gint) c, (gint) i + 1, 1, 1);
+        }
         g_date_time_unref (dt);
         g_free (when);
         g_free (port);
@@ -1098,8 +1160,8 @@ drawer_fill_actions (GtkWidget *row)
                                 g_free);
         g_signal_connect (b, "clicked", G_CALLBACK (on_add_block_clicked),
                           NULL);
-        gtk_box_pack_start (GTK_BOX (actions), b, FALSE, FALSE, 0);
-        gtk_box_reorder_child (GTK_BOX (actions), b, 0);
+        gtk_container_add (GTK_CONTAINER (actions), b);
+        wrap_put_first (actions, b);
         gtk_widget_show (b);
     } else if (note != NULL && verdict != NULL) {
         gchar *t = g_strdup_printf (_("No block rule offered: %s."), verdict);
@@ -1189,12 +1251,14 @@ static GtkWidget *
 finding_row_new (const FsInsight *ins)
 {
     GtkWidget *row = gtk_list_box_row_new ();
-    GtkWidget *outer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget *outer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
     GtkWidget *head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
     GtkWidget *texts = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
     GtkWidget *rev = gtk_revealer_new ();
-    GtkWidget *drawer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
-    GtkWidget *actions = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *drawer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+    /* The drawer's buttons wrap: four in a line would set the least
+     * width of the whole column. */
+    GtkWidget *actions = whatif_flow_new ();
     GtkWidget *note, *l, *b, *arrow;
     AutoBlock *ab = insight_auto_block (ins);
     gchar *key = insight_key (ins);
@@ -1202,6 +1266,7 @@ finding_row_new (const FsInsight *ins)
     gchar *line, *a11y, *first, *nl, *aw;
 
     add_class (row, "cp-row");
+    row_set_severity (row, ins->severity);
     gtk_widget_set_name (row, "cp-finding");
     gtk_list_box_row_set_activatable (GTK_LIST_BOX_ROW (row), TRUE);
     g_object_set_data_full (G_OBJECT (row), "cp-key", g_strdup (key), g_free);
@@ -1211,7 +1276,8 @@ finding_row_new (const FsInsight *ins)
     atk_object_set_name (gtk_widget_get_accessible (row), a11y);
     g_free (a11y);
 
-    /* Head: pill, title and one line, the auto-block tag, the arrow. */
+    /* Head: severity, title and one line, the auto-block tag, the
+     * arrow. */
     gtk_box_pack_start (GTK_BOX (head), severity_pill (ins->severity),
                         FALSE, FALSE, 0);
     l = text_new (ins->title, "cp-title", TRUE);
@@ -1292,7 +1358,7 @@ finding_row_new (const FsInsight *ins)
                                 g_free);
         g_signal_connect (b, "clicked", G_CALLBACK (on_undo_block_clicked),
                           NULL);
-        gtk_box_pack_start (GTK_BOX (actions), b, FALSE, FALSE, 0);
+        gtk_container_add (GTK_CONTAINER (actions), b);
     }
     if (ins->whatif_line != NULL) {
         b = button_new (_("Ask What-If"), "btn-subtle", "cp-ask-whatif");
@@ -1300,7 +1366,7 @@ finding_row_new (const FsInsight *ins)
                                 g_strdup (ins->whatif_line), g_free);
         g_signal_connect (b, "clicked", G_CALLBACK (on_ask_whatif_clicked),
                           NULL);
-        gtk_box_pack_start (GTK_BOX (actions), b, FALSE, FALSE, 0);
+        gtk_container_add (GTK_CONTAINER (actions), b);
     }
     if (ins->events_filter != NULL) {
         b = button_new (_("Show in Events"), "btn-subtle", "cp-show-events");
@@ -1308,13 +1374,15 @@ finding_row_new (const FsInsight *ins)
                                 g_strdup (ins->events_filter), g_free);
         g_signal_connect (b, "clicked", G_CALLBACK (on_show_events_clicked),
                           NULL);
-        gtk_box_pack_start (GTK_BOX (actions), b, FALSE, FALSE, 0);
+        gtk_container_add (GTK_CONTAINER (actions), b);
     }
     b = button_new (_("Dismiss"), "btn-subtle", "cp-dismiss");
     g_object_set_data_full (G_OBJECT (b), "cp-key", g_strdup (key), g_free);
     g_signal_connect (b, "clicked", G_CALLBACK (on_dismiss_clicked), NULL);
-    gtk_box_pack_start (GTK_BOX (actions), b, FALSE, FALSE, 0);
-    gtk_box_pack_start (GTK_BOX (drawer), actions, FALSE, FALSE, 4);
+    gtk_container_add (GTK_CONTAINER (actions), b);
+    gtk_widget_set_hexpand (actions, FALSE);
+    gtk_widget_set_margin_top (actions, 10);
+    gtk_box_pack_start (GTK_BOX (drawer), actions, FALSE, FALSE, 0);
 
     note = text_new ("", "cp-meta", TRUE);
     gtk_widget_set_name (note, "cp-action-note");
@@ -1336,6 +1404,9 @@ finding_row_new (const FsInsight *ins)
         gtk_container_add (GTK_CONTAINER (rev), guard);
     }
     gtk_widget_set_name (rev, "cp-drawer");
+    /* The drawer hangs under the title, clear of the severity column:
+     * the head's spacing after the mark's width. */
+    gtk_widget_set_margin_start (rev, CP_PILL_WIDTH + 10);
     gtk_box_pack_start (GTK_BOX (outer), rev, FALSE, FALSE, 0);
 
     gtk_container_add (GTK_CONTAINER (row), outer);
@@ -1669,6 +1740,8 @@ findings_render (void)
             g_free (t);
         }
         reveal (findings_empty, TRUE);
+        reveal (findings_empty_new, seen == 0);
+        reveal (findings_empty_clear, seen > 0);
         reveal (findings_reason, problem != NULL);
         reveal (findings_checked, seen > 0);
         g_free (problem);
@@ -1811,13 +1884,16 @@ static GtkWidget *
 health_row_new (const FsHealthFinding *f, gint index)
 {
     GtkWidget *row = gtk_list_box_row_new ();
+    GtkWidget *outer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
     GtkWidget *head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
     GtkWidget *texts = gtk_box_new (GTK_ORIENTATION_VERTICAL, 3);
-    GtkWidget *buttons = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget *buttons = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+    GtkWidget *below = NULL;
     GtkWidget *l, *b;
     gchar *t;
 
     add_class (row, "cp-row");
+    row_set_severity (row, f->severity);
     gtk_widget_set_name (row, "cp-health");
     gtk_list_box_row_set_activatable (GTK_LIST_BOX_ROW (row), FALSE);
     t = g_strdup_printf ("%s: %s", severity_word (f->severity), f->title);
@@ -1861,10 +1937,14 @@ health_row_new (const FsHealthFinding *f, gint index)
         gtk_widget_set_name (l, "cp-health-fixline");
         gtk_box_pack_start (GTK_BOX (texts), l, FALSE, FALSE, 0);
         g_free (t);
+        /* The checks are long lines of fixed-width text: under the
+         * head, where they have the row's width past the buttons too
+         * and seldom need to wrap. */
         t = g_strdup_printf (_("Checked by What-If:\n%s"), checks);
         l = text_new (t, "cp-meta mono", TRUE);
         gtk_widget_set_name (l, "cp-health-checks");
-        gtk_box_pack_start (GTK_BOX (texts), l, FALSE, FALSE, 0);
+        gtk_widget_set_margin_start (l, CP_PILL_WIDTH + 10);
+        below = l;
         g_free (t);
         g_free (checks);
 
@@ -1912,8 +1992,14 @@ health_row_new (const FsHealthFinding *f, gint index)
         g_free (t);
         gtk_box_pack_start (GTK_BOX (buttons), b, FALSE, FALSE, 0);
     }
+    /* The row's buttons: one column at the right edge, one width. */
+    gtk_widget_set_valign (buttons, GTK_ALIGN_START);
+    gtk_widget_set_margin_start (buttons, 6);
     gtk_box_pack_end (GTK_BOX (head), buttons, FALSE, FALSE, 0);
-    gtk_container_add (GTK_CONTAINER (row), head);
+    gtk_box_pack_start (GTK_BOX (outer), head, FALSE, FALSE, 0);
+    if (below != NULL)
+        gtk_box_pack_start (GTK_BOX (outer), below, FALSE, FALSE, 0);
+    gtk_container_add (GTK_CONTAINER (row), outer);
     return row;
 }
 
@@ -1964,7 +2050,11 @@ health_render (void)
         gtk_label_set_text (GTK_LABEL (health_empty), t);
         g_free (t);
     }
-    reveal (health_empty, n == 0);
+    reveal (health_empty_box, n == 0);
+    if (n == 0) {
+        reveal (health_empty_ok, copilot_policy != NULL);
+        reveal (health_empty_none, copilot_policy == NULL);
+    }
 }
 
 /* [ health_run ] -- the check on the policy as it is now. */
@@ -2215,11 +2305,18 @@ changes_render (void)
 }
 
 /* =====================================================================
- * Tiles
+ * At a glance: the four figures
  * ===================================================================== */
+
+/* One figure and its note.  A zero is drawn calm; a figure that asks
+ * for attention takes `level' ("bad", "warn" or "info"); NULL is a
+ * plain count. */
 static void
-tile_set (GtkWidget *value, GtkWidget *note, guint n, const gchar *text)
+tile_set (GtkWidget *value, GtkWidget *note, guint n, const gchar *text,
+          const gchar *level)
 {
+    static const gchar *levels[] = { "zero", "bad", "warn", "info" };
+    GtkStyleContext *sc;
     gchar buf[32];
 
     if (value == NULL)
@@ -2227,6 +2324,14 @@ tile_set (GtkWidget *value, GtkWidget *note, guint n, const gchar *text)
     g_snprintf (buf, sizeof buf, "%u", n);
     gtk_label_set_text (GTK_LABEL (value), buf);
     gtk_label_set_text (GTK_LABEL (note), text != NULL ? text : "");
+
+    sc = gtk_widget_get_style_context (value);
+    for (guint i = 0; i < G_N_ELEMENTS (levels); i++)
+        gtk_style_context_remove_class (sc, levels[i]);
+    if (n == 0)
+        gtk_style_context_add_class (sc, "zero");
+    else if (level != NULL)
+        gtk_style_context_add_class (sc, level);
 }
 
 static void
@@ -2255,7 +2360,7 @@ update_stats (void)
     }
     g_list_free (all);
     /* The policy health findings count here too: a Critical "RDP open
-     * to the internet" below must not sit under a 0. */
+     * to the internet" in the list must not sit beside a 0. */
     for (guint i = 0; health_findings != NULL && i < health_findings->len;
          i++) {
         const FsHealthFinding *f = g_ptr_array_index (health_findings, i);
@@ -2269,34 +2374,41 @@ update_stats (void)
     t = critical > 0 ? g_strdup_printf (_("%u critical"), critical)
                      : g_strdup (_("Critical and warning findings, events "
                                    "and policy"));
-    tile_set (tile_attention, tile_attention_note, attention, t);
+    tile_set (tile_attention, tile_attention_note, attention, t,
+              critical > 0 ? "bad" : "warn");
     g_free (t);
 
     {
         /* A note that is expected in the mode the firewall runs in
          * (outbound allows while outbound is open, as on a fresh
-         * install) is listed below but not counted: a tile that never
+         * install) is listed in the Findings card but not counted (the
+         * note beside the figure says so): a figure that never
          * reaches 0 teaches people to ignore it. */
         guint n = 0, notes = 0;
+        FsCopilotSeverity worst = FS_COPILOT_INFO;
 
         for (guint i = 0; health_findings != NULL &&
              i < health_findings->len; i++) {
             const FsHealthFinding *f = g_ptr_array_index (health_findings,
                                                           i);
 
-            if (f->kind == FS_HEALTH_NO_EFFECT)
+            if (f->kind == FS_HEALTH_NO_EFFECT) {
                 notes++;
-            else
+            } else {
                 n++;
+                if (f->severity > worst)
+                    worst = f->severity;
+            }
         }
         t = notes == 0
             ? g_strdup_printf (_("%u %s checked"), health_rules,
                                health_rules == 1 ? _("rule") : _("rules"))
-            : g_strdup_printf (_("%u %s checked, %u %s below"),
+            : g_strdup_printf (_("%u %s checked, %u %s in Findings"),
                                health_rules,
                                health_rules == 1 ? _("rule") : _("rules"),
                                notes, notes == 1 ? _("note") : _("notes"));
-        tile_set (tile_health, tile_health_note, n, t);
+        tile_set (tile_health, tile_health_note, n, t,
+                  severity_class (worst));
         g_free (t);
     }
 
@@ -2320,7 +2432,7 @@ update_stats (void)
             t = g_strdup (fs_sentinel_is_auto ()
                           ? _("None staged") : _("Detect only"));
         }
-        tile_set (tile_blocks, tile_blocks_note, n, t);
+        tile_set (tile_blocks, tile_blocks_note, n, t, "warn");
         g_free (t);
     }
 
@@ -2338,41 +2450,57 @@ update_stats (void)
         } else {
             t = g_strdup (_("Nothing learned yet"));
         }
-        tile_set (tile_learned, tile_learned_note, n, t);
+        tile_set (tile_learned, tile_learned_note, n, t, NULL);
         g_free (t);
     }
 
     changes_render ();
 }
 
+/* One row of the "At a glance" card: the caption with its figure at
+ * the right end of the line, and a note under them.  The row keeps the
+ * name its tile had (`name', "<name>-value", "<name>-note"). */
 static GtkWidget *
 tile_new (const gchar *caption, const gchar *name, GtkWidget **value,
           GtkWidget **note)
 {
-    GtkWidget *card = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
-    GtkWidget *v;
+    GtkWidget *row = gtk_box_new (GTK_ORIENTATION_VERTICAL, 1);
+    GtkWidget *line = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+    GtkWidget *cap = text_new (caption, "cp-glance-caption", FALSE);
+    GtkWidget *v = text_new ("0", "cp-glance-value", FALSE);
+    PangoAttrList *attrs = pango_attr_list_new ();
     gchar *vn = g_strdup_printf ("%s-value", name);
+    gchar *nn = g_strdup_printf ("%s-note", name);
 
-    add_class (card, "card");
-    add_class (card, "stat-card");
-    gtk_widget_set_name (card, name);
-    gtk_box_pack_start (GTK_BOX (card), text_new (caption, "stat-caption",
-                                                  FALSE),
-                        FALSE, FALSE, 0);
-    v = text_new ("0", "stat-big", FALSE);
+    add_class (row, "cp-glance-row");
+    gtk_widget_set_name (row, name);
+
+    gtk_label_set_ellipsize (GTK_LABEL (cap), PANGO_ELLIPSIZE_END);
+    gtk_box_pack_start (GTK_BOX (line), cap, TRUE, TRUE, 0);
+    /* Figures of one width, so the column of values lines up. */
+    pango_attr_list_insert (attrs, pango_attr_font_features_new ("tnum=1"));
+    gtk_label_set_attributes (GTK_LABEL (v), attrs);
+    pango_attr_list_unref (attrs);
+    add_class (v, "zero");
+    gtk_label_set_xalign (GTK_LABEL (v), 1.0);
     gtk_widget_set_name (v, vn);
-    gtk_box_pack_start (GTK_BOX (card), v, FALSE, FALSE, 0);
-    *note = text_new ("", "stat-note", TRUE);
-    {
-        gchar *nn = g_strdup_printf ("%s-note", name);
+    gtk_box_pack_end (GTK_BOX (line), v, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (row), line, FALSE, FALSE, 0);
 
-        gtk_widget_set_name (*note, nn);
-        g_free (nn);
-    }
-    gtk_box_pack_start (GTK_BOX (card), *note, FALSE, FALSE, 0);
+    *note = text_new ("", "cp-glance-note", TRUE);
+    /* A wrapping label asks for one long line; the column is narrow. */
+    gtk_label_set_max_width_chars (GTK_LABEL (*note), 30);
+    gtk_widget_set_name (*note, nn);
+    gtk_box_pack_start (GTK_BOX (row), *note, FALSE, FALSE, 0);
+
+    /* The figure is read with its caption. */
+    atk_object_add_relationship (gtk_widget_get_accessible (v),
+                                 ATK_RELATION_LABELLED_BY,
+                                 gtk_widget_get_accessible (cap));
     *value = v;
     g_free (vn);
-    return card;
+    g_free (nn);
+    return row;
 }
 
 /* =====================================================================
@@ -2480,9 +2608,11 @@ on_page_destroy (GtkWidget *w, gpointer data)
     tile_learned = tile_learned_note = NULL;
     findings_list = findings_frame = findings_count = NULL;
     findings_empty = findings_empty_text = findings_reason = NULL;
+    findings_empty_new = findings_empty_clear = NULL;
     findings_checked = findings_strip = NULL;
     health_list = health_frame = health_summary = NULL;
-    health_empty = health_strip = NULL;
+    health_empty = health_empty_box = health_strip = NULL;
+    health_empty_ok = health_empty_none = NULL;
     changes_list = changes_frame = changes_empty = changes_strip = NULL;
     g_clear_pointer (&changes_sig, g_free);
     g_clear_pointer (&finding_rows, g_hash_table_destroy);
@@ -2510,15 +2640,28 @@ on_page_map (GtkWidget *w, gpointer data)
     refresh_insights ();
 }
 
-/* A card: heading, an optional muted count on the right, a strip. */
+/* The line a card writes what an action did on, under its heading (or
+ * under a group's): named "<owner>-strip". */
+static GtkWidget *
+card_strip_new (const gchar *owner)
+{
+    gchar *sn = g_strdup_printf ("%s-strip", owner);
+    GtkWidget *s = strip_new (sn);
+
+    add_class (s, "cp-card-strip");
+    g_free (sn);
+    return s;
+}
+
+/* A card: its heading row and, when asked for, a strip under it.  What
+ * belongs at the row's right end is packed into *right.  The card's
+ * own content follows edge to edge: rows draw their own margins. */
 static GtkWidget *
 section_card (const gchar *heading, const gchar *name, GtkWidget **right,
-              GtkWidget **strip, GtkWidget **body)
+              GtkWidget **strip)
 {
     GtkWidget *card = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
     GtkWidget *head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget *inner = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
-    gchar *sn = g_strdup_printf ("%s-strip", name);
 
     add_class (card, "card");
     gtk_widget_set_name (card, name);
@@ -2531,16 +2674,46 @@ section_card (const gchar *heading, const gchar *name, GtkWidget **right,
         gtk_box_pack_end (GTK_BOX (head), *right, FALSE, FALSE, 0);
     }
     gtk_box_pack_start (GTK_BOX (card), head, FALSE, FALSE, 0);
-
-    gtk_widget_set_margin_start (inner, 16);
-    gtk_widget_set_margin_end (inner, 16);
-    gtk_widget_set_margin_bottom (inner, 14);
-    *strip = strip_new (sn);
-    gtk_box_pack_start (GTK_BOX (inner), *strip, FALSE, FALSE, 0);
-    gtk_box_pack_start (GTK_BOX (card), inner, FALSE, FALSE, 0);
-    *body = inner;
-    g_free (sn);
+    if (strip != NULL) {
+        *strip = card_strip_new (name);
+        gtk_box_pack_start (GTK_BOX (card), *strip, FALSE, FALSE, 0);
+    }
     return card;
+}
+
+/* The line that opens a group inside the Findings card: what the group
+ * holds, and at its right end the group's count or its one action
+ * (packed into *right). */
+static GtkWidget *
+group_head (const gchar *caption, const gchar *tip, GtkWidget **right)
+{
+    GtkWidget *head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+    GtkWidget *l = text_new (caption, "cp-group", FALSE);
+
+    add_class (head, "cp-group-head");
+    if (tip != NULL)
+        gtk_widget_set_tooltip_text (l, tip);
+    gtk_box_pack_start (GTK_BOX (head), l, FALSE, FALSE, 0);
+    *right = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
+    gtk_box_pack_end (GTK_BOX (head), *right, TRUE, TRUE, 0);
+    return head;
+}
+
+/* An empty state: a small icon at the left (packed by the caller, one
+ * shown at a time), and in *texts one sentence with at most one action
+ * under it. */
+static GtkWidget *
+empty_box_new (const gchar *name, GtkWidget **texts)
+{
+    GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
+
+    add_class (box, "cp-empty");
+    if (name != NULL)
+        gtk_widget_set_name (box, name);
+    *texts = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+    gtk_box_pack_end (GTK_BOX (box), *texts, TRUE, TRUE, 0);
+    gtk_widget_set_no_show_all (box, TRUE);
+    return box;
 }
 
 static GtkWidget *
@@ -2560,13 +2733,245 @@ list_new (const gchar *name, GtkWidget **frame)
     return list;
 }
 
+/* [ FsCpCols ]
+ * The page's two columns: the main one takes the room, the side one is
+ * CP_COLS_SIDE wide and as tall as its content.  When the two no
+ * longer fit (under CP_COLS_MIN, or under what the main column needs),
+ * they stack: the side column on top, the main one under it.
+ *
+ * A container of its own because the choice depends on the width it is
+ * given: a box whose orientation is flipped after the fact asks for
+ * the two-column width first, and inside a page that scrolls only up
+ * and down that width becomes the least the window can be.  Here the
+ * least width is always the stacked one. */
+typedef struct
+{
+    GtkContainer parent;
+    GtkWidget   *main;
+    GtkWidget   *side;
+} FsCpCols;
+
+typedef struct
+{
+    GtkContainerClass parent_class;
+} FsCpColsClass;
+
+#define CP_COLS_GAP  16
+#define CP_COLS_SIDE 300
+#define CP_COLS_MIN  860
+
+GType fs_cp_cols_get_type (void);
+G_DEFINE_TYPE (FsCpCols, fs_cp_cols, GTK_TYPE_CONTAINER)
+
+static gboolean
+fs_cp_cols_has (GtkWidget *kid)
+{
+    return kid != NULL && gtk_widget_get_visible (kid);
+}
+
+/* The side column's width when `width' holds both columns, 0 when
+ * they stack. */
+static gint
+fs_cp_cols_side_width (FsCpCols *c, gint width)
+{
+    gint main_min = 0, side_min = 0, side_w;
+
+    if (!fs_cp_cols_has (c->main) || !fs_cp_cols_has (c->side))
+        return 0;
+    gtk_widget_get_preferred_width (c->main, &main_min, NULL);
+    gtk_widget_get_preferred_width (c->side, &side_min, NULL);
+    side_w = MAX (CP_COLS_SIDE, side_min);
+    return width >= MAX (CP_COLS_MIN, main_min + CP_COLS_GAP + side_w)
+           ? side_w : 0;
+}
+
+static GtkSizeRequestMode
+fs_cp_cols_request_mode (GtkWidget *widget)
+{
+    (void) widget;
+    return GTK_SIZE_REQUEST_HEIGHT_FOR_WIDTH;
+}
+
+static void
+fs_cp_cols_preferred_width (GtkWidget *widget, gint *min, gint *nat)
+{
+    FsCpCols *c = (FsCpCols *) widget;
+    gint main_min = 0, main_nat = 0, side_min = 0, side_nat = 0;
+
+    if (fs_cp_cols_has (c->main))
+        gtk_widget_get_preferred_width (c->main, &main_min, &main_nat);
+    if (fs_cp_cols_has (c->side))
+        gtk_widget_get_preferred_width (c->side, &side_min, &side_nat);
+    *min = MAX (main_min, side_min);
+    *nat = fs_cp_cols_has (c->main) && fs_cp_cols_has (c->side)
+           ? main_nat + CP_COLS_GAP + MAX (CP_COLS_SIDE, side_min)
+           : MAX (main_nat, side_nat);
+    *nat = MAX (*nat, *min);
+}
+
+static void
+fs_cp_cols_preferred_height_for_width (GtkWidget *widget, gint width,
+                                       gint *min, gint *nat)
+{
+    FsCpCols *c = (FsCpCols *) widget;
+    gint side_w = fs_cp_cols_side_width (c, width);
+    gint main_min = 0, main_nat = 0, side_min = 0, side_nat = 0;
+
+    if (fs_cp_cols_has (c->main))
+        gtk_widget_get_preferred_height_for_width (
+            c->main, side_w > 0 ? width - CP_COLS_GAP - side_w : width,
+            &main_min, &main_nat);
+    if (fs_cp_cols_has (c->side))
+        gtk_widget_get_preferred_height_for_width (
+            c->side, side_w > 0 ? side_w : width, &side_min, &side_nat);
+
+    if (side_w > 0) {
+        *min = MAX (main_min, side_min);
+        *nat = MAX (main_nat, side_nat);
+    } else {
+        gint gap = fs_cp_cols_has (c->main) && fs_cp_cols_has (c->side)
+                   ? CP_COLS_GAP : 0;
+
+        *min = main_min + gap + side_min;
+        *nat = main_nat + gap + side_nat;
+    }
+}
+
+static void
+fs_cp_cols_preferred_height (GtkWidget *widget, gint *min, gint *nat)
+{
+    gint mn, nt;
+
+    /* At the least width: the tallest it can be. */
+    fs_cp_cols_preferred_width (widget, &mn, &nt);
+    fs_cp_cols_preferred_height_for_width (widget, mn, min, nat);
+}
+
+static void
+fs_cp_cols_size_allocate (GtkWidget *widget, GtkAllocation *alloc)
+{
+    FsCpCols *c = (FsCpCols *) widget;
+    gint side_w = fs_cp_cols_side_width (c, alloc->width);
+    GtkAllocation a;
+    gint h;
+
+    gtk_widget_set_allocation (widget, alloc);
+
+    if (side_w > 0) {
+        gboolean rtl = gtk_widget_get_direction (widget) == GTK_TEXT_DIR_RTL;
+        gint main_w = alloc->width - CP_COLS_GAP - side_w;
+
+        gtk_widget_get_preferred_height_for_width (c->main, main_w, NULL, &h);
+        a.x = alloc->x + (rtl ? side_w + CP_COLS_GAP : 0);
+        a.y = alloc->y;
+        a.width = main_w;
+        a.height = h;
+        gtk_widget_size_allocate (c->main, &a);
+
+        gtk_widget_get_preferred_height_for_width (c->side, side_w, NULL, &h);
+        a.x = alloc->x + (rtl ? 0 : main_w + CP_COLS_GAP);
+        a.y = alloc->y;
+        a.width = side_w;
+        a.height = h;
+        gtk_widget_size_allocate (c->side, &a);
+        return;
+    }
+
+    a.x = alloc->x;
+    a.y = alloc->y;
+    a.width = alloc->width;
+    if (fs_cp_cols_has (c->side)) {
+        gtk_widget_get_preferred_height_for_width (c->side, alloc->width,
+                                                   NULL, &h);
+        a.height = h;
+        gtk_widget_size_allocate (c->side, &a);
+        a.y += h + CP_COLS_GAP;
+    }
+    if (fs_cp_cols_has (c->main)) {
+        gtk_widget_get_preferred_height_for_width (c->main, alloc->width,
+                                                   NULL, &h);
+        a.height = h;
+        gtk_widget_size_allocate (c->main, &a);
+    }
+}
+
+/* The first child added is the main column, the second the side one. */
+static void
+fs_cp_cols_add (GtkContainer *container, GtkWidget *child)
+{
+    FsCpCols *c = (FsCpCols *) container;
+
+    if (c->main == NULL)
+        c->main = child;
+    else if (c->side == NULL)
+        c->side = child;
+    else
+        return;
+    gtk_widget_set_parent (child, GTK_WIDGET (container));
+}
+
+static void
+fs_cp_cols_remove (GtkContainer *container, GtkWidget *child)
+{
+    FsCpCols *c = (FsCpCols *) container;
+
+    if (child == c->main)
+        c->main = NULL;
+    else if (child == c->side)
+        c->side = NULL;
+    else
+        return;
+    gtk_widget_unparent (child);
+    gtk_widget_queue_resize (GTK_WIDGET (container));
+}
+
+static void
+fs_cp_cols_forall (GtkContainer *container, gboolean internals,
+                   GtkCallback callback, gpointer data)
+{
+    FsCpCols *c = (FsCpCols *) container;
+    GtkWidget *main = c->main, *side = c->side;
+
+    (void) internals;
+    /* The callback may remove what it is given. */
+    if (main != NULL)
+        callback (main, data);
+    if (side != NULL)
+        callback (side, data);
+}
+
+static void
+fs_cp_cols_class_init (FsCpColsClass *klass)
+{
+    GtkWidgetClass *wc = GTK_WIDGET_CLASS (klass);
+    GtkContainerClass *cc = GTK_CONTAINER_CLASS (klass);
+
+    wc->get_request_mode = fs_cp_cols_request_mode;
+    wc->get_preferred_width = fs_cp_cols_preferred_width;
+    wc->get_preferred_height = fs_cp_cols_preferred_height;
+    wc->get_preferred_height_for_width =
+        fs_cp_cols_preferred_height_for_width;
+    wc->size_allocate = fs_cp_cols_size_allocate;
+    cc->add = fs_cp_cols_add;
+    cc->remove = fs_cp_cols_remove;
+    cc->forall = fs_cp_cols_forall;
+}
+
+static void
+fs_cp_cols_init (FsCpCols *c)
+{
+    gtk_widget_set_has_window (GTK_WIDGET (c), FALSE);
+    c->main = c->side = NULL;
+}
+
 /* =====================================================================
  * fs_copilot_page - Build the full Copilot tab
  * ===================================================================== */
 GtkWidget *
 fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
 {
-    GtkWidget *row, *card, *body, *right, *b, *l;
+    GtkWidget *cols, *left, *side, *card, *group, *head, *right, *texts;
+    GtkWidget *b, *l;
 
     global_copilot = copilot;
     copilot_policy = policy;
@@ -2588,22 +2993,43 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
 
     fs_simviz_install_css ();
 
-    /* The window's page frame supplies the title, the one subtitle
-     * (with the "nothing is sent anywhere" line) and the margins.  The
-     * page follows the app's own light theme, as every other page
-     * does, whatever the desktop theme is. */
-    copilot_vbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 14);
+    /* The page draws its own header (the title row also carries the
+     * Sentinel switch); whoever hosts it supplies the margins and the
+     * scrolling (fs_copilot_page_framed for the main window).  The
+     * page follows the app's own theme, as every other page does,
+     * whatever the desktop theme is. */
+    copilot_vbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_set_name (copilot_vbox, "copilot-page");
     add_class (copilot_vbox, "cp-page");
     g_signal_connect (copilot_vbox, "map", G_CALLBACK (on_page_map), NULL);
     g_signal_connect (copilot_vbox, "destroy", G_CALLBACK (on_page_destroy),
                       NULL);
 
-    /* ===== Sentinel ===== */
-    card = section_card (_("Sentinel"), "cp-sentinel", &right,
-                         &sentinel_strip, &body);
+    /* ===== Header: title, one line, the Sentinel switch ===== */
+    head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 16);
+    gtk_widget_set_name (head, "cp-header");
+    add_class (head, "page-head");
     {
+        GtkWidget *titles = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+        GtkWidget *mode = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
         GtkWidget *seg = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+        GtkWidget *cap = text_new (_("Sentinel"), "cp-caption", FALSE);
+        const gchar *tip =
+            _("Auto-block only stages outbound blocks to unknown public "
+              "addresses, for 10 minutes. Everything else waits for you.");
+
+        gtk_box_pack_start (GTK_BOX (titles),
+                            text_new (_("Copilot"), "page-title", FALSE),
+                            FALSE, FALSE, 0);
+        gtk_box_pack_start (GTK_BOX (titles), text_new (
+            _("Checks your events and policy on this computer. Nothing is "
+              "sent anywhere."), "page-subtitle", TRUE), FALSE, FALSE, 0);
+        gtk_box_pack_start (GTK_BOX (head), titles, TRUE, TRUE, 0);
+
+        gtk_widget_set_name (mode, "cp-sentinel");
+        gtk_widget_set_valign (mode, GTK_ALIGN_CENTER);
+        gtk_widget_set_tooltip_text (cap, tip);
+        gtk_box_pack_start (GTK_BOX (mode), cap, FALSE, FALSE, 0);
 
         add_class (seg, "segmented");
         gtk_widget_set_name (seg, "sentinel-mode");
@@ -2618,6 +3044,17 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
         gtk_toggle_button_set_mode (GTK_TOGGLE_BUTTON (sentinel_auto), FALSE);
         add_class (sentinel_detect, "seg-button");
         add_class (sentinel_auto, "seg-button");
+        /* Each button says whose mode it is, and what the mode does. */
+        gtk_widget_set_tooltip_text (sentinel_detect, tip);
+        gtk_widget_set_tooltip_text (sentinel_auto, tip);
+        atk_object_set_name (gtk_widget_get_accessible (sentinel_detect),
+                             _("Sentinel: Detect only"));
+        atk_object_set_name (gtk_widget_get_accessible (sentinel_auto),
+                             _("Sentinel: Detect + auto-block"));
+        atk_object_set_description (
+            gtk_widget_get_accessible (sentinel_detect), tip);
+        atk_object_set_description (
+            gtk_widget_get_accessible (sentinel_auto), tip);
         gtk_box_pack_start (GTK_BOX (seg), sentinel_detect, FALSE, FALSE, 0);
         gtk_box_pack_start (GTK_BOX (seg), sentinel_auto, FALSE, FALSE, 0);
         sentinel_sync_buttons ();
@@ -2625,27 +3062,156 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
                           G_CALLBACK (on_sentinel_toggled), (gpointer) "detect");
         g_signal_connect (sentinel_auto, "toggled",
                           G_CALLBACK (on_sentinel_toggled), (gpointer) "auto");
-        gtk_box_pack_start (GTK_BOX (right), seg, FALSE, FALSE, 0);
+        gtk_box_pack_start (GTK_BOX (mode), seg, FALSE, FALSE, 0);
+        gtk_box_pack_end (GTK_BOX (head), mode, FALSE, FALSE, 0);
     }
-    gtk_box_pack_start (GTK_BOX (body), text_new (
-        _("Auto-block only stages outbound blocks to unknown public "
-          "addresses, for 10 minutes. Everything else waits for you."),
-        "cp-body", TRUE), FALSE, FALSE, 0);
-    gtk_box_pack_start (GTK_BOX (copilot_vbox), card, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (copilot_vbox), head, FALSE, FALSE, 0);
 
-    /* ===== Tiles ===== */
-    row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
-    gtk_box_set_homogeneous (GTK_BOX (row), TRUE);
-    gtk_box_pack_start (GTK_BOX (row),
+    /* What Sentinel last did (mode switched, paused, resumed): shown
+     * under the header only when there is something to say. */
+    sentinel_strip = strip_new ("cp-sentinel-strip");
+    add_class (sentinel_strip, "cp-page-strip");
+    gtk_box_pack_start (GTK_BOX (copilot_vbox), sentinel_strip,
+                        FALSE, FALSE, 0);
+
+    /* ===== The two columns ===== */
+    cols = g_object_new (fs_cp_cols_get_type (), NULL);
+    gtk_widget_set_name (cols, "cp-columns");
+    left = gtk_box_new (GTK_ORIENTATION_VERTICAL, CP_COLS_GAP);
+    gtk_widget_set_name (left, "cp-main");
+    side = gtk_box_new (GTK_ORIENTATION_VERTICAL, CP_COLS_GAP);
+    gtk_widget_set_name (side, "cp-side");
+    gtk_container_add (GTK_CONTAINER (cols), left);
+    gtk_container_add (GTK_CONTAINER (cols), side);
+    gtk_box_pack_start (GTK_BOX (copilot_vbox), cols, FALSE, FALSE, 0);
+
+    /* ===== Left: the What-If simulator, first ===== */
+    gtk_box_pack_start (GTK_BOX (left), whatif_card_new (), FALSE, FALSE, 0);
+
+    /* ===== Left: Findings, from the events and from the policy ===== */
+    card = section_card (_("Findings"), "cp-findings", NULL,
+                         &findings_strip);
+    add_class (card, "cp-rows-card");
+
+    group = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_name (group, "cp-events-group");
+    gtk_box_pack_start (GTK_BOX (group),
+                        group_head (_("From events"), NULL, &right),
+                        FALSE, FALSE, 0);
+    findings_count = text_new ("", "muted", FALSE);
+    gtk_widget_set_name (findings_count, "findings-count");
+    gtk_box_pack_end (GTK_BOX (right), findings_count, FALSE, FALSE, 0);
+    findings_list = list_new ("findings-list", &findings_frame);
+    gtk_list_box_set_sort_func (GTK_LIST_BOX (findings_list),
+                                finding_order_cmp, NULL, NULL);
+    g_signal_connect (findings_list, "row-activated",
+                      G_CALLBACK (on_finding_activated), NULL);
+    gtk_box_pack_start (GTK_BOX (group), findings_frame, FALSE, FALSE, 0);
+
+    findings_empty = empty_box_new ("findings-empty", &texts);
+    findings_empty_new = empty_icon_new (FS_ICON_LIST);
+    findings_empty_clear = empty_icon_new (FS_ICON_SHIELD_CHECK);
+    gtk_widget_set_no_show_all (findings_empty_new, TRUE);
+    gtk_widget_set_no_show_all (findings_empty_clear, TRUE);
+    gtk_box_pack_start (GTK_BOX (findings_empty), findings_empty_new,
+                        FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (findings_empty), findings_empty_clear,
+                        FALSE, FALSE, 0);
+    findings_empty_text = text_new ("", "empty-state", TRUE);
+    gtk_widget_set_name (findings_empty_text, "findings-empty-text");
+    gtk_box_pack_start (GTK_BOX (texts), findings_empty_text,
+                        FALSE, FALSE, 0);
+    findings_reason = text_new ("", "warning-strip", TRUE);
+    add_class (findings_reason, "cp-strip");
+    gtk_widget_set_name (findings_reason, "findings-reason");
+    gtk_widget_set_no_show_all (findings_reason, TRUE);
+    gtk_box_pack_start (GTK_BOX (texts), findings_reason, FALSE, FALSE, 0);
+    findings_checked = gtk_expander_new (_("What is checked"));
+    gtk_widget_set_name (findings_checked, "findings-checked");
+    gtk_container_add (GTK_CONTAINER (findings_checked), checked_list_new ());
+    gtk_widget_set_no_show_all (findings_checked, TRUE);
+    gtk_box_pack_start (GTK_BOX (texts), findings_checked, FALSE, FALSE, 0);
+    b = button_new (_("Open Events"), "fs-link", "findings-open-events");
+    add_class (b, "cp-empty-link");
+    gtk_widget_set_halign (b, GTK_ALIGN_START);
+    g_signal_connect (b, "clicked", G_CALLBACK (on_open_events_clicked),
+                      NULL);
+    gtk_box_pack_start (GTK_BOX (texts), b, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (group), findings_empty, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (card), group, FALSE, FALSE, 0);
+
+    /* The policy's group.  It keeps the name the Policy health card
+     * had, and so does its strip. */
+    group = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_name (group, "cp-health-card");
+    head = group_head (_("From the policy"),
+                       _("Overlaps, conflicts and open risky services in the "
+                         "saved policy. A fix is offered only when What-If "
+                         "shows it does what it says."), &right);
+    add_class (head, "cp-group-next");
+    gtk_box_pack_start (GTK_BOX (group), head, FALSE, FALSE, 0);
+    health_summary = text_new ("", "muted", FALSE);
+    gtk_widget_set_name (health_summary, "health-summary");
+    gtk_label_set_xalign (GTK_LABEL (health_summary), 1.0);
+    gtk_label_set_ellipsize (GTK_LABEL (health_summary), PANGO_ELLIPSIZE_END);
+    gtk_box_pack_start (GTK_BOX (right), health_summary, TRUE, TRUE, 0);
+    b = button_new (_("Check again"), "btn-subtle", "health-again");
+    add_class (b, "cp-small");
+    atk_object_set_name (gtk_widget_get_accessible (b),
+                         _("Check the policy again"));
+    g_signal_connect (b, "clicked", G_CALLBACK (on_health_again_clicked),
+                      NULL);
+    gtk_box_pack_end (GTK_BOX (right), b, FALSE, FALSE, 0);
+    health_strip = card_strip_new ("cp-health-card");
+    gtk_box_pack_start (GTK_BOX (group), health_strip, FALSE, FALSE, 0);
+    health_list = list_new ("health-list", &health_frame);
+    gtk_box_pack_start (GTK_BOX (group), health_frame, FALSE, FALSE, 0);
+    health_empty_box = empty_box_new (NULL, &texts);
+    health_empty_ok = empty_icon_new (FS_ICON_CHECK_CIRCLE);
+    add_class (health_empty_ok, "ok");
+    health_empty_none = empty_icon_new (FS_ICON_INFO);
+    gtk_widget_set_no_show_all (health_empty_ok, TRUE);
+    gtk_widget_set_no_show_all (health_empty_none, TRUE);
+    gtk_box_pack_start (GTK_BOX (health_empty_box), health_empty_ok,
+                        FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (health_empty_box), health_empty_none,
+                        FALSE, FALSE, 0);
+    health_empty = text_new ("", "empty-state", TRUE);
+    gtk_widget_set_name (health_empty, "health-empty");
+    gtk_box_pack_start (GTK_BOX (texts), health_empty, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (group), health_empty_box, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (card), group, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (left), card, FALSE, FALSE, 0);
+
+    /* ===== Left: Changes ===== */
+    card = section_card (_("Changes made by the Copilot"), "cp-changes",
+                         NULL, &changes_strip);
+    add_class (card, "cp-rows-card");
+    changes_list = list_new ("changes-list", &changes_frame);
+    gtk_box_pack_start (GTK_BOX (card), changes_frame, FALSE, FALSE, 0);
+    changes_empty = empty_box_new (NULL, &texts);
+    gtk_box_pack_start (GTK_BOX (changes_empty),
+                        empty_icon_new (FS_ICON_CLOCK), FALSE, FALSE, 0);
+    l = text_new (_("No changes yet. Automatic blocks, block rules added "
+                    "here and policy fixes are listed with an Undo."),
+                  "empty-state", TRUE);
+    gtk_widget_set_name (l, "changes-empty");
+    gtk_box_pack_start (GTK_BOX (texts), l, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (card), changes_empty, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (left), card, FALSE, FALSE, 0);
+
+    /* ===== Right: at a glance ===== */
+    card = section_card (_("At a glance"), "cp-glance", NULL, NULL);
+    gtk_box_pack_start (GTK_BOX (card),
         tile_new (_("Needs attention"), "tile-attention", &tile_attention,
-                  &tile_attention_note), TRUE, TRUE, 0);
-    gtk_box_pack_start (GTK_BOX (row),
+                  &tile_attention_note), FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (card),
         tile_new (_("Policy health"), "tile-health", &tile_health,
-                  &tile_health_note), TRUE, TRUE, 0);
-    gtk_box_pack_start (GTK_BOX (row),
+                  &tile_health_note), FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (card),
         tile_new (_("Auto-blocks active"), "tile-blocks", &tile_blocks,
-                  &tile_blocks_note), TRUE, TRUE, 0);
-    gtk_box_pack_start (GTK_BOX (row),
+                  &tile_blocks_note), FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (card),
 #ifdef G_OS_WIN32
         tile_new (_("Apps learned"), "tile-learned", &tile_learned,
                   &tile_learned_note),
@@ -2654,94 +3220,33 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
         tile_new (_("Services learned"), "tile-learned", &tile_learned,
                   &tile_learned_note),
 #endif
-        TRUE, TRUE, 0);
-    gtk_box_pack_start (GTK_BOX (copilot_vbox), row, FALSE, FALSE, 0);
-
-    /* ===== Findings ===== */
-    card = section_card (_("Findings"), "cp-findings", &right,
-                         &findings_strip, &body);
-    findings_count = text_new ("", "muted", FALSE);
-    gtk_widget_set_name (findings_count, "findings-count");
-    gtk_box_pack_start (GTK_BOX (right), findings_count, FALSE, FALSE, 0);
-    findings_list = list_new ("findings-list", &findings_frame);
-    gtk_list_box_set_sort_func (GTK_LIST_BOX (findings_list),
-                                finding_order_cmp, NULL, NULL);
-    g_signal_connect (findings_list, "row-activated",
-                      G_CALLBACK (on_finding_activated), NULL);
-    gtk_box_pack_start (GTK_BOX (body), findings_frame, FALSE, FALSE, 0);
-
-    findings_empty = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
-    gtk_widget_set_name (findings_empty, "findings-empty");
-    findings_empty_text = text_new ("", "empty-state", TRUE);
-    gtk_widget_set_name (findings_empty_text, "findings-empty-text");
-    gtk_box_pack_start (GTK_BOX (findings_empty), findings_empty_text,
-                        FALSE, FALSE, 0);
-    findings_reason = text_new ("", "warning-strip", TRUE);
-    add_class (findings_reason, "cp-strip");
-    gtk_widget_set_name (findings_reason, "findings-reason");
-    gtk_widget_set_no_show_all (findings_reason, TRUE);
-    gtk_box_pack_start (GTK_BOX (findings_empty), findings_reason,
-                        FALSE, FALSE, 0);
-    findings_checked = gtk_expander_new (_("What is checked"));
-    gtk_widget_set_name (findings_checked, "findings-checked");
-    gtk_container_add (GTK_CONTAINER (findings_checked), checked_list_new ());
-    gtk_widget_set_no_show_all (findings_checked, TRUE);
-    gtk_box_pack_start (GTK_BOX (findings_empty), findings_checked,
-                        FALSE, FALSE, 0);
-    b = button_new (_("Open Events"), "fs-link", "findings-open-events");
-    gtk_widget_set_halign (b, GTK_ALIGN_START);
-    g_signal_connect (b, "clicked", G_CALLBACK (on_open_events_clicked),
-                      NULL);
-    gtk_box_pack_start (GTK_BOX (findings_empty), b, FALSE, FALSE, 0);
-    gtk_widget_set_no_show_all (findings_empty, TRUE);
-    gtk_box_pack_start (GTK_BOX (body), findings_empty, FALSE, FALSE, 0);
-    gtk_box_pack_start (GTK_BOX (copilot_vbox), card, FALSE, FALSE, 0);
-
-    /* ===== Policy health ===== */
-    card = section_card (_("Policy health"), "cp-health-card", &right,
-                         &health_strip, &body);
-    health_summary = text_new ("", "muted", FALSE);
-    gtk_widget_set_name (health_summary, "health-summary");
-    gtk_box_pack_start (GTK_BOX (right), health_summary, FALSE, FALSE, 0);
-    b = button_new (_("Check again"), "btn-subtle", "health-again");
-    g_signal_connect (b, "clicked", G_CALLBACK (on_health_again_clicked),
-                      NULL);
-    gtk_box_pack_start (GTK_BOX (right), b, FALSE, FALSE, 0);
-    gtk_box_pack_start (GTK_BOX (body), text_new (
-        _("Overlaps, conflicts and open risky services in the saved "
-          "policy. A fix is offered only when What-If shows it does what "
-          "it says."), "cp-body", TRUE), FALSE, FALSE, 0);
-    health_list = list_new ("health-list", &health_frame);
-    gtk_box_pack_start (GTK_BOX (body), health_frame, FALSE, FALSE, 0);
-    health_empty = text_new ("", "empty-state", TRUE);
-    gtk_widget_set_name (health_empty, "health-empty");
-    gtk_widget_set_no_show_all (health_empty, TRUE);
-    gtk_box_pack_start (GTK_BOX (body), health_empty, FALSE, FALSE, 0);
-    gtk_box_pack_start (GTK_BOX (copilot_vbox), card, FALSE, FALSE, 0);
-
-    /* ===== What-If simulator ===== */
-    gtk_box_pack_start (GTK_BOX (copilot_vbox), whatif_card_new (),
-                        FALSE, FALSE, 0);
-
-    /* ===== Changes ===== */
-    card = section_card (_("Changes made by the Copilot"), "cp-changes",
-                         NULL, &changes_strip, &body);
-    changes_list = list_new ("changes-list", &changes_frame);
-    gtk_box_pack_start (GTK_BOX (body), changes_frame, FALSE, FALSE, 0);
-    l = text_new (_("No changes yet. Automatic blocks, block rules added "
-                    "here and policy fixes are listed with an Undo."),
-                  "empty-state", TRUE);
-    gtk_widget_set_name (l, "changes-empty");
-    changes_empty = l;
-    gtk_widget_set_no_show_all (changes_empty, TRUE);
-    gtk_box_pack_start (GTK_BOX (body), changes_empty, FALSE, FALSE, 0);
-    gtk_box_pack_start (GTK_BOX (copilot_vbox), card, FALSE, FALSE, 0);
+        FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (side), card, FALSE, FALSE, 0);
 
     /* Initial data */
     health_run ();
     refresh_insights ();
 
     return copilot_vbox;
+}
+
+/* [ fs_copilot_page_framed ]
+ * The page as the main window hosts it: on the margins every page
+ * has, and in a scroller of its own that scrolls the whole page,
+ * header included, as the Overview does (the cards are taller than the
+ * window once a finding is open).  It scrolls up and down only, so the
+ * page is never wider than the window. */
+GtkWidget *
+fs_copilot_page_framed (FsCopilot *copilot, FsPolicy *policy)
+{
+    GtkWidget *page = fs_copilot_page (copilot, policy);
+    GtkWidget *scroll = gtk_scrolled_window_new (NULL, NULL);
+
+    add_class (page, "page");
+    gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
+                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_container_add (GTK_CONTAINER (scroll), page);
+    return scroll;
 }
 
 /* =====================================================================
@@ -3732,6 +4237,19 @@ whatif_flow_new (void)
     return flow;
 }
 
+/* Moves a child of a wrapping row to the row's start. */
+static void
+wrap_put_first (GtkWidget *wrap, GtkWidget *child)
+{
+    FsWiWrap *w = (FsWiWrap *) wrap;
+
+    if (g_list_find (w->kids, child) == NULL)
+        return;
+    w->kids = g_list_remove (w->kids, child);
+    w->kids = g_list_prepend (w->kids, child);
+    gtk_widget_queue_resize (wrap);
+}
+
 /* [ whatif_card_new ] -- the card on the Copilot page. */
 static GtkWidget *
 whatif_card_new (void)
@@ -3743,15 +4261,18 @@ whatif_card_new (void)
         "block RDP from the internet",
     };
     GtkWidget *card = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
-    GtkWidget *head = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+    GtkWidget *head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
     GtkWidget *body = gtk_box_new (GTK_ORIENTATION_VERTICAL, 10);
     GtkWidget *row, *lbl, *flow, *btn;
 
     fs_simviz_install_css ();
     gtk_style_context_add_class (gtk_widget_get_style_context (card), "card");
+    gtk_style_context_add_class (gtk_widget_get_style_context (card),
+                                 "cp-hero");
     gtk_widget_set_name (card, "whatif-card");
 
-    /* Heading. */
+    /* Heading.  What the card is for is the entry's placeholder and
+     * tooltip; the one thing worth a line is that asking is safe. */
     gtk_style_context_add_class (gtk_widget_get_style_context (head),
                                  "card-head");
     lbl = gtk_label_new (_("What-If simulator"));
@@ -3759,13 +4280,11 @@ whatif_card_new (void)
                                  "card-heading");
     gtk_label_set_xalign (GTK_LABEL (lbl), 0.0);
     gtk_box_pack_start (GTK_BOX (head), lbl, FALSE, FALSE, 0);
-    lbl = gtk_label_new (_("Ask whether a connection would get through "
-                           "the firewall, in plain words. Asking changes "
-                           "nothing."));
+    lbl = gtk_label_new (_("Asking changes nothing"));
     gtk_style_context_add_class (gtk_widget_get_style_context (lbl), "muted");
-    gtk_label_set_xalign (GTK_LABEL (lbl), 0.0);
-    gtk_label_set_line_wrap (GTK_LABEL (lbl), TRUE);
-    gtk_box_pack_start (GTK_BOX (head), lbl, FALSE, FALSE, 0);
+    gtk_label_set_xalign (GTK_LABEL (lbl), 1.0);
+    gtk_label_set_ellipsize (GTK_LABEL (lbl), PANGO_ELLIPSIZE_END);
+    gtk_box_pack_end (GTK_BOX (head), lbl, TRUE, TRUE, 0);
     gtk_box_pack_start (GTK_BOX (card), head, FALSE, FALSE, 0);
 
     gtk_widget_set_margin_start (body, 16);
@@ -3777,10 +4296,18 @@ whatif_card_new (void)
     row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
     scenario_entry = gtk_entry_new ();
     gtk_widget_set_name (scenario_entry, "whatif-entry");
+    gtk_style_context_add_class (
+        gtk_widget_get_style_context (scenario_entry), "cp-ask");
     gtk_entry_set_placeholder_text (GTK_ENTRY (scenario_entry),
-        _("e.g. allow SSH from 192.168.1.50"));
+        _("Ask in plain words, e.g. allow SSH from 192.168.1.50"));
+    gtk_widget_set_tooltip_text (scenario_entry,
+        _("Ask whether a connection would get through the firewall, in "
+          "plain words. Asking changes nothing."));
     atk_object_set_name (gtk_widget_get_accessible (scenario_entry),
                          _("What-If question"));
+    atk_object_set_description (gtk_widget_get_accessible (scenario_entry),
+        _("Ask whether a connection would get through the firewall, in "
+          "plain words. Asking changes nothing."));
     gtk_widget_set_hexpand (scenario_entry, TRUE);
     g_signal_connect (scenario_entry, "activate",
                       G_CALLBACK (on_simulate_clicked), NULL);
@@ -3790,6 +4317,8 @@ whatif_card_new (void)
     gtk_widget_set_name (btn, "whatif-simulate");
     gtk_style_context_add_class (gtk_widget_get_style_context (btn),
                                  "btn-primary");
+    gtk_style_context_add_class (gtk_widget_get_style_context (btn),
+                                 "cp-ask-go");
     atk_object_set_name (gtk_widget_get_accessible (btn),
                          _("Simulate this question"));
     g_signal_connect (btn, "clicked", G_CALLBACK (on_simulate_clicked), NULL);
@@ -3800,7 +4329,9 @@ whatif_card_new (void)
     row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
     lbl = gtk_label_new (_("Try"));
     gtk_style_context_add_class (gtk_widget_get_style_context (lbl), "muted");
-    gtk_widget_set_valign (lbl, GTK_ALIGN_CENTER);
+    /* Beside the first line of examples when they wrap to two. */
+    gtk_widget_set_valign (lbl, GTK_ALIGN_START);
+    gtk_widget_set_margin_top (lbl, 3);
     gtk_box_pack_start (GTK_BOX (row), lbl, FALSE, FALSE, 0);
     flow = whatif_flow_new ();
     gtk_widget_set_name (flow, "whatif-examples");

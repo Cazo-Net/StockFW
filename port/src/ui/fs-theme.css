@@ -1612,7 +1612,24 @@ button.recent-row:focus .recent-more {
 
 /* =====================================================================
  * Copilot page
+ *
+ * A header, then two columns of cards, 16px apart and 16px inside.
+ * Lists run edge to edge in their card.  A row's severity is a 3px
+ * edge in the level's colour (an inset hairline, so it takes no room
+ * from the row), an icon and the word in the same colour.
  * ===================================================================== */
+/* The gap between two cards is the column's spacing alone. */
+.cp-page .card {
+	margin-bottom: 0;
+}
+.cp-page-strip {
+	margin-bottom: 14px;
+}
+.cp-card-strip {
+	margin: 0 16px 10px 16px;
+}
+
+/* --- row text: title, detail, meta --- */
 .cp-title {
 	font-size: 13px;
 	font-weight: 600;
@@ -1628,6 +1645,91 @@ button.recent-row:focus .recent-more {
 	font-size: 12px;
 	color: @fs_text_weak;
 }
+
+/* --- the What-If card: the question is the largest control here --- */
+.cp-hero entry.cp-ask {
+	min-height: 24px;
+	padding: 7px 12px;
+	font-size: 14px;
+}
+.cp-hero button.cp-ask-go {
+	padding: 5px 16px;
+	font-size: 14px;
+}
+
+/* --- a group inside the Findings card --- */
+.cp-group-head {
+	min-height: 24px;
+	padding: 0 16px 8px 16px;
+}
+.cp-group-head.cp-group-next {
+	border-top: 1px solid @fs_border;
+	padding-top: 10px;
+}
+.cp-group {
+	font-size: 12px;
+	font-weight: 600;
+	color: @fs_text_weak;
+}
+button.cp-small {
+	min-height: 16px;
+	padding: 3px 10px;
+	font-size: 12px;
+}
+
+/* --- lists: no frame of their own, rows from edge to edge --- */
+.cp-rows-card {
+	padding-bottom: 6px;
+}
+.cp-list-frame {
+	background-color: transparent;
+	border: none;
+	border-radius: 0;
+	padding: 0;
+	margin: 0;
+}
+list.cp-list {
+	background-color: transparent;
+}
+list.cp-list row.cp-row {
+	padding: 10px 16px;
+	border-top: 1px solid @fs_border;
+	background-color: transparent;
+	box-shadow: none;
+}
+list.cp-list row.cp-row.activatable:hover {
+	background-color: @fs_surface_2;
+}
+list.cp-list row.cp-row:focus {
+	outline: 2px solid alpha(@fs_accent_fill, 0.7);
+	outline-offset: -2px;
+}
+list.cp-list row.cp-row.sev-bad {
+	box-shadow: inset 3px 0 0 @fs_bad;
+}
+list.cp-list row.cp-row.sev-warn {
+	box-shadow: inset 3px 0 0 @fs_warn;
+}
+list.cp-list row.cp-row.sev-info {
+	box-shadow: inset 3px 0 0 @fs_info;
+}
+
+/* --- severity: icon and word, no box --- */
+.cp-pill {
+	margin-top: 1px;
+	font-size: 12px;
+	font-weight: 600;
+	color: @fs_text_weak;
+}
+.cp-pill.bad  { color: @fs_bad; }
+.cp-pill.warn { color: @fs_warn; }
+.cp-pill.info { color: @fs_info; }
+.cp-pill label,
+.cp-pill .fs-icon {
+	color: inherit;
+}
+
+/* --- a finding's drawer --- */
 #cp-evidence label.mono {
 	color: @fs_text_strong;
 }
@@ -1635,43 +1737,61 @@ button.recent-row:focus .recent-more {
 	font-size: 12px;
 	font-weight: 600;
 	color: @fs_text_strong;
-	margin-top: 6px;
+	margin-top: 8px;
 }
 .cp-arrow {
 	color: @fs_text_weak;
 	font-size: 12px;
 }
 .cp-drawer {
-	padding: 10px 0 6px 0;
+	padding: 4px 0 4px 0;
 	border-top: 1px solid @fs_border;
-	margin-top: 8px;
+	margin-top: 10px;
 }
-.cp-list-frame {
-	margin-bottom: 12px;
+
+/* --- empty states: an icon, a sentence, one action --- */
+.cp-empty {
+	padding: 2px 16px 10px 16px;
 }
-list.cp-list {
-	background-color: transparent;
+.cp-empty-icon {
+	color: @fs_text_weaker;
 }
-list.cp-list row.cp-row {
-	padding: 10px 14px;
-	border-bottom: 1px solid @fs_border;
-	background-color: transparent;
+.cp-empty-icon.ok {
+	color: @fs_ok;
 }
-list.cp-list row.cp-row:last-child {
-	border-bottom: none;
+button.fs-link.cp-empty-link {
+	padding: 0;
 }
-list.cp-list row.cp-row:hover {
-	background-color: @fs_surface_2;
+
+/* --- At a glance: caption, figure at the right, a note under them --- */
+.cp-glance-row {
+	background-color: @fs_surface;
+	border-top: 1px solid @fs_border;
+	padding: 9px 16px 10px 16px;
 }
-list.cp-list row.cp-row:focus {
-	outline: 2px solid alpha(@fs_accent_fill, 0.7);
-	outline-offset: -2px;
+.cp-glance-row:last-child {
+	border-radius: 0 0 7px 7px;
+	padding-bottom: 12px;
 }
-.cp-pill {
-	padding: 2px 8px;
-	border-radius: 5px;
+.cp-glance-caption {
+	font-size: 13px;
+	color: @fs_text;
+}
+.cp-glance-value {
+	font-size: 15px;
 	font-weight: 600;
+	color: @fs_text_strong;
+}
+.cp-glance-value.zero {
+	font-weight: 500;
+	color: @fs_text_weak;
+}
+.cp-glance-value.bad  { color: @fs_bad; }
+.cp-glance-value.warn { color: @fs_warn; }
+.cp-glance-value.info { color: @fs_info; }
+.cp-glance-note {
 	font-size: 12px;
+	color: @fs_text_weak;
 }
 
 /* =====================================================================

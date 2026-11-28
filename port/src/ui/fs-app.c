@@ -2526,12 +2526,10 @@ fs_app_activate (GtkApplication *app)
 		g_free (baseline);
 	}
 
-	add_page (_("Copilot"),
-	          _("Checks the event log and the policy with fixed rules on "
-	            "this computer, shows the events and the rule behind each "
-	            "finding, and tries rule changes before you make them. "
-	            "Nothing is sent anywhere."),
-	          fs_copilot_page (copilot, policy), TRUE);
+	/* No subtitle: the Copilot page draws its own header (the title row
+	 * carries the Sentinel switch) and brings its own scroller. */
+	add_page (_("Copilot"), NULL,
+	          fs_copilot_page_framed (copilot, policy), FALSE);
 
 	/* P6 (false-outage hardening): the Sentinel staged-block list is
 	 * persisted, so a restart must reconcile it -- rows whose ten

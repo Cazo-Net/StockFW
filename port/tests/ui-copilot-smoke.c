@@ -1348,6 +1348,151 @@ feed_intel_inbound (FsCopilot *copilot, gint64 t0)
 	fs_copilot_feed_event_at (copilot, &hit, t0);
 }
 
+static gboolean
+has_class (GtkWidget *w, const gchar *cls)
+{
+	return w != NULL && gtk_style_context_has_class (
+		gtk_widget_get_style_context (w), cls);
+}
+
+/* Where `child' sits among the direct children of `box', or -1. */
+static gint
+child_index (GtkWidget *box, GtkWidget *child)
+{
+	GList *kids;
+	gint i;
+
+	if (box == NULL || child == NULL || !GTK_IS_CONTAINER (box))
+		return -1;
+	kids = gtk_container_get_children (GTK_CONTAINER (box));
+	i = g_list_index (kids, child);
+	g_list_free (kids);
+	return i;
+}
+
+/* The page's frame: a header that carries the Sentinel switch, then
+ * two columns (What-If first on the left, the four figures on the
+ * right) that stack when the page is narrow.  `top' shows `page' in a
+ * 1040 px window, 992 px of page. */
+static void
+test_page_layout (GtkWidget *page, GtkWidget *top)
+{
+	static const gchar *tiles[] = { "tile-attention", "tile-health",
+	                                "tile-blocks", "tile-learned" };
+	GtkWidget *header = named (page, "cp-header");
+	GtkWidget *mode = named (page, "sentinel-mode");
+	GtkWidget *main_col = named (page, "cp-main");
+	GtkWidget *side = named (page, "cp-side");
+	GtkWidget *glance = named (page, "cp-glance");
+	GtkWidget *findings = named (page, "cp-findings");
+	GtkAllocation m = { 0, 0, 0, 0 }, sd = { 0, 0, 0, 0 };
+	guint kept = 0;
+
+	CHECK (header != NULL && child_index (page, header) == 0 &&
+	       fs_simviz_find_label (header, "Copilot") != NULL &&
+	       fs_simviz_find_label (header, "Nothing is sent anywhere.") != NULL,
+	       "layout: the page opens with its own header, title and one "
+	       "line");
+	CHECK (header != NULL && mode != NULL &&
+	       gtk_widget_is_ancestor (mode, header) &&
+	       gtk_widget_is_ancestor (named (page, "sentinel-auto"), mode) &&
+	       gtk_widget_is_ancestor (named (page, "sentinel-detect"), mode),
+	       "layout: the Sentinel mode switch is inside the page header");
+	{
+		GtkWidget *auto_btn = named (page, "sentinel-auto");
+		gchar *tip = auto_btn != NULL
+			? gtk_widget_get_tooltip_text (auto_btn) : NULL;
+		const gchar *acc = auto_btn != NULL
+			? atk_object_get_name (gtk_widget_get_accessible (auto_btn))
+			: NULL;
+
+		CHECK (tip != NULL && strstr (tip, "for 10 minutes") != NULL &&
+		       acc != NULL && g_str_has_prefix (acc, "Sentinel: "),
+		       "layout: the switch says what auto-block does in its "
+		       "tooltip, and names Sentinel to a screen reader (\"%s\")",
+		       acc != NULL ? acc : "");
+		g_free (tip);
+	}
+	CHECK (!shown (page, "cp-sentinel-strip"),
+	       "layout: the Sentinel strip is hidden while it has nothing "
+	       "to say");
+
+	CHECK (main_col != NULL &&
+	       child_index (main_col, named (page, "whatif-card")) == 0 &&
+	       child_index (main_col, findings) == 1 &&
+	       child_index (main_col, named (page, "cp-changes")) == 2,
+	       "layout: the left column is What-If, then Findings, then "
+	       "Changes (at %d, %d, %d)",
+	       child_index (main_col, named (page, "whatif-card")),
+	       child_index (main_col, findings),
+	       child_index (main_col, named (page, "cp-changes")));
+	CHECK (findings != NULL &&
+	       gtk_widget_is_ancestor (named (page, "findings-list"), findings) &&
+	       gtk_widget_is_ancestor (named (page, "health-list"), findings) &&
+	       gtk_widget_is_ancestor (named (page, "health-again"), findings) &&
+	       gtk_widget_is_ancestor (named (page, "health-summary"), findings) &&
+	       fs_simviz_find_label (findings, "From events") != NULL &&
+	       fs_simviz_find_label (findings, "From the policy") != NULL,
+	       "layout: one Findings card holds both lists, as two labelled "
+	       "groups");
+
+	for (guint i = 0; i < G_N_ELEMENTS (tiles); i++) {
+		GtkWidget *row = glance != NULL ? named (glance, tiles[i]) : NULL;
+		gchar *vn = g_strdup_printf ("%s-value", tiles[i]);
+		gchar *nn = g_strdup_printf ("%s-note", tiles[i]);
+		GtkWidget *v = row != NULL ? named (row, vn) : NULL;
+		GtkWidget *note = row != NULL ? named (row, nn) : NULL;
+
+		if (v != NULL && GTK_IS_LABEL (v) && note != NULL &&
+		    GTK_IS_LABEL (note) &&
+		    g_ascii_isdigit (*gtk_label_get_text (GTK_LABEL (v))) &&
+		    *gtk_label_get_text (GTK_LABEL (note)) != '\0')
+			kept++;
+		g_free (vn);
+		g_free (nn);
+	}
+	CHECK (glance != NULL && side != NULL &&
+	       gtk_widget_is_ancestor (glance, side) &&
+	       kept == G_N_ELEMENTS (tiles),
+	       "layout: At a glance, in the side column, keeps the four "
+	       "figures by name, each with a value and a note (%u of 4)", kept);
+	{
+		GtkWidget *v = named (page, "tile-blocks-value");
+
+		CHECK (v != NULL && tile_value (page, "tile-blocks") == 0 &&
+		       has_class (v, "zero") && !has_class (v, "bad") &&
+		       !has_class (v, "warn"),
+		       "layout: a figure of zero is drawn calm");
+	}
+
+	/* Two columns while there is room... */
+	if (main_col != NULL && side != NULL) {
+		gtk_widget_get_allocation (main_col, &m);
+		gtk_widget_get_allocation (side, &sd);
+	}
+	CHECK (main_col != NULL && side != NULL && sd.x >= m.x + m.width &&
+	       sd.y == m.y && sd.width == 300 && m.width > 2 * sd.width,
+	       "layout: two columns at 992 px, the side one 300 px wide and "
+	       "level with the main one (main %d+%d, side %d+%d)",
+	       m.x, m.width, sd.x, sd.width);
+	/* ...and stacked when there is not: the figures on top, and
+	 * nothing wider than the page. */
+	gtk_window_resize (GTK_WINDOW (top), 800, 900);
+	pump (250);
+	if (main_col != NULL && side != NULL) {
+		gtk_widget_get_allocation (main_col, &m);
+		gtk_widget_get_allocation (side, &sd);
+	}
+	CHECK (main_col != NULL && side != NULL && sd.x == m.x &&
+	       sd.width == m.width && sd.y + sd.height <= m.y &&
+	       m.width <= 800 - 48,
+	       "layout: under 860 px the columns stack, the side one on top "
+	       "(main %d,%d %d wide, side %d,%d %d wide)",
+	       m.x, m.y, m.width, sd.x, sd.y, sd.width);
+	gtk_window_resize (GTK_WINDOW (top), 1040, 900);
+	pump (250);
+}
+
 /* The empty states, on a Copilot that has seen nothing, then one that
  * has seen events and found nothing. */
 static void
@@ -1369,6 +1514,11 @@ test_page_empty (FsPolicy *policy, FsCopilot *copilot)
 	       text_of (page, "findings-reason"));
 	CHECK (!shown (page, "findings-list"),
 	       "page: no empty list is drawn");
+	CHECK (shown (page, "findings-open-events") &&
+	       gtk_widget_is_ancestor (named (page, "findings-open-events"),
+	                               named (page, "findings-empty")),
+	       "page: the empty state offers its one action, Open Events");
+	test_page_layout (page, top);
 	shoot_widget (page, "copilot-empty");
 	gtk_widget_destroy (top);
 	fs_copilot_free (fresh);
@@ -1430,8 +1580,10 @@ test_page (FsPolicy *policy, FsCopilot *copilot)
 		       "counted rows %u, notes %u)",
 		       tile_value (page, "tile-health"), n, notes);
 		CHECK (notes == 0 ||
-		       strstr (text_of (page, "tile-health-note"), "below") != NULL,
-		       "page: the tile's note says the notes are below (\"%s\")",
+		       strstr (text_of (page, "tile-health-note"), "in Findings")
+		       != NULL,
+		       "page: the figure's note says the notes are listed in "
+		       "Findings (\"%s\")",
 		       text_of (page, "tile-health-note"));
 	}
 	/* Needs attention counts the Critical health rows too: a Critical
@@ -1459,6 +1611,10 @@ test_page (FsPolicy *policy, FsCopilot *copilot)
 	       "(\"%s\")", row != NULL ? text_of (row, "cp-health-nofix") : "");
 	CHECK (row != NULL && fs_simviz_find_label (row, "Critical") != NULL,
 	       "page: a health row's pill says its severity in a word");
+	CHECK (has_class (row, "sev-bad") && !has_class (row, "sev-warn") &&
+	       !has_class (row, "sev-info"),
+	       "page: a Critical health row carries the class of its "
+	       "severity's edge");
 
 	/* One row left: the narrowing is verified now. */
 	{
@@ -1475,6 +1631,12 @@ test_page (FsPolicy *policy, FsCopilot *copilot)
 	       "page: the tile follows the check (tile %u, rows %u)",
 	       tile_value (page, "tile-health"), n);
 	row = row_with (page, "health-list", "RDP (3389)");
+	CHECK (row != NULL && has_class (named (row, "cp-health-fix"),
+	                                 "btn-primary") &&
+	       has_class (named (row, "cp-health-rule"), "btn-subtle") &&
+	       !has_class (named (row, "cp-health-rule"), "btn-primary"),
+	       "page: the fix is the row's one primary button, the rest are "
+	       "subtle");
 	CHECK (row != NULL && named (row, "cp-health-fix") != NULL,
 	       "page: a verified narrowing gets a Fix button");
 	CHECK (row != NULL &&
@@ -1575,6 +1737,11 @@ test_page (FsPolicy *policy, FsCopilot *copilot)
 			 fs_simviz_find_label (pill, "Info") != NULL);
 
 		CHECK (word, "page: row %u has a severity pill with a word", i);
+		CHECK (pill != NULL && !has_class (pill, "fs-wi-badge") &&
+		       (has_class (pill, "bad") || has_class (pill, "warn") ||
+		        has_class (pill, "info")),
+		       "page: row %u's severity is plain coloured text, not a "
+		       "boxed badge", i);
 		CHECK (acc != NULL && (g_str_has_prefix (acc, "Critical: ") ||
 		                       g_str_has_prefix (acc, "Warning: ") ||
 		                       g_str_has_prefix (acc, "Info: ")),
@@ -1601,6 +1768,11 @@ test_page (FsPolicy *policy, FsCopilot *copilot)
 	}
 
 	row = row_with (page, "findings-list", "near-fixed interval");
+	CHECK (has_class (row, "sev-warn") && !has_class (row, "sev-bad") &&
+	       has_class (row_with (page, "findings-list", "smoke list"),
+	                  "sev-info"),
+	       "page: a finding row carries the class of its severity's "
+	       "edge (Warning, Info)");
 	rev = row != NULL ? named (row, "cp-drawer") : NULL;
 	CHECK (rev != NULL &&
 	       !gtk_revealer_get_reveal_child (GTK_REVEALER (rev)),
@@ -1619,6 +1791,34 @@ test_page (FsPolicy *policy, FsCopilot *copilot)
 	       != NULL,
 	       "page: why, could be harmless, and what Sentinel did (\"%s\")",
 	       row != NULL ? text_of (row, "cp-autoblock-status") : "");
+
+	/* The evidence table must not set the page's least width: with a
+	 * drawer open the page still fits the 900 px the default window
+	 * leaves it, and the two columns that can be long give way. */
+	{
+		GtkWidget *ev = row != NULL ? named (row, "cp-evidence") : NULL;
+		GtkWidget *remote = ev != NULL
+			? gtk_grid_get_child_at (GTK_GRID (ev), 2, 1) : NULL;
+		GtkWidget *verdict = ev != NULL
+			? gtk_grid_get_child_at (GTK_GRID (ev), 5, 1) : NULL;
+		gchar *tip = remote != NULL
+			? gtk_widget_get_tooltip_text (remote) : NULL;
+		gint min = 0;
+
+		gtk_widget_get_preferred_width (page, &min, NULL);
+		CHECK (min > 0 && min <= 900,
+		       "page: with a drawer open the page still fits 900 px "
+		       "(needs %d)", min);
+		CHECK (remote != NULL && verdict != NULL &&
+		       gtk_label_get_ellipsize (GTK_LABEL (remote))
+		       == PANGO_ELLIPSIZE_END &&
+		       gtk_label_get_ellipsize (GTK_LABEL (verdict))
+		       == PANGO_ELLIPSIZE_END &&
+		       g_strcmp0 (tip, "5.5.5.5") == 0,
+		       "page: a long address or verdict is cut with an ellipsis "
+		       "and kept whole in a tooltip");
+		g_free (tip);
+	}
 
 	/* The drawer's text is for reading and copying: selectable, and a
 	 * click inside it does not close the drawer. */
