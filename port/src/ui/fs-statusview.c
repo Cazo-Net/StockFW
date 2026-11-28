@@ -1254,7 +1254,8 @@ update_traffic_labels (void)
 
 /* [ traffic_sample ]
  * One reading of the counters: `received' and `sent' are the bytes the
- * real adapters moved since the reading before. */
+ * real adapters moved since the reading before (the virtual ones',
+ * where no real adapter is up: refresh_network). */
 static void
 traffic_sample (gint64 now, guint64 received, guint64 sent)
 {
@@ -1530,6 +1531,7 @@ adapter_row (const FsIfaceStat *stat)
 	GtkWidget *tile = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
 	GtkWidget *text = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
 	GtkWidget *nums = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+	GtkWidget *line = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
 	gboolean wireless = g_strcmp0 (stat->kind, "Wireless") == 0;
 	gchar *name;
 	GtkWidget *label;
@@ -1543,21 +1545,27 @@ adapter_row (const FsIfaceStat *stat)
 	                    TRUE, TRUE, 0);
 	gtk_box_pack_start (GTK_BOX (row), tile, FALSE, FALSE, 0);
 
-	if (stat->kind != NULL && *stat->kind != '\0') {
-		gchar *weak = fs_theme_hex ("fs_text_weak", "#a8a4a4");
-
-		name = g_markup_printf_escaped ("<b>%s</b><span foreground=\"%s\">"
-		                                DOT "%s%s</span>",
-		                                stat->device, weak, stat->kind,
-		                                stat->up ? "" : _(" (down)"));
-		g_free (weak);
-	} else
-		name = g_markup_printf_escaped ("<b>%s</b>", stat->device);
+	/* The name, then the kind in the secondary ink.  The kind is a
+	 * label of its own so that its colour is the stylesheet's
+	 * (.adapter-kind): a colour written into the name's markup would
+	 * stay the other palette's after a Dark mode switch, for as long
+	 * as the row is kept. */
+	name = g_markup_printf_escaped ("<b>%s</b>", stat->device);
 	label = label_new (NULL, "adapter-name", 0.0);
 	gtk_label_set_markup (GTK_LABEL (label), name);
 	gtk_label_set_ellipsize (GTK_LABEL (label), PANGO_ELLIPSIZE_END);
-	gtk_box_pack_start (GTK_BOX (text), label, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (line), label, FALSE, FALSE, 0);
 	g_free (name);
+	if (stat->kind != NULL && *stat->kind != '\0') {
+		name = g_strdup_printf (DOT "%s%s", stat->kind,
+		                        stat->up ? "" : _(" (down)"));
+		label = label_new (name, "adapter-name", 0.0);
+		add_class (label, "adapter-kind");
+		gtk_label_set_ellipsize (GTK_LABEL (label), PANGO_ELLIPSIZE_END);
+		gtk_box_pack_start (GTK_BOX (line), label, TRUE, TRUE, 0);
+		g_free (name);
+	}
+	gtk_box_pack_start (GTK_BOX (text), line, FALSE, FALSE, 0);
 
 	label = label_new (stat->ip != NULL ? stat->ip : _("No IPv4 address"),
 	                   stat->ip != NULL ? "mono" : "muted", 0.0);
@@ -1622,6 +1630,9 @@ refresh_network (void)
 	guint hidden = 0, shown = 0;
 	guint64 total_rate = 0, total_rx = 0, total_tx = 0;
 	guint64 moved_rx = 0, moved_tx = 0;
+	guint64 soft_rate = 0, soft_rx = 0, soft_tx = 0;
+	guint64 soft_moved_rx = 0, soft_moved_tx = 0;
+	guint real_up = 0;
 	const FsIfaceStat *primary = NULL;
 	guint64 primary_bytes = 0;
 
@@ -1686,6 +1697,15 @@ refresh_network (void)
 
 		if (adapter_is_virtual (stat)) {
 			hidden++;
+			/* Kept aside for a computer with no real adapter
+			 * up (below).  Loopback never left the machine. */
+			if (g_strcmp0 (stat->kind, "Loopback") != 0) {
+				soft_rate += rate;
+				soft_rx += stat->received;
+				soft_tx += stat->sent;
+				soft_moved_rx += dr;
+				soft_moved_tx += ds;
+			}
 			if (!show_virtual)
 				continue;
 		} else {
@@ -1697,6 +1717,8 @@ refresh_network (void)
 			total_tx += stat->sent;
 			moved_rx += dr;
 			moved_tx += ds;
+			if (stat->up)
+				real_up++;
 
 			if (stat->ip != NULL && stat->up &&
 			    stat->received + stat->sent >= primary_bytes) {
@@ -1730,6 +1752,19 @@ refresh_network (void)
 	g_list_free (rows);
 
 	gtk_widget_show_all (adapters_list);
+
+	/* No real adapter is up: a container, whose only adapter is one
+	 * end of a veth pair, or a computer on a PPP or tunnel link alone.
+	 * What the software adapters carry is then all there is, with no
+	 * real adapter for it to be counted through a second time; leaving
+	 * it out would draw a measured-looking 0 B/s under traffic. */
+	if (real_up == 0) {
+		total_rate += soft_rate;
+		total_rx += soft_rx;
+		total_tx += soft_tx;
+		moved_rx += soft_moved_rx;
+		moved_tx += soft_moved_tx;
+	}
 
 	traffic_sample (now, moved_rx, moved_tx);
 
@@ -2083,9 +2118,11 @@ refresh_connections (void)
 
 	for (l = conns; l != NULL; l = l->next) {
 		FsConnection *c = l->data;
-		gboolean inbound = g_strcmp0 (c->direction, "Inbound") == 0;
-		const gchar *remote = inbound ? c->source : c->destination;
-		const gchar *here = inbound ? c->destination : c->source;
+		/* Both backends put this computer's end in `source' and
+		 * the other computer's in `destination', whichever side
+		 * opened the connection. */
+		const gchar *remote = c->destination;
+		const gchar *here = c->source;
 		gboolean is_local = fs_util_is_loopback_address (c->source) &&
 		                    fs_util_is_loopback_address (c->destination);
 		gchar *local_end = NULL;

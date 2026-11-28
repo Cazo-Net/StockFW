@@ -7,12 +7,17 @@
  * fs_drawer_open () and names itself as the owner, so it can tell
  * later whether what is showing is still its own.
  *
- * The window closes it on Escape and when the page is switched.  The
- * keyboard stays where it was when the drawer opens (in the list); Tab
- * reaches the drawer's buttons after the page's own controls, and a
+ * The window closes it on Escape, when the page is switched, and when
+ * the keyboard goes to a control of the page that is wholly under it.
+ * The keyboard stays where it was when the drawer opens (in the list);
+ * Tab reaches the drawer's buttons after the page's own controls, and a
  * close gives the keyboard back to the list if it was left on one of
- * them.  The panel is 380 pixels wide whatever is put in it: labels in
- * a body should wrap (fs_drawer_field's do). */
+ * them (to the control nearest the list, if the list cannot take it
+ * any more: the window is never left without a focus widget).  The
+ * body is a stop for Tab only while it is longer than the panel; Page
+ * Up and Page Down scroll it then.  The panel is 380 pixels wide
+ * whatever is put in it: labels in a body should wrap
+ * (fs_drawer_field's do). */
 #ifndef FS_DRAWER_H
 #define FS_DRAWER_H
 

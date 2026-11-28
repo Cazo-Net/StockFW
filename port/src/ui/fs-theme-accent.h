@@ -99,9 +99,9 @@ static const gchar fs_theme_comfortable_css[] =
 	"	padding-bottom: 8px;\n"
 	"}\n"
 	/* The Overview's rows. */
-	".recent-row {\n"
-	"	padding-top: 10px;\n"
-	"	padding-bottom: 10px;\n"
+	"button.recent-row {\n"
+	"	padding-top: 9px;\n"
+	"	padding-bottom: 9px;\n"
 	"}\n"
 	".profile-row {\n"
 	"	padding-top: 9px;\n"

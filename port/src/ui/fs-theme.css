@@ -1282,6 +1282,11 @@ button.nav-item label.fs-kbd {
 	background-color: transparent;
 	border: none;
 }
+/* The body takes the keyboard only while it scrolls (fs-drawer.c); a
+ * hairline around it in the accent says where Page Down will act. */
+.fs-drawer scrolledwindow:focus {
+	box-shadow: inset 0 0 0 1px @fs_accent_fill;
+}
 .fs-drawer-head {
 	padding: 14px 12px 14px 16px;
 	border-bottom: 1px solid @fs_border;
@@ -1413,6 +1418,21 @@ button.power-button {
 	border-left: 1px solid @fs_border;
 	padding-left: 16px;
 }
+/* The Threat Intel page's status card (ui/fs-intelview.c) is built from
+ * the same classes, without the board's two inner boxes: it keeps its
+ * own padding, its larger title and its four boxed facts. */
+#intel-hero {
+	padding: 16px;
+}
+#intel-hero .hero-title {
+	font-size: 16px;
+}
+#intel-hero .hero-tile {
+	background-color: @fs_bg;
+	border: 1px solid @fs_border;
+	border-radius: 6px;
+	padding: 8px 12px;
+}
 .tile-caption {
 	color: @fs_text_weak;
 	font-size: 11px;
@@ -1500,6 +1520,10 @@ button.power-button {
 	font-size: 13px;
 	font-weight: 600;
 	color: @fs_text_strong;
+}
+/* An adapter's kind, on the line of its name (.adapter-name too). */
+.adapter-kind {
+	color: @fs_text_weak;
 }
 .adapter-num {
 	font-size: 12px;

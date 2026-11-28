@@ -16,7 +16,14 @@
  * connections that are open, and its dashes run the way those
  * connections were opened, every line at the same speed: the page
  * measures no rates and its legend says that.  With GTK animations
- * switched off nothing moves, and arrowheads carry the direction.
+ * switched off nothing moves, and arrowheads carry the direction.  A
+ * line whose connections were opened both ways never moves: it has an
+ * arrowhead at each end, and the node's tooltip and details count the
+ * two kinds.
+ *
+ * A click on a node opens its details in the window's drawer.  While
+ * they are open the diagram is laid out in the width the drawer leaves,
+ * and the details are kept up to date with the diagram.
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-topology.h"
@@ -44,6 +51,7 @@
 #define MAX_BLOCKED_DRAWN  4
 #define MAX_BLOCKED_KEPT   32
 #define DRAWER_ROWS        20
+#define DRAWER_GAP         12        /* between the page and the open drawer */
 
 /* Every line's dashes travel at this speed, whatever it carries. */
 #define FLOW_SPEED         26.0      /* pixels a second                 */
@@ -122,6 +130,8 @@ typedef struct
 	gchar   *detail;
 	gchar   *key;         /* program name or blocked address, or NULL */
 	guint    count;       /* open connections; blocks for NODE_BLOCKED */
+	guint    inbound;     /* of the open connections: opened from
+	                       * outside                                   */
 	guint    programs;    /* behind NODE_OTHER, NODE_LAN and NODE_NET  */
 	gdouble  x, y, w, h;  /* set by layout ()                          */
 } TopoNode;
@@ -132,7 +142,8 @@ typedef struct
 	guint    node;        /* the other end                             */
 	gboolean left;        /* it is a program, left of This computer    */
 	guint    count;
-	gboolean reverse;     /* carries only inbound connections          */
+	FsTopologyFlow flow;  /* which way its open connections were
+	                       * opened; NONE for a blocked line           */
 	gboolean blocked;
 	gboolean inbound;     /* blocked: it was on its way in             */
 	gdouble  port_y;      /* where it meets This computer              */
@@ -142,6 +153,10 @@ static GPtrArray *conns = NULL;         /* TopoConn*                   */
 static gboolean   conns_known = TRUE;   /* FALSE: the backend cannot   */
 static guint      conns_inside = 0;     /* loopback to loopback        */
 static GPtrArray *blocks = NULL;        /* TopoBlock*, newest first    */
+static gint64     blocks_dropped_us = 0; /* the last block of the newest
+                                         * address the cap pushed out;
+                                         * 0 when none is inside the
+                                         * window                      */
 static GArray    *tallies = NULL;       /* Tally, busiest first        */
 static guint      n_named = 0;          /* tallies with a node each    */
 
@@ -155,6 +170,8 @@ static gdouble    flow_x1 = 0.0;        /* between the side columns    */
 /* ---- the page ------------------------------------------------------ */
 
 static GtkWidget    *page = NULL;
+static GtkWidget    *top_bar = NULL;       /* the switch and the caption */
+static GtkWidget    *diagram_card = NULL;  /* diagram or table, and legend */
 static GtkWidget    *drawing_area = NULL;
 static GtkWidget    *stack = NULL;
 static GtkWidget    *table_toggle = NULL;
@@ -186,7 +203,9 @@ static gdouble    pointer_x = 0.0, pointer_y = 0.0;
 static gint       drawer_owner = 0;
 static NodeKind   drawer_kind = NODE_SELF;
 static gchar     *drawer_key = NULL;
+static gchar     *drawer_text = NULL;      /* what the drawer says */
 static gboolean   drawer_marked = FALSE;   /* as last painted */
+static gdouble    drawn_width = 0.0;       /* laid out in, as last painted */
 
 enum
 {
@@ -201,6 +220,7 @@ enum
 
 static void sync_widgets (void);
 static void anim_sync (void);
+static void refresh_drawer (void);
 
 /* ------------------------------------------------------------ helpers */
 
@@ -504,7 +524,17 @@ hit_inbound (const FsHit *hit)
 	        g_ascii_strcasecmp (hit->direction, "Inbound") == 0);
 }
 
-/* Drops the blocks older than the window.  TRUE when any went. */
+/* TRUE while the cap has pushed out an address whose last block is
+ * still inside the window: more addresses were blocked in it than are
+ * remembered, and what counts them must say "more than". */
+static gboolean
+blocks_capped (void)
+{
+	return blocks_dropped_us != 0;
+}
+
+/* Drops the blocks older than the window.  TRUE when any went, or when
+ * the count stopped being short of the truth. */
 static gboolean
 expire_blocks (gint64 now_us)
 {
@@ -521,6 +551,15 @@ expire_blocks (gint64 now_us)
 			g_ptr_array_remove_index (blocks, i);
 			changed = TRUE;
 		}
+	}
+
+	/* The address the cap pushed out was blocked before every one that
+	 * was kept, so it leaves the window no later than they do. */
+	if (blocks_dropped_us != 0 &&
+	    (now_us - blocks_dropped_us > BLOCK_WINDOW_US ||
+	     blocks->len < MAX_BLOCKED_KEPT)) {
+		blocks_dropped_us = 0;
+		changed = TRUE;
 	}
 	return changed;
 }
@@ -583,6 +622,14 @@ fs_topology_note_hit_at (const FsHit *hit, gint64 now_us)
 		b->first_us = now_us;
 		b->first_wall = g_get_real_time () / G_USEC_PER_SEC;
 		g_ptr_array_insert (blocks, 0, b);
+		/* The cap is on memory, not on the truth: what it pushes out
+		 * was blocked inside the window all the same, and the counts
+		 * say "more than" until that block is ten minutes old. */
+		for (i = MAX_BLOCKED_KEPT; i < blocks->len; i++) {
+			const TopoBlock *gone = g_ptr_array_index (blocks, i);
+
+			blocks_dropped_us = MAX (blocks_dropped_us, gone->last_us);
+		}
 		if (blocks->len > MAX_BLOCKED_KEPT)
 			g_ptr_array_set_size (blocks, MAX_BLOCKED_KEPT);
 	}
@@ -619,7 +666,7 @@ fs_topology_expire (gint64 now_us)
 
 static TopoNode *
 node_add (NodeKind kind, const gchar *title, gchar *detail,
-          const gchar *key, guint count)
+          const gchar *key, guint count, guint inbound)
 {
 	TopoNode *n = g_new0 (TopoNode, 1);
 
@@ -628,21 +675,47 @@ node_add (NodeKind kind, const gchar *title, gchar *detail,
 	n->detail = detail;               /* taken */
 	n->key = g_strdup (key);
 	n->count = count;
+	n->inbound = inbound;
 	g_ptr_array_add (nodes, n);
 	return n;
 }
 
+/* Which way `count' open connections were opened when `inbound' of them
+ * came from outside.  One connection the other way is enough to make a
+ * line mixed: a line drawn as outbound must carry nothing inbound. */
+static FsTopologyFlow
+flow_of (guint count, guint inbound)
+{
+	if (inbound == 0)
+		return FS_TOPOLOGY_FLOW_OUTBOUND;
+	return inbound >= count ? FS_TOPOLOGY_FLOW_INBOUND
+	                        : FS_TOPOLOGY_FLOW_MIXED;
+}
+
+/* The line of the node added last: open connections, `inbound' of them
+ * opened from outside. */
 static void
-link_add (guint node, gboolean left, guint count, gboolean reverse,
-          gboolean blocked, gboolean inbound)
+link_add_open (gboolean left, guint count, guint inbound)
 {
 	TopoLink *l = g_new0 (TopoLink, 1);
 
-	l->node = node;
+	l->node = nodes->len - 1;
 	l->left = left;
 	l->count = count;
-	l->reverse = reverse;
-	l->blocked = blocked;
+	l->flow = flow_of (count, inbound);
+	g_ptr_array_add (links, l);
+}
+
+/* The line of the node added last: a blocked address. */
+static void
+link_add_blocked (guint count, gboolean inbound)
+{
+	TopoLink *l = g_new0 (TopoLink, 1);
+
+	l->node = nodes->len - 1;
+	l->count = count;
+	l->flow = FS_TOPOLOGY_FLOW_NONE;
+	l->blocked = TRUE;
 	l->inbound = inbound;
 	g_ptr_array_add (links, l);
 }
@@ -671,6 +744,7 @@ rebuild_model (void)
 	NodeKind focus_kind = NODE_SELF;
 	gchar *focus_key = NULL;
 	guint zone_count[2] = { 0, 0 }, zone_in[2] = { 0, 0 };
+	TopoNode *self;
 	guint i;
 
 	ensure_data ();
@@ -691,8 +765,8 @@ rebuild_model (void)
 	nodes = g_ptr_array_new_with_free_func (node_free);
 	links = g_ptr_array_new_with_free_func (g_free);
 
-	node_add (NODE_SELF, _("This computer"), g_strdup (g_get_host_name ()),
-	          NULL, conns->len);
+	self = node_add (NODE_SELF, _("This computer"),
+	                 g_strdup (g_get_host_name ()), NULL, conns->len, 0);
 
 	/* Programs, busiest first.  Five get a node each and the rest are
 	 * merged, unless the rest is one program: then its own name says
@@ -705,9 +779,8 @@ rebuild_model (void)
 		gchar *title = short_name (t->name);
 
 		node_add (NODE_PROGRAM, title, connections_text (t->count),
-		          t->name, t->count);
-		link_add (nodes->len - 1, TRUE, t->count,
-		          t->inbound == t->count, FALSE, FALSE);
+		          t->name, t->count, t->inbound);
+		link_add_open (TRUE, t->count, t->inbound);
 		g_free (title);
 	}
 
@@ -725,10 +798,10 @@ rebuild_model (void)
 		a = connections_text (count);
 		b = programs_text (n_rest);
 		n = node_add (NODE_OTHER, _("Other programs"),
-		              g_strdup_printf (_("%s from %s"), a, b), NULL, count);
+		              g_strdup_printf (_("%s from %s"), a, b), NULL, count,
+		              inbound);
 		n->programs = n_rest;
-		link_add (nodes->len - 1, TRUE, count, inbound == count,
-		          FALSE, FALSE);
+		link_add_open (TRUE, count, inbound);
 		g_free (a);
 		g_free (b);
 	}
@@ -742,6 +815,7 @@ rebuild_model (void)
 		if (c->inbound)
 			zone_in[z]++;
 	}
+	self->inbound = zone_in[0] + zone_in[1];
 	for (i = 0; i < 2; i++) {
 		GArray *who;
 		TopoNode *n;
@@ -752,10 +826,9 @@ rebuild_model (void)
 		n = node_add (i == 0 ? NODE_LAN : NODE_NET,
 		              i == 0 ? _("Local network") : _("Internet"),
 		              connections_text (zone_count[i]), NULL,
-		              zone_count[i]);
+		              zone_count[i], zone_in[i]);
 		n->programs = who->len;
-		link_add (nodes->len - 1, FALSE, zone_count[i],
-		          zone_in[i] == zone_count[i], FALSE, FALSE);
+		link_add_open (FALSE, zone_count[i], zone_in[i]);
 		g_array_unref (who);
 	}
 
@@ -767,9 +840,8 @@ rebuild_model (void)
 
 		node_add (NODE_BLOCKED, b->remote,
 		          g_strconcat (what, DOT, times, NULL), b->remote,
-		          b->count);
-		link_add (nodes->len - 1, FALSE, b->count, FALSE, TRUE,
-		          b->inbound);
+		          b->count, 0);
+		link_add_blocked (b->count, b->inbound);
 		g_free (what);
 		g_free (times);
 	}
@@ -897,6 +969,21 @@ guint
 fs_topology_blocked_count (void)
 {
 	return blocks != NULL ? blocks->len : 0;
+}
+
+FsTopologyFlow
+fs_topology_node_flow (guint index)
+{
+	guint i;
+
+	ensure_model ();
+	for (i = 0; i < links->len; i++) {
+		const TopoLink *l = g_ptr_array_index (links, i);
+
+		if (l->node == index)
+			return l->flow;
+	}
+	return FS_TOPOLOGY_FLOW_NONE;
 }
 
 /* What stands where the programs would be when there are none. */
@@ -1101,6 +1188,30 @@ layout (gdouble width, gdouble height)
 	}
 }
 
+/* The width to lay the diagram out in when its area is `width' wide.
+ * The details panel lies over the right of the page; while it shows one
+ * of this page's nodes, the diagram keeps to what is left of it, so the
+ * node just opened and its neighbours stay in view and can be clicked.
+ * Never less than the diagram's smallest width: in a window too narrow
+ * for both, the right column goes under the panel as before.  The draw
+ * handler and the hit test both ask here, so they cannot disagree. */
+static gdouble
+diagram_width (gdouble width)
+{
+	GtkWidget *drawer;
+	gint x = 0;
+
+	if (drawing_area == NULL || fs_drawer_owner () != &drawer_owner)
+		return width;
+
+	drawer = fs_drawer_widget ();
+	if (!gtk_widget_get_mapped (drawer) ||
+	    !gtk_widget_translate_coordinates (drawer, drawing_area, 0, 0,
+	                                       &x, NULL))
+		return width;
+	return MIN (width, MAX ((gdouble) x, (gdouble) MIN_W));
+}
+
 static void
 layout_for_area (void)
 {
@@ -1108,7 +1219,7 @@ layout_for_area (void)
 
 	if (drawing_area != NULL &&
 	    gtk_widget_get_allocated_width (drawing_area) > 1) {
-		w = gtk_widget_get_allocated_width (drawing_area);
+		w = diagram_width (gtk_widget_get_allocated_width (drawing_area));
 		h = gtk_widget_get_allocated_height (drawing_area);
 	}
 	layout (w, h);
@@ -1126,6 +1237,12 @@ node_at (gdouble x, gdouble y)
 			return (gint) i;
 	}
 	return -1;
+}
+
+gint
+fs_topology_diagram_width (void)
+{
+	return (gint) drawn_width;
 }
 
 gboolean
@@ -1307,52 +1424,52 @@ arrowhead (cairo_t *cr, gdouble x, gdouble y, gdouble dir, gdouble size)
 	cairo_fill (cr);
 }
 
+/* Where a line starts and ends, and which way it is heading at its
+ * end: 1 for rightwards, -1 for leftwards. */
+typedef struct
+{
+	gdouble x0, y0, x1, y1, dir;
+} Trace;
+
 /* [ trace_open ] -- the path of a line that carries open connections,
- * from where they were opened to where they lead.  Sets where it ends
- * and which way it is heading there. */
+ * from where they were opened to where they lead.  A line that carries
+ * both kinds is traced as an outbound one; it is drawn with no
+ * direction (draw_open_link). */
 static void
-trace_open (cairo_t *cr, const TopoLink *l, gdouble *end_x, gdouble *end_y,
-            gdouble *dir)
+trace_open (cairo_t *cr, const TopoLink *l, Trace *t)
 {
 	const TopoNode *self = node_nth (0);
 	const TopoNode *other = node_nth (l->node);
+	gboolean reverse = l->flow == FS_TOPOLOGY_FLOW_INBOUND;
 	gdouble oy = floor (other->y + other->h / 2.0) + 0.5;
 	gdouble py = l->port_y;
 
 	if (l->left) {
 		gdouble ox = other->x + other->w, sx = self->x;
 
-		if (!l->reverse) {
+		if (!reverse) {
 			cairo_move_to (cr, ox, oy);
 			curve (cr, ox, oy, sx, py);
-			*end_x = sx;
-			*end_y = py;
-			*dir = 1.0;
+			*t = (Trace) { ox, oy, sx, py, 1.0 };
 		} else {
 			cairo_move_to (cr, sx, py);
 			curve (cr, sx, py, ox, oy);
-			*end_x = ox;
-			*end_y = oy;
-			*dir = -1.0;
+			*t = (Trace) { sx, py, ox, oy, -1.0 };
 		}
 	} else {
 		gdouble ox = other->x, sx = self->x + self->w;
 		gdouble wx = wall_x + WALL_W;
 
-		if (!l->reverse) {
+		if (!reverse) {
 			cairo_move_to (cr, sx, py);
 			cairo_line_to (cr, wx, py);
 			curve (cr, wx, py, ox, oy);
-			*end_x = ox;
-			*end_y = oy;
-			*dir = 1.0;
+			*t = (Trace) { sx, py, ox, oy, 1.0 };
 		} else {
 			cairo_move_to (cr, ox, oy);
 			curve (cr, ox, oy, wx, py);
 			cairo_line_to (cr, sx, py);
-			*end_x = sx;
-			*end_y = py;
-			*dir = -1.0;
+			*t = (Trace) { ox, oy, sx, py, -1.0 };
 		}
 	}
 }
@@ -1369,21 +1486,27 @@ draw_open_link (cairo_t *cr, const TopoLink *l, const Palette *p,
                 gboolean moving)
 {
 	static const double dashes[2] = { 6.0, 10.0 };
+	gboolean both = l->flow == FS_TOPOLOGY_FLOW_MIXED;
 	gdouble lw = link_width (l->count);
-	gdouble ex = 0, ey = 0, dir = 1;
+	Trace t = { 0, 0, 0, 0, 1 };
+
+	/* Dashes that ran one way along a line that carries both kinds
+	 * would be wrong about some of them: such a line stands still. */
+	if (both)
+		moving = FALSE;
 
 	cairo_set_line_width (cr, lw);
 	cairo_set_line_cap (cr, CAIRO_LINE_CAP_BUTT);
 	cairo_set_dash (cr, NULL, 0, 0);
 
 	/* The line of the node under the pointer stands out a little. */
-	trace_open (cr, l, &ex, &ey, &dir);
+	trace_open (cr, l, &t);
 	ink (cr, &p->accent,
 	     (moving ? 0.30 : 0.70) + ((gint) l->node == hover_node ? 0.25 : 0.0));
 	cairo_stroke (cr);
 
 	if (moving) {
-		trace_open (cr, l, &ex, &ey, &dir);
+		trace_open (cr, l, &t);
 		cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
 		cairo_set_dash (cr, dashes, 2, dash_offset (16.0));
 		ink (cr, &p->accent, 0.95);
@@ -1391,7 +1514,9 @@ draw_open_link (cairo_t *cr, const TopoLink *l, const Palette *p,
 		cairo_set_dash (cr, NULL, 0, 0);
 	} else {
 		ink (cr, &p->accent, 1.0);
-		arrowhead (cr, ex, ey, dir, 7.0 + lw);
+		arrowhead (cr, t.x1, t.y1, t.dir, 7.0 + lw);
+		if (both)
+			arrowhead (cr, t.x0, t.y0, -t.dir, 7.0 + lw);
 	}
 }
 
@@ -1583,6 +1708,7 @@ on_draw (GtkWidget *widget, cairo_t *cr, gpointer data)
 {
 	gdouble width = gtk_widget_get_allocated_width (widget);
 	gdouble height = gtk_widget_get_allocated_height (widget);
+	gdouble laid;
 	gboolean moving = animations_enabled ();
 	gboolean ring = gtk_widget_has_visible_focus (widget);
 	GdkRectangle clip = { 0, 0, (gint) width, (gint) height };
@@ -1595,9 +1721,17 @@ on_draw (GtkWidget *widget, cairo_t *cr, gpointer data)
 		return FALSE;
 
 	palette_read (&p);
-	layout (width, height);
 	if (!gdk_cairo_get_clip_rectangle (cr, &clip))
 		return FALSE;
+
+	/* A frame of the animation repaints the middle strip only.  When
+	 * the drawer has moved since the last one, every node stands
+	 * somewhere else: the rest is painted in the next frame. */
+	laid = diagram_width (width);
+	if (laid != drawn_width && clip.width < (gint) width)
+		gtk_widget_queue_draw (widget);
+	drawn_width = laid;
+	layout (laid, height);
 
 	drawer_marked = fs_drawer_owner () == &drawer_owner;
 
@@ -1690,10 +1824,13 @@ on_tick (GtkWidget *widget, GdkFrameClock *clock, gpointer data)
 	 * side columns are left as they were painted. */
 	if (now - tick_drawn_us >= FRAME_US) {
 		gboolean marked = fs_drawer_owner () == &drawer_owner;
+		gdouble width = diagram_width (
+			gtk_widget_get_allocated_width (widget));
 
 		tick_drawn_us = now;
-		if (marked != drawer_marked)
-			gtk_widget_queue_draw (widget);   /* the drawer closed */
+		/* The drawer closed, or is sliding: every node moves. */
+		if (marked != drawer_marked || width != drawn_width)
+			gtk_widget_queue_draw (widget);
 		else if (flow_x1 > flow_x0)
 			gtk_widget_queue_draw_area (widget, (gint) flow_x0 - 2, 0,
 				(gint) (flow_x1 - flow_x0) + 4,
@@ -1704,15 +1841,30 @@ on_tick (GtkWidget *widget, GdkFrameClock *clock, gpointer data)
 	return G_SOURCE_CONTINUE;
 }
 
-/* The lines move only while the diagram is on screen, has lines, and
- * GTK animations are on.  A page that is not the current one, the
- * table view and a hidden window all unmap the diagram. */
+/* TRUE when the diagram has a line whose dashes travel: a blocked one,
+ * or one whose open connections were all opened the same way. */
+static gboolean
+lines_move (void)
+{
+	guint i;
+
+	for (i = 0; links != NULL && i < links->len; i++) {
+		const TopoLink *l = g_ptr_array_index (links, i);
+
+		if (l->blocked || l->flow != FS_TOPOLOGY_FLOW_MIXED)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+/* The lines move only while the diagram is on screen, has lines that
+ * move, and GTK animations are on.  A page that is not the current
+ * one, the table view and a hidden window all unmap the diagram. */
 static void
 anim_sync (void)
 {
 	gboolean want = drawing_area != NULL && area_mapped &&
-	                links != NULL && links->len > 0 &&
-	                animations_enabled ();
+	                lines_move () && animations_enabled ();
 
 	if (want && tick_id == 0) {
 		tick_origin_us = 0;
@@ -1838,6 +1990,29 @@ drawer_count (GtkWidget *fields, const gchar *name, guint n)
 	g_free (text);
 }
 
+/* "50 opened here, 1 opened from outside": the two kinds of connection
+ * behind a line drawn with an arrowhead at each end.  NULL when there
+ * is one kind only: then the line itself says which. */
+static gchar *
+split_text (guint count, guint inbound)
+{
+	if (inbound == 0 || inbound >= count)
+		return NULL;
+	return g_strdup_printf (_("%u opened here, %u opened from outside"),
+	                        count - inbound, inbound);
+}
+
+/* The same in a drawer, as a field of its own. */
+static void
+drawer_split (GtkWidget *fields, guint count, guint inbound)
+{
+	gchar *text = split_text (count, inbound);
+
+	if (text != NULL)
+		fs_drawer_field (fields, _("Direction"), text, FALSE);
+	g_free (text);
+}
+
 /* "HTTPS, port 443 . Outbound" */
 static gchar *
 conn_line (const TopoConn *c)
@@ -1865,7 +2040,7 @@ program_body (const gchar *program)
 	GtkWidget *body = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
 	GtkWidget *fields = fs_drawer_fields_new ();
 	GtkWidget *list = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
-	guint to_lan = 0, to_net = 0, shown = 0, total = 0, i;
+	guint to_lan = 0, to_net = 0, shown = 0, total = 0, inbound = 0, i;
 
 	for (i = 0; i < conns->len; i++) {
 		const TopoConn *c = g_ptr_array_index (conns, i);
@@ -1885,6 +2060,8 @@ program_body (const gchar *program)
 			continue;
 
 		total++;
+		if (c->inbound)
+			inbound++;
 		if (c->local)
 			to_lan++;
 		else
@@ -1905,6 +2082,7 @@ program_body (const gchar *program)
 	if (program != NULL)
 		fs_drawer_field (fields, _("Program"), program, FALSE);
 	drawer_count (fields, _("Open connections"), total);
+	drawer_split (fields, total, inbound);
 	if (to_lan > 0)
 		drawer_count (fields, _("To the local network"), to_lan);
 	if (to_net > 0)
@@ -1921,12 +2099,19 @@ program_body (const gchar *program)
 
 /* The programs that talk to the local network or to the internet. */
 static GtkWidget *
-zone_body (gboolean lan)
+zone_body (const TopoNode *n)
 {
 	GtkWidget *body = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
 	GtkWidget *list = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
-	GArray *who = tally_programs (lan ? 1 : 2);
+	GArray *who = tally_programs (n->kind == NODE_LAN ? 1 : 2);
 	guint i;
+
+	if (flow_of (n->count, n->inbound) == FS_TOPOLOGY_FLOW_MIXED) {
+		GtkWidget *fields = fs_drawer_fields_new ();
+
+		drawer_split (fields, n->count, n->inbound);
+		gtk_box_pack_start (GTK_BOX (body), fields, FALSE, FALSE, 0);
+	}
 
 	gtk_box_pack_start (GTK_BOX (body), fs_drawer_section (_("Programs")),
 	                    FALSE, FALSE, 0);
@@ -1944,7 +2129,7 @@ zone_body (gboolean lan)
 }
 
 static GtkWidget *
-self_body (void)
+self_body (const TopoNode *n)
 {
 	GtkWidget *body = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
 	GtkWidget *fields = fs_drawer_fields_new ();
@@ -1960,6 +2145,7 @@ self_body (void)
 	fs_drawer_field (fields, _("Name"), g_get_host_name (), FALSE);
 	if (conns_known) {
 		drawer_count (fields, _("Open connections"), conns->len);
+		drawer_split (fields, n->count, n->inbound);
 		drawer_count (fields, _("Programs"), tallies->len);
 		drawer_count (fields, _("To the local network"), to_lan);
 		drawer_count (fields, _("To the internet"), to_net);
@@ -1970,8 +2156,18 @@ self_body (void)
 		fs_drawer_field (fields, _("Open connections"),
 		                 _("Cannot be listed here"), FALSE);
 	}
-	drawer_count (fields, _("Addresses blocked in the last 10 minutes"),
-	              blocks->len);
+	if (blocks_capped ()) {
+		gchar *more = g_strdup_printf (_("More than %u"), blocks->len);
+
+		fs_drawer_field (fields,
+		                 _("Addresses blocked in the last 10 minutes"),
+		                 more, FALSE);
+		g_free (more);
+	} else {
+		drawer_count (fields,
+		              _("Addresses blocked in the last 10 minutes"),
+		              blocks->len);
+	}
 	gtk_box_pack_start (GTK_BOX (body), fields, FALSE, FALSE, 0);
 	return body;
 }
@@ -1997,24 +2193,23 @@ find_block (const gchar *remote)
 	return NULL;
 }
 
-static void
-open_blocked (const TopoBlock *b)
+/* One blocked address.  Sets the line under the drawer's title, to be
+ * freed. */
+static GtkWidget *
+blocked_body (const TopoBlock *b, gchar **subtitle)
 {
 	GtkWidget *body = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
 	GtkWidget *fields = fs_drawer_fields_new ();
 	gchar *what = block_what (b);
-	gchar *subtitle = g_strdup_printf (b->inbound ? _("Blocked inbound %s")
-	                                              : _("Blocked outbound %s"),
-	                                   what);
 	gchar *first = clock_text (b->first_wall);
 	gchar *last = clock_text (b->last_wall);
 	gchar *often = g_strdup_printf (
 		g_dngettext (NULL, "%u time, since %s", "%u times, since %s",
 		             b->count), b->count, first);
-	gchar *address = g_strdup (b->remote);
-	FsDrawerAction action = {
-		_("Show in Events"), "btn-primary", run_show_in_events, address
-	};
+
+	*subtitle = g_strdup_printf (b->inbound ? _("Blocked inbound %s")
+	                                        : _("Blocked outbound %s"),
+	                             what);
 
 	fs_drawer_field (fields, _("Remote address"), b->remote, TRUE);
 	fs_drawer_field (fields, _("Where it is"),
@@ -2032,42 +2227,152 @@ open_blocked (const TopoBlock *b)
 	fs_drawer_field (fields, _("Last blocked"), last, FALSE);
 	gtk_box_pack_start (GTK_BOX (body), fields, FALSE, FALSE, 0);
 
-	/* The action's data lives as long as the body it belongs to. */
-	g_object_set_data_full (G_OBJECT (body), "topology-address", address,
-	                        g_free);
-	fs_drawer_open (&drawer_owner, b->remote, subtitle, body, &action, 1);
-
 	g_free (what);
-	g_free (subtitle);
 	g_free (first);
 	g_free (last);
 	g_free (often);
+	return body;
 }
 
-gboolean
-fs_topology_activate_node (guint index)
+/* How much of the page's width the drawer lies over once it has slid
+ * in, while it shows one of this page's nodes; 0 otherwise, and where
+ * no window hosts the drawer. */
+static gint
+drawer_overlap (void)
 {
-	const TopoNode *n;
-	gchar *subtitle = NULL;
+	GtkWidget *drawer, *host, *panel;
+	gint panel_w = 0, right = 0;
 
-	ensure_model ();
-	if (index >= nodes->len)
-		return FALSE;
-	n = node_nth (index);
+	if (page == NULL || fs_drawer_owner () != &drawer_owner)
+		return 0;
+
+	drawer = fs_drawer_widget ();
+	host = gtk_widget_get_parent (drawer);
+	panel = gtk_bin_get_child (GTK_BIN (drawer));
+	if (host == NULL || panel == NULL ||
+	    !gtk_widget_translate_coordinates (page, host,
+			gtk_widget_get_allocated_width (page), 0, &right, NULL))
+		return 0;
+
+	gtk_widget_get_preferred_width (panel, NULL, &panel_w);
+	right -= gtk_widget_get_allocated_width (host) - panel_w;
+	/* And the page's own gap between the card and the panel. */
+	return right > 0 ? right + DRAWER_GAP : 0;
+}
+
+/* Keeps `widget' out from under the drawer by `want' pixels, or by as
+ * many as it can give up without asking for a wider page. */
+static void
+reserve_end (GtkWidget *widget, gint want)
+{
+	gint min = 0, room;
+
+	if (widget == NULL)
+		return;
+	/* The width it asks for counts the margin it has now. */
+	gtk_widget_get_preferred_width (widget, &min, NULL);
+	min -= gtk_widget_get_margin_end (widget);
+	room = gtk_widget_get_allocated_width (page) - min;
+	gtk_widget_set_margin_end (widget, CLAMP (want, 0, MAX (room, 0)));
+}
+
+/* While the drawer shows one of this page's nodes, the page keeps to
+ * the width the drawer leaves: the caption and the legend wrap there
+ * and the card ends where the panel begins, so nothing is cut off under
+ * it.  The diagram has a smallest width of its own (diagram_width). */
+static void
+reserve_for_drawer (void)
+{
+	gint want = drawer_overlap ();
+
+	reserve_end (top_bar, want);
+	reserve_end (diagram_card, want);
+}
+
+static void
+on_drawer_moved (GtkWidget *area)
+{
+	gtk_widget_queue_draw (area);
+}
+
+static void
+on_drawer_revealed (GtkWidget *area)
+{
+	reserve_for_drawer ();
+	gtk_widget_queue_draw (area);
+}
+
+/* The page is laid out beside the drawer, so it must hear when the
+ * drawer opens, slides or closes; its own button, Escape and a page
+ * switch close it without a word to this page.  Asked for once for
+ * each diagram and drawer; the handlers go with either. */
+static void
+watch_drawer (void)
+{
+	GtkWidget *drawer;
+
+	if (drawing_area == NULL)
+		return;
+	drawer = fs_drawer_widget ();
+	if (g_signal_handler_find (drawer,
+	                           G_SIGNAL_MATCH_FUNC | G_SIGNAL_MATCH_DATA,
+	                           0, 0, NULL, on_drawer_moved,
+	                           drawing_area) != 0)
+		return;
+
+	g_signal_connect_object (drawer, "size-allocate",
+	                         G_CALLBACK (on_drawer_moved), drawing_area,
+	                         G_CONNECT_SWAPPED);
+	g_signal_connect_object (drawer, "notify::reveal-child",
+	                         G_CALLBACK (on_drawer_revealed), drawing_area,
+	                         G_CONNECT_SWAPPED);
+}
+
+/* Every label under `widget', one to a line: what a drawer body says,
+ * for telling whether a newer one would say anything else. */
+static void
+collect_text (GtkWidget *widget, gpointer data)
+{
+	GString *text = data;
+
+	if (GTK_IS_LABEL (widget)) {
+		g_string_append (text, gtk_label_get_text (GTK_LABEL (widget)));
+		g_string_append_c (text, '\n');
+	} else if (GTK_IS_CONTAINER (widget)) {
+		gtk_container_foreach (GTK_CONTAINER (widget), collect_text, text);
+	}
+}
+
+/* [ show_node ] -- puts the details of node `index' of the present
+ * model in the drawer.  FALSE when it has none to show.
+ *
+ * `refresh' is for details that are already on show: the drawer is
+ * left alone when it would say the same, so that reading it, scrolling
+ * it or selecting text in it is not disturbed every time the model is
+ * rebuilt.  The keyboard is never moved here. */
+static gboolean
+show_node (guint index, gboolean refresh)
+{
+	const TopoNode *n = node_nth (index);
+	const gchar *under = n->detail;
+	gchar *subtitle = NULL;
+	GtkWidget *body = NULL;
+	FsDrawerAction action = {
+		_("Show in Events"), "btn-primary", run_show_in_events, NULL
+	};
+	guint n_actions = 0;
+	GString *text;
 
 	switch (n->kind) {
 	case NODE_SELF:
-		fs_drawer_open (&drawer_owner, n->title, n->detail, self_body (),
-		                NULL, 0);
+		body = self_body (n);
 		break;
 	case NODE_PROGRAM:
 		subtitle = open_connections_text (n->count);
-		fs_drawer_open (&drawer_owner, n->title, subtitle,
-		                program_body (n->key), NULL, 0);
+		body = program_body (n->key);
 		break;
 	case NODE_OTHER:
-		fs_drawer_open (&drawer_owner, n->title, n->detail,
-		                program_body (NULL), NULL, 0);
+		body = program_body (NULL);
 		break;
 	case NODE_LAN:
 	case NODE_NET: {
@@ -2075,34 +2380,115 @@ fs_topology_activate_node (guint index)
 		gchar *b = programs_text (n->programs);
 
 		subtitle = g_strdup_printf (_("%s from %s"), a, b);
-		fs_drawer_open (&drawer_owner, n->title, subtitle,
-		                zone_body (n->kind == NODE_LAN), NULL, 0);
+		body = zone_body (n);
 		g_free (a);
 		g_free (b);
 		break;
 	}
 	case NODE_BLOCKED: {
 		const TopoBlock *b = find_block (n->key);
+		gchar *address;
 
 		if (b == NULL)
 			return FALSE;
-		open_blocked (b);
+		body = blocked_body (b, &subtitle);
+		/* The action's data lives as long as the body it belongs
+		 * to. */
+		address = g_strdup (b->remote);
+		g_object_set_data_full (G_OBJECT (body), "topology-address",
+		                        address, g_free);
+		action.data = address;
+		n_actions = 1;
 		break;
 	}
 	}
+	if (subtitle != NULL)
+		under = subtitle;
 
+	text = g_string_new (n->title);
+	g_string_append_c (text, '\n');
+	g_string_append (text, under != NULL ? under : "");
+	g_string_append_c (text, '\n');
+	collect_text (body, text);
+
+	if (refresh && fs_drawer_owner () == &drawer_owner &&
+	    g_strcmp0 (text->str, drawer_text) == 0) {
+		/* Nothing new to say: the body built for the comparison
+		 * goes, and the one on show stays as it is. */
+		g_object_ref_sink (body);
+		gtk_widget_destroy (body);
+		g_object_unref (body);
+		g_string_free (text, TRUE);
+	} else {
+		fs_drawer_open (&drawer_owner, n->title, under, body,
+		                n_actions > 0 ? &action : NULL, n_actions);
+		watch_drawer ();
+		reserve_for_drawer ();
+		g_free (drawer_text);
+		drawer_text = g_string_free (text, FALSE);
+	}
 	g_free (subtitle);
-	g_free (drawer_key);
-	drawer_kind = n->kind;
-	drawer_key = g_strdup (n->key);
+
+	if (drawer_kind != n->kind || g_strcmp0 (drawer_key, n->key) != 0) {
+		g_free (drawer_key);
+		drawer_kind = n->kind;
+		drawer_key = g_strdup (n->key);
+	}
 	if (drawing_area != NULL)
 		gtk_widget_queue_draw (drawing_area);
 	return TRUE;
 }
 
-/* What the tooltip of a node says: its whole name, and its count. */
+/* The model was rebuilt while the drawer shows one of its nodes: the
+ * drawer follows, so it never says what the diagram beside it no
+ * longer does.  A node that left the diagram (a program that closed
+ * its connections, a block ten minutes old) takes its details with
+ * it. */
+static void
+refresh_drawer (void)
+{
+	gint at;
+
+	if (fs_drawer_owner () != &drawer_owner)
+		return;
+
+	at = find_node (drawer_kind, drawer_key);
+	if (at < 0 || !show_node ((guint) at, TRUE))
+		fs_drawer_close ();
+}
+
+gboolean
+fs_topology_activate_node (guint index)
+{
+	/* The diagram is repainted a little after the blocks change
+	 * (model_touch), and until then a click or Enter names a node of
+	 * the picture still on screen, where a new block may since have
+	 * moved every blocked address down by one.  The node is found
+	 * again by what it is, not by where it was; one that has gone
+	 * opens nothing. */
+	if (model_dirty && nodes != NULL && index < nodes->len) {
+		const TopoNode *n = node_nth (index);
+		NodeKind kind = n->kind;
+		gchar *key = g_strdup (n->key);
+		gint at;
+
+		ensure_model ();
+		at = find_node (kind, key);
+		g_free (key);
+		if (at < 0)
+			return FALSE;
+		index = (guint) at;
+	}
+
+	ensure_model ();
+	if (index >= nodes->len)
+		return FALSE;
+	return show_node (index, FALSE);
+}
+
+/* The first lines of a node's tooltip: its whole name, and its count. */
 static gchar *
-node_tooltip (const TopoNode *n)
+tooltip_head (const TopoNode *n)
 {
 	gchar *a, *b, *text;
 
@@ -2138,6 +2524,31 @@ node_tooltip (const TopoNode *n)
 		g_free (b);
 		return text;
 	}
+}
+
+/* What the tooltip of a node says.  Behind a line with an arrowhead at
+ * each end it also counts the connections opened each way. */
+static gchar *
+node_tooltip (const TopoNode *n)
+{
+	gchar *head = tooltip_head (n);
+	gchar *split = n->kind != NODE_BLOCKED && conns_known
+		? split_text (n->count, n->inbound) : NULL;
+	gchar *text;
+
+	if (split == NULL)
+		return head;
+	text = g_strconcat (head, "\n", split, NULL);
+	g_free (head);
+	g_free (split);
+	return text;
+}
+
+gchar *
+fs_topology_node_tooltip (guint index)
+{
+	ensure_model ();
+	return index < nodes->len ? node_tooltip (node_nth (index)) : NULL;
 }
 
 /* -------------------------------------------------- pointer and keys */
@@ -2263,8 +2674,14 @@ on_key_press (GtkWidget *widget, GdkEventKey *event, gpointer data)
 		return FALSE;
 	}
 
-	/* The arrows stay in the diagram; Tab leaves it. */
-	focus_node = to;
+	/* The arrows stay in the diagram; Tab leaves it.  While the drawer
+	 * shows one of the nodes it follows the ring, so that the panel
+	 * always names what has the keyboard. */
+	if (to != focus_node) {
+		focus_node = to;
+		if (fs_drawer_owner () == &drawer_owner)
+			fs_topology_activate_node ((guint) to);
+	}
 	gtk_widget_queue_draw (widget);
 	return TRUE;
 }
@@ -2462,6 +2879,12 @@ caption_text (void)
 		g_string_append (s, _("Nothing was blocked in the last "
 		                      "10 minutes (counted since StockFW "
 		                      "opened)."));
+	else if (blocks_capped ())
+		/* Past the cap the number is a floor, and the table is not
+		 * the whole list either. */
+		g_string_append_printf (s, _("More than %u addresses were "
+			"blocked in the last 10 minutes (counted since StockFW "
+			"opened)."), n_blocked);
 	else
 		g_string_append_printf (s, g_dngettext (NULL,
 			"%u address was blocked in the last 10 minutes (counted "
@@ -2472,9 +2895,14 @@ caption_text (void)
 
 	if (n_blocked > MAX_BLOCKED_DRAWN) {
 		g_string_append_c (s, ' ');
-		g_string_append_printf (s, _("The diagram draws the newest %u; "
-		                             "the table lists them all."),
-		                        (guint) MAX_BLOCKED_DRAWN);
+		if (blocks_capped ())
+			g_string_append_printf (s, _("The diagram draws the newest "
+				"%u; the table lists the newest %u."),
+				(guint) MAX_BLOCKED_DRAWN, n_blocked);
+		else
+			g_string_append_printf (s, _("The diagram draws the newest "
+				"%u; the table lists them all."),
+				(guint) MAX_BLOCKED_DRAWN);
 	}
 	return g_string_free (s, FALSE);
 }
@@ -2495,6 +2923,7 @@ sync_widgets (void)
 		gtk_widget_set_size_request (drawing_area, MIN_W, needed_height ());
 		gtk_widget_queue_draw (drawing_area);
 	}
+	refresh_drawer ();
 	anim_sync ();
 }
 
@@ -2559,8 +2988,12 @@ on_page_destroy (GtkWidget *widget, gpointer data)
 
 	if (fs_drawer_owner () == &drawer_owner)
 		fs_drawer_close ();
+	g_clear_pointer (&drawer_text, g_free);
+	drawn_width = 0.0;
 
 	page = NULL;
+	top_bar = NULL;
+	diagram_card = NULL;
 	drawing_area = NULL;
 	stack = NULL;
 	table_toggle = NULL;
@@ -2574,20 +3007,29 @@ on_page_destroy (GtkWidget *widget, gpointer data)
 	pointer_inside = FALSE;
 }
 
+/* What a sample in the legend shows. */
+enum
+{
+	SWATCH_OPEN,
+	SWATCH_BOTH,          /* open connections opened both ways */
+	SWATCH_BLOCKED
+};
+
 /* The legend's samples: a line as the diagram draws an open connection,
- * and one as it draws a block, marker included. */
+ * one as it draws connections opened both ways, and one as it draws a
+ * block, marker included. */
 static gboolean
 on_swatch_draw (GtkWidget *widget, cairo_t *cr, gpointer data)
 {
 	static const double open_dashes[2] = { 6.0, 10.0 };
 	static const double block_dashes[2] = { 5.0, 5.0 };
-	gboolean blocked = GPOINTER_TO_INT (data);
+	gint kind = GPOINTER_TO_INT (data);
 	gdouble w = gtk_widget_get_allocated_width (widget);
 	gdouble y = floor (gtk_widget_get_allocated_height (widget) / 2.0) + 0.5;
 	Palette p;
 
 	palette_read (&p);
-	if (blocked) {
+	if (kind == SWATCH_BLOCKED) {
 		cairo_set_line_width (cr, 1.75);
 		cairo_set_dash (cr, block_dashes, 2, 0);
 		ink (cr, &p.bad, 0.95);
@@ -2595,6 +3037,16 @@ on_swatch_draw (GtkWidget *widget, cairo_t *cr, gpointer data)
 		cairo_line_to (cr, w, y);
 		cairo_stroke (cr);
 		draw_marker (cr, &p, MARK_R + 1.5, y);
+	} else if (kind == SWATCH_BOTH) {
+		/* Still, whatever the animation setting, as in the diagram. */
+		cairo_set_line_width (cr, 2.5);
+		ink (cr, &p.accent, 0.70);
+		cairo_move_to (cr, 6.0, y);
+		cairo_line_to (cr, w - 6.0, y);
+		cairo_stroke (cr);
+		ink (cr, &p.accent, 1.0);
+		arrowhead (cr, 0, y, -1.0, 9.5);
+		arrowhead (cr, w, y, 1.0, 9.5);
 	} else if (animations_enabled ()) {
 		cairo_set_line_width (cr, 2.5);
 		ink (cr, &p.accent, 0.30);
@@ -2620,7 +3072,7 @@ on_swatch_draw (GtkWidget *widget, cairo_t *cr, gpointer data)
 }
 
 static void
-legend_item (gboolean blocked, const gchar *text)
+legend_item (GtkWidget *row, gint kind, const gchar *text)
 {
 	GtkWidget *swatch = gtk_drawing_area_new ();
 	GtkWidget *label = gtk_label_new (text);
@@ -2628,11 +3080,11 @@ legend_item (gboolean blocked, const gchar *text)
 	gtk_widget_set_size_request (swatch, 36, 16);
 	gtk_widget_set_valign (swatch, GTK_ALIGN_CENTER);
 	g_signal_connect (swatch, "draw", G_CALLBACK (on_swatch_draw),
-	                  GINT_TO_POINTER (blocked));
+	                  GINT_TO_POINTER (kind));
 	add_class (label, "chart-legend");
 	gtk_widget_set_margin_end (label, 12);
-	gtk_box_pack_start (GTK_BOX (legend), swatch, FALSE, FALSE, 0);
-	gtk_box_pack_start (GTK_BOX (legend), label, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (row), swatch, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (row), label, FALSE, FALSE, 0);
 }
 
 static void
@@ -2656,7 +3108,7 @@ table_column (GtkWidget *view, const gchar *title, gint column,
 GtkWidget *
 fs_topology_page (void)
 {
-	GtkWidget *bar, *card, *view, *scroll;
+	GtkWidget *bar, *card, *view, *scroll, *row;
 	AtkObject *atk;
 
 	ensure_data ();
@@ -2676,16 +3128,21 @@ fs_topology_page (void)
 	add_class (caption_label, "muted");
 	gtk_box_pack_start (GTK_BOX (bar), caption_label, TRUE, TRUE, 0);
 
+	/* At the end of the row, which the details panel would lie over:
+	 * reserve_for_drawer () moves the row's end out from under it, or
+	 * this button could be reached with Tab but not seen or clicked. */
 	table_toggle = gtk_toggle_button_new_with_label (_("Show as table"));
+	gtk_widget_set_name (table_toggle, "topology-table-toggle");
 	add_class (table_toggle, "btn-subtle");
 	gtk_widget_set_valign (table_toggle, GTK_ALIGN_START);
 	gtk_widget_set_tooltip_text (table_toggle,
-		_("List every open connection and every blocked address"));
+		_("List every open connection and the blocked addresses"));
 	g_signal_connect (table_toggle, "toggled",
 	                  G_CALLBACK (on_table_toggled), NULL);
 	gtk_box_pack_end (GTK_BOX (bar), table_toggle, FALSE, FALSE, 0);
 
 	gtk_box_pack_start (GTK_BOX (page), bar, FALSE, FALSE, 0);
+	top_bar = bar;
 
 	/* ---- the diagram or the table, and the legend under it ---- */
 	card = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
@@ -2759,21 +3216,27 @@ fs_topology_page (void)
 
 	gtk_box_pack_start (GTK_BOX (card), stack, TRUE, TRUE, 0);
 
-	legend = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+	/* The samples in a row and the note under them: beside them it had
+	 * a few words to a line once the card was narrow (next to the
+	 * drawer, or in a small window). */
+	legend = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
 	gtk_widget_set_name (legend, "topology-legend");
 	add_class (legend, "card-foot");
-	legend_item (FALSE, _("Open connections"));
-	legend_item (TRUE, _("Blocked at the firewall"));
+	row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+	legend_item (row, SWATCH_OPEN, _("Open connections"));
+	legend_item (row, SWATCH_BOTH, _("Opened both ways"));
+	legend_item (row, SWATCH_BLOCKED, _("Blocked at the firewall"));
+	gtk_box_pack_start (GTK_BOX (legend), row, FALSE, FALSE, 0);
 	legend_note = gtk_label_new (NULL);
 	gtk_label_set_xalign (GTK_LABEL (legend_note), 0.0);
 	gtk_label_set_line_wrap (GTK_LABEL (legend_note), TRUE);
-	gtk_label_set_max_width_chars (GTK_LABEL (legend_note), 60);
 	add_class (legend_note, "chart-legend");
-	gtk_box_pack_start (GTK_BOX (legend), legend_note, TRUE, TRUE, 0);
+	gtk_box_pack_start (GTK_BOX (legend), legend_note, FALSE, FALSE, 0);
 	update_legend_note ();
 	gtk_box_pack_start (GTK_BOX (card), legend, FALSE, FALSE, 0);
 
 	gtk_box_pack_start (GTK_BOX (page), card, TRUE, TRUE, 0);
+	diagram_card = card;
 
 	anim_settings = gtk_settings_get_default ();
 	if (anim_settings != NULL)

@@ -123,7 +123,8 @@ static const FsHelpBlock overview[] = {
 	  "scale at the top right. Rest the pointer on the graph to read a "
 	  "moment's numbers. It is everything the adapters carried, whether "
 	  "or not the firewall filtered it, so it keeps moving while the "
-	  "firewall is stopped. Virtual adapters are left out.") },
+	  "firewall is stopped. Virtual adapters are left out, unless no "
+	  "hardware adapter is up.") },
 	{ FS_HELP_ITEM, N_("<b>Busiest programs</b>: the five programs with "
 	  "the most open connections to other computers. It counts open TCP "
 	  "connections, not data volume. Connections whose owner could not "
@@ -284,6 +285,96 @@ static const FsHelpBlock activity[] = {
 	  "counters, so it needs no special rights. The graphs live in "
 	  "memory and start again each time StockFW starts.") },
 	{ FS_HELP_SEE, "events overview prefs-events" },
+	{ FS_HELP_END, NULL }
+};
+
+static const FsHelpBlock topology[] = {
+	{ FS_HELP_PARA, N_("The Topology page draws what this computer is "
+	  "connected to right now, and what the firewall turned away in the "
+	  "last 10 minutes. Programs stand in boxes on the left and <b>This "
+	  "computer</b> in the middle, with the firewall as a bar on its "
+	  "right. Beyond the bar are <b>Local network</b> and "
+	  "<b>Internet</b>, and under them the blocked addresses. All of it "
+	  "is read from this computer.") },
+	{ FS_HELP_HEAD, N_("Where it comes from") },
+	{ FS_HELP_ITEM, N_("The open connections are the ones the "
+	  "<a href=\"help:overview\">Overview</a> lists under <b>Open "
+	  "connections</b>, read again every three seconds. A connection "
+	  "between two programs on this computer is not drawn; the line "
+	  "above the diagram counts those.") },
+	{ FS_HELP_ITEM, N_("Up to six programs get a box each. When there "
+	  "are more, the five that hold the most connections get one and "
+	  "the rest share <b>Other programs</b>.") },
+	{ FS_HELP_ITEM, N_("The other end of a connection counts as "
+	  "<b>Local network</b> when its address is of a kind that does not "
+	  "cross the internet, such as <tt>192.168.1.20</tt> or "
+	  "<tt>10.0.0.5</tt>, and as <b>Internet</b> otherwise.") },
+	{ FS_HELP_ITEM, N_("A blocked address is the other end of an event "
+	  "that the <a href=\"help:events\">Events</a> page listed as "
+	  "blocked. It stays for 10 minutes after its last block.") },
+	{ FS_HELP_ITEM, N_("The diagram draws the four addresses blocked "
+	  "most recently, and the page remembers the newest 32. When more "
+	  "than that were blocked in 10 minutes it says <i>more than "
+	  "32</i>, and the rest are on the Events page.") },
+	{ FS_HELP_NOTE, N_("Blocks are counted since StockFW opened. In its "
+	  "first 10 minutes the page cannot know what was blocked before "
+	  "that, so the line above the diagram says <i>counted since "
+	  "StockFW opened</i>.") },
+	{ FS_HELP_HEAD, N_("What the lines mean") },
+	{ FS_HELP_ITEM, N_("A line in the accent colour stands for open "
+	  "connections, a little thicker when it carries more of them. Its "
+	  "dashes travel the way the connections were opened: away from a "
+	  "program and out through the firewall for those this computer "
+	  "started, the other way for those that came in.") },
+	{ FS_HELP_ITEM, N_("A line that does not move and has an arrowhead "
+	  "at each end carries both kinds. Point at its box, or open it, to "
+	  "read how many were opened here and how many from outside.") },
+	{ FS_HELP_ITEM, N_("A red dashed line is a blocked address. It ends "
+	  "at the firewall bar, at a red mark on the side the traffic came "
+	  "from. For traffic this computer tried to send, the stretch "
+	  "beyond the bar is drawn faint: nothing travelled it.") },
+	{ FS_HELP_ITEM, N_("The bar is solid while the firewall runs and an "
+	  "empty outline while it is stopped.") },
+	{ FS_HELP_NOTE, N_("Movement is not a measurement. Every line moves "
+	  "at the same speed however much data it carries, and the page "
+	  "measures no rates. A red line says that the firewall blocked "
+	  "that address at least once in the last 10 minutes. It does not "
+	  "say that an attack is under way, or that the address is still "
+	  "trying.") },
+	{ FS_HELP_HEAD, N_("Details and the table") },
+	{ FS_HELP_PARA, N_("Click a box, or move to it with the arrow keys "
+	  "and press Enter, to open its details in the panel on the right: "
+	  "up to 20 of a program's connections one by one, the programs "
+	  "that talk to the local network or to the internet, or for a "
+	  "blocked address what was blocked, how often and when. For a "
+	  "blocked address, <b>Show in Events</b> lists its events.") },
+	{ FS_HELP_ITEM, N_("While the panel is open the page is laid out "
+	  "beside it, the arrow keys take the panel along from box to box, "
+	  "and what it shows is kept up to date.") },
+	{ FS_HELP_ITEM, N_("It closes with Escape, and by itself when its "
+	  "box leaves the diagram, for instance when a program closes its "
+	  "last connection or a block is 10 minutes old.") },
+	{ FS_HELP_ITEM, N_("<b>Show as table</b> lists every open "
+	  "connection and every remembered blocked address as rows.") },
+	{ FS_HELP_HEAD, N_("Keys") },
+	{ FS_HELP_KEYS, N_("Up Down Left Right|Move from box to box in the "
+	  "diagram") },
+	{ FS_HELP_KEYS, N_("Enter Space|Open the details of the box in "
+	  "focus") },
+	{ FS_HELP_KEYS, N_("Tab|Leave the diagram") },
+	{ FS_HELP_KEYS, N_("Escape|Close the details panel") },
+	{ FS_HELP_HEAD, N_("When it reads and when it moves") },
+	{ FS_HELP_PARA, N_("The page asks for the open connections only "
+	  "while it is on screen. On another page, or with StockFW hidden, "
+	  "nothing is read and nothing moves. Blocked events are still "
+	  "noted meanwhile, so the last 10 minutes are complete when you "
+	  "come back.") },
+	{ FS_HELP_ITEM, N_("The lines follow the system's animation "
+	  "setting. With animations switched off nothing moves, and "
+	  "arrowheads show the direction instead.") },
+	{ FS_HELP_ITEM, N_("Where StockFW cannot list the open connections "
+	  "the page says so, and still draws the blocked addresses.") },
+	{ FS_HELP_SEE, "overview events activity shortcuts" },
 	{ FS_HELP_END, NULL }
 };
 
@@ -675,8 +766,9 @@ static const FsHelpBlock preferences[] = {
 	  "opens the topic for the page you are on.") },
 	{ FS_HELP_HEAD, N_("The pages") },
 	{ FS_HELP_ITEM, N_("<a href=\"help:prefs-general\">General</a>: the "
-	  "tray icon, closing to the tray, starting the firewall when "
-	  "StockFW opens, and starting StockFW when you sign in.") },
+	  "tray icon, closing to the tray, dark mode, the accent colour and "
+	  "the row density, starting the firewall when StockFW opens, and "
+	  "starting StockFW when you sign in.") },
 	{ FS_HELP_ITEM, N_("<a href=\"help:prefs-events\">Events</a>: what "
 	  "the Events list leaves out.") },
 	{ FS_HELP_ITEM, N_("<a href=\"help:prefs-policy\">Policy</a>: when "
@@ -1588,6 +1680,9 @@ static const FsHelpBlock shortcuts[] = {
 	{ FS_HELP_KEYS, N_("Alt+F|Events: read recent events again") },
 	{ FS_HELP_KEYS, N_("Left Right Home End|Activity: read one interval "
 	  "of the focused graph") },
+	{ FS_HELP_KEYS, N_("Up Down Left Right Enter|Topology: move from "
+	  "box to box in the diagram; Enter opens the details of the one "
+	  "in focus") },
 	{ FS_HELP_KEYS, N_("Enter|Trust: inspect the path you typed") },
 	{ FS_HELP_KEYS, N_("Escape|Close the details panel at the right of "
 	  "the page") },
@@ -1673,6 +1768,14 @@ static const FsHelpTopic topics[] = {
 	  N_("Allowed and blocked events, and adapter traffic, over time."),
 	  N_("graph chart network io throughput history table"),
 	  activity },
+	{ "topology", NULL, NULL,
+	  N_("Topology"),
+	  N_("What this computer is connected to right now, and what the "
+	     "firewall turned away, as a diagram."),
+	  N_("diagram map connections programs local network internet "
+	     "blocked lines arrows dashes animation motion table boxes "
+	     "nodes inbound outbound"),
+	  topology },
 	{ "policy", NULL, NULL,
 	  N_("Policy"),
 	  N_("The rules StockFW enforces: what may come in, what may go out, "

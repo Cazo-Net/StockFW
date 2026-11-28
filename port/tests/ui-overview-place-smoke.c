@@ -126,6 +126,8 @@ static const FsBackend fake_backend = {
 static guint64  fake_rx = 1000000, fake_tx = 500000;   /* eth0, bytes  */
 static guint64  fake_bridge = 0;                       /* docker0      */
 static gboolean fake_no_counters = FALSE;
+static gboolean fake_soft_only = FALSE;   /* a container: eth0 is a veth */
+static gboolean fake_eth_down = FALSE;    /* the cable is out            */
 static gboolean fake_no_conns = FALSE;
 static gint64   fake_time = 5 * G_USEC_PER_SEC;
 
@@ -157,9 +159,14 @@ fake_list_interface_stats (void)
 
 	if (fake_no_counters)
 		return NULL;
-	stats = g_list_append (stats, fake_stat ("eth0", "Ethernet",
+	stats = g_list_append (stats, fake_stat ("eth0", fake_soft_only
+	                                         ? "Virtual" : "Ethernet",
 	                                         "192.168.1.20", fake_rx,
 	                                         fake_tx));
+	((FsIfaceStat *) stats->data)->up = !fake_eth_down;
+	/* A container has the one adapter. */
+	if (fake_soft_only)
+		return stats;
 	/* A bridge: its traffic also crosses eth0, so the graph must not
 	 * count it. */
 	stats = g_list_append (stats, fake_stat ("docker0", "Virtual",
@@ -176,8 +183,11 @@ fake_conn (const gchar *program, const gchar *remote, const gchar *port,
 	const gchar *here = g_str_has_prefix (remote, "127.") ? "127.0.0.1"
 	                                                      : "192.168.1.20";
 
-	c->source = g_strdup (inbound ? remote : here);
-	c->destination = g_strdup (inbound ? here : remote);
+	/* As the real backends fill it: this computer's end is the
+	 * source and the other computer's the destination, whichever
+	 * side opened the connection. */
+	c->source = g_strdup (here);
+	c->destination = g_strdup (remote);
 	c->port = g_strdup (port);
 	c->protocol = g_strdup ("TCP");
 	c->service = g_strdup (strcmp (port, "443") == 0 ? "HTTPS" : "");
@@ -507,6 +517,26 @@ newest_is (guint count, guint64 received, guint64 sent)
 	return ok;
 }
 
+/* Whether a label's text carries a colour of its own (Pango markup's
+ * foreground), which no stylesheet and so no Dark mode switch reaches. */
+static gboolean
+own_colour (GtkWidget *label)
+{
+	PangoAttrList *attrs = pango_layout_get_attributes (
+		gtk_label_get_layout (GTK_LABEL (label)));
+	PangoAttrIterator *at;
+	gboolean found = FALSE;
+
+	if (attrs == NULL)
+		return FALSE;
+	at = pango_attr_list_get_iterator (attrs);
+	do
+		found = pango_attr_iterator_get (at, PANGO_ATTR_FOREGROUND) != NULL;
+	while (!found && pango_attr_iterator_next (at));
+	pango_attr_iterator_destroy (at);
+	return found;
+}
+
 /* 7. The page of the checks above, whose backend has no adapter
  *    counters and cannot list connections: no card may invent data. */
 static void
@@ -515,6 +545,7 @@ check_no_live_data (GtkWidget *page)
 	GtkWidget *window = offscreen_with (page);
 	GtkWidget *label;
 	gchar **busy;
+	guint before;
 
 	label = find_label (page, "This computer's adapter counters are not "
 	                    "available.", TRUE);
@@ -543,12 +574,15 @@ check_no_live_data (GtkWidget *page)
 	CHECK (draw_offscreen (window),
 	       "the page draws with every live slot missing");
 
-	/* The page goes, and with it its timers and its pointers. */
+	/* The page goes, and with it its timers and its pointers: a call
+	 * that still reached a widget of it would log a GTK critical. */
+	before = warnings;
 	gtk_widget_destroy (window);
 	fs_statusview_set_state (FS_FW_RUNNING);
 	fs_statusview_refresh ();
-	CHECK (TRUE, "a state change and a refresh after the page is "
-	       "destroyed touch nothing");
+	CHECK (warnings == before,
+	       "a state change and a refresh after the page is destroyed "
+	       "touch nothing (%u warnings)", warnings - before);
 }
 
 /* 8. A second page, on a backend with counters and a connection list
@@ -644,6 +678,34 @@ check_live_cards (void)
 	g_free (tx);
 	CHECK (draw_offscreen (window), "the full graph draws");
 
+	/* --- Network adapters --- */
+	/* A row is kept from one reading to the next, so nothing in it may
+	 * hold a colour read when it was built: after a Dark mode switch
+	 * that would be the other palette's grey for as long as the row
+	 * lives.  The kind's ink is a class of the stylesheet. */
+	{
+		GtkWidget *row = find_by_class (page, "adapter-row");
+		GtkWidget *kind = find_label (row, "Ethernet", FALSE);
+		GPtrArray *labels = g_ptr_array_new ();
+		guint coloured = 0;
+
+		if (row != NULL)
+			collect (row, GTK_TYPE_LABEL, NULL, labels);
+		for (guint i = 0; i < labels->len; i++)
+			if (own_colour (labels->pdata[i]))
+				coloured++;
+		CHECK (row != NULL && labels->len >= 5 && coloured == 0,
+		       "an adapter's row holds no colour of its own, so it "
+		       "follows Dark mode while it is kept (%u of %u labels do)",
+		       coloured, labels->len);
+		CHECK (kind != NULL && gtk_style_context_has_class (
+		               gtk_widget_get_style_context (kind), "adapter-kind") &&
+		       find_label (row, "eth0", TRUE) != NULL,
+		       "its kind is a label of the class adapter-kind, beside "
+		       "the name");
+		g_ptr_array_unref (labels);
+	}
+
 	fake_no_counters = TRUE;
 	fs_statusview_refresh ();
 	CHECK (fs_statusview_traffic_points (NULL, NULL) == 0 &&
@@ -656,6 +718,33 @@ check_live_cards (void)
 	reading (2.0, 2048, 2048);
 	CHECK (newest_is (1, 1024, 1024), "and it starts again when they "
 	       "come back");
+
+	/* No real adapter is up.  In a container the only adapter is one
+	 * end of a veth pair, which the backends class Virtual: what it
+	 * carries is the computer's traffic, not a flat 0 B/s. */
+	fake_soft_only = TRUE;
+	reading (2.0, 4096, 1024);
+	CHECK (newest_is (2, 2048, 512),
+	       "a computer whose only adapter is a virtual one: the graph is "
+	       "what that adapter carried");
+	CHECK (find_label (page, "2.5 KiB/s", TRUE) != NULL &&
+	       find_label (page, "Idle", TRUE) == NULL,
+	       "and the Traffic total is its rate, not Idle");
+	fake_soft_only = FALSE;
+	reading (2.0, 2048, 0);
+	CHECK (newest_is (3, 1024, 0),
+	       "a real adapter again: its traffic alone, the bridge's left "
+	       "out as before");
+	/* The cable is out and only the bridge still moves anything. */
+	fake_eth_down = TRUE;
+	reading (2.0, 0, 0);
+	CHECK (newest_is (4, 1 << 29, 1 << 29),
+	       "the real adapter down: the graph is what the virtual ones "
+	       "carried, a gibibyte each way in two seconds");
+	fake_eth_down = FALSE;
+	reading (2.0, 0, 0);
+	CHECK (newest_is (5, 0, 0),
+	       "and up again: the bridge's traffic leaves the graph");
 
 	/* --- Busiest programs --- */
 	busy = fs_statusview_busiest_programs ();
@@ -743,6 +832,33 @@ check_live_cards (void)
 	       find_label (body, "4 to other computers", TRUE) != NULL,
 	       "a connection with no known owner: Unknown program, counted "
 	       "with the other unnamed ones (4)");
+
+	/* An inbound connection: the remote end is still the other
+	 * computer's address, not this computer's.  nginx holds the one
+	 * inbound connection of the sample. */
+	if (view != NULL) {
+		GtkTreeModel *rows = gtk_tree_view_get_model (GTK_TREE_VIEW (view));
+		gint n = gtk_tree_model_iter_n_children (rows, NULL);
+		gboolean saw_nginx = FALSE;
+
+		for (gint r = 0; r < n && !saw_nginx; r++) {
+			path = gtk_tree_path_new_from_indices (r, -1);
+			gtk_tree_view_row_activated (GTK_TREE_VIEW (view), path,
+				gtk_tree_view_get_column (GTK_TREE_VIEW (view), 1));
+			gtk_tree_path_free (path);
+			saw_nginx = strcmp (named_text ("fs-drawer-title"),
+			                    "nginx") == 0;
+		}
+		body = find_named (fs_drawer_widget (), "fs-drawer-body");
+		CHECK (saw_nginx &&
+		       g_str_has_prefix (named_text ("fs-drawer-subtitle"),
+		                         "198.51.100.200") &&
+		       find_label (body, "Inbound", TRUE) != NULL &&
+		       find_label (body, "192.168.1.20", TRUE) != NULL,
+		       "an inbound connection: the remote end is the other "
+		       "computer, this computer's end is ours (got \"%s\")",
+		       named_text ("fs-drawer-subtitle"));
+	}
 
 	/* With the local connections on show ("Show them"), one of them:
 	 * the fourth row is postgres, which has no other kind. */

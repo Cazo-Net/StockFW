@@ -83,6 +83,79 @@ focus_inside (void)
 	return focus != NULL && gtk_widget_is_ancestor (focus, revealer);
 }
 
+/* Can the keyboard go back to `widget'?  Not to one that was destroyed
+ * or taken off the page since, nor to one that is switched off:
+ * gtk_widget_grab_focus () does nothing on those. */
+static gboolean
+takes_focus (GtkWidget *widget)
+{
+	return widget != NULL
+	       && gtk_widget_get_toplevel (widget) == host_window ()
+	       && !gtk_widget_is_ancestor (widget, revealer)
+	       && gtk_widget_get_can_focus (widget)
+	       && gtk_widget_is_sensitive (widget)
+	       && gtk_widget_get_visible (widget)
+	       && gtk_widget_get_mapped (widget);
+}
+
+/* [ focus_elsewhere ]
+ * The drawer is closing with the keyboard on one of its buttons and the
+ * widget that had it before (`back', which may be NULL) cannot take it
+ * again.  The nearest control that can gets it: the first one in the
+ * smallest container around `back', and failing that the first one of
+ * the page the drawer lies over.  Left where it is, the keyboard would
+ * be on a button that is about to be hidden and the window would end
+ * up with no focus widget at all. */
+static void
+focus_elsewhere (GtkWidget *back)
+{
+	GtkWidget *host = gtk_widget_get_parent (revealer);
+	GtkWidget *w;
+
+	if (back != NULL && gtk_widget_get_toplevel (back) == host_window ())
+		for (w = gtk_widget_get_parent (back);
+		     w != NULL && !gtk_widget_is_ancestor (revealer, w);
+		     w = gtk_widget_get_parent (w))
+			if (gtk_widget_get_mapped (w) &&
+			    gtk_widget_child_focus (w, GTK_DIR_TAB_FORWARD))
+				return;
+
+	/* The drawer's own host is an overlay: its child is the page. */
+	w = host != NULL && GTK_IS_BIN (host)
+	  ? gtk_bin_get_child (GTK_BIN (host)) : NULL;
+	if (w != NULL && w != revealer && gtk_widget_get_mapped (w))
+		gtk_widget_child_focus (w, GTK_DIR_TAB_FORWARD);
+}
+
+/* [ on_body_adjusted ]
+ * The body is a stop for Tab only while there is more of it than fits:
+ * that is when Page Up and Page Down have something to do there (the
+ * fields in it take no keyboard themselves).  A body that fits is
+ * passed over, so Tab goes from the close button to the actions. */
+static void
+on_body_adjusted (GtkAdjustment *adjustment, gpointer data)
+{
+	GtkWidget *scroll = data;
+	GtkAdjustment *h = gtk_scrolled_window_get_hadjustment (
+		GTK_SCROLLED_WINDOW (scroll));
+	GtkAdjustment *v = gtk_scrolled_window_get_vadjustment (
+		GTK_SCROLLED_WINDOW (scroll));
+	gboolean more =
+		gtk_adjustment_get_upper (h) - gtk_adjustment_get_lower (h)
+			> gtk_adjustment_get_page_size (h) ||
+		gtk_adjustment_get_upper (v) - gtk_adjustment_get_lower (v)
+			> gtk_adjustment_get_page_size (v);
+
+	(void) adjustment;
+
+	if (gtk_widget_get_can_focus (scroll) == more)
+		return;
+	/* A refill that fits, with the keyboard on the body. */
+	if (!more && gtk_widget_is_focus (scroll) && close_button != NULL)
+		gtk_widget_grab_focus (close_button);
+	gtk_widget_set_can_focus (scroll, more);
+}
+
 static void
 on_revealer_destroy (GtkWidget *widget, gpointer data)
 {
@@ -243,6 +316,14 @@ ensure (void)
 	gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
 	                                GTK_POLICY_AUTOMATIC,
 	                                GTK_POLICY_AUTOMATIC);
+	/* See on_body_adjusted (): no stop for Tab until it scrolls. */
+	gtk_widget_set_can_focus (scroll, FALSE);
+	g_signal_connect (gtk_scrolled_window_get_hadjustment (
+	                  	GTK_SCROLLED_WINDOW (scroll)),
+	                  "changed", G_CALLBACK (on_body_adjusted), scroll);
+	g_signal_connect (gtk_scrolled_window_get_vadjustment (
+	                  	GTK_SCROLLED_WINDOW (scroll)),
+	                  "changed", G_CALLBACK (on_body_adjusted), scroll);
 	gtk_box_pack_start (GTK_BOX (panel), scroll, TRUE, TRUE, 0);
 
 	body_slot = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
@@ -294,14 +375,17 @@ fs_drawer_open (gpointer              owner,
 	ensure ();
 
 	/* A refill from one of the drawer's own buttons destroys the
-	 * button that has the keyboard; it is handed on below. */
-	had_focus = fs_drawer_is_open () && focus_inside ();
+	 * button that has the keyboard; it is handed on below.  So is a
+	 * button of a drawer that was closed a moment ago and is opened
+	 * again before it has slid out. */
+	had_focus = focus_inside ();
 
 	if (!fs_drawer_is_open ()) {
 		GtkWidget *top = host_window ();
 
 		forget_focus ();
-		if (top != NULL)
+		/* Never one of the drawer's own: those go with a refill. */
+		if (top != NULL && !had_focus)
 			prev_focus = gtk_window_get_focus (GTK_WINDOW (top));
 		if (prev_focus != NULL)
 			g_object_add_weak_pointer (G_OBJECT (prev_focus),
@@ -370,26 +454,38 @@ void
 fs_drawer_close (void)
 {
 	GtkWidget *back = prev_focus;
+	gboolean inside;
 
 	current_owner = NULL;
 	if (revealer == NULL)
 		return;
 
+	/* Asked before the close: with no slide (animations off) the close
+	 * takes the drawer's buttons off the screen at once, and the
+	 * keyboard off them with it. */
+	inside = focus_inside ();
+
+	/* Closed first, so whoever watches the keyboard move below (the
+	 * window does, fs-app.c) finds the drawer closed already. */
+	gtk_revealer_set_transition_duration (GTK_REVEALER (revealer),
+		animations_enabled () ? FS_DRAWER_SLIDE_MS : 0);
+	gtk_revealer_set_reveal_child (GTK_REVEALER (revealer), FALSE);
+
 	/* The keyboard goes back to the list that opened the drawer if it
 	 * was left on one of the drawer's buttons; otherwise it is already
-	 * where the user put it. */
-	if (focus_inside () && back != NULL && gtk_widget_get_mapped (back) &&
-	    gtk_widget_get_toplevel (back) == host_window ()) {
-		if (GTK_IS_ENTRY (back))
+	 * where the user put it.  A list that cannot take it any more (its
+	 * button was switched off, its row is gone) hands it to the control
+	 * nearest to it: it must not stay on a button that is going away. */
+	if (inside) {
+		if (!takes_focus (back))
+			focus_elsewhere (back);
+		else if (GTK_IS_ENTRY (back))
 			gtk_entry_grab_focus_without_selecting (GTK_ENTRY (back));
 		else
 			gtk_widget_grab_focus (back);
 	}
 	forget_focus ();
 
-	gtk_revealer_set_transition_duration (GTK_REVEALER (revealer),
-		animations_enabled () ? FS_DRAWER_SLIDE_MS : 0);
-	gtk_revealer_set_reveal_child (GTK_REVEALER (revealer), FALSE);
 	/* on_child_revealed () hides it when the slide ends; with nothing
 	 * on screen to slide there is nothing to wait for. */
 	if (!gtk_widget_get_mapped (revealer))

@@ -403,6 +403,7 @@ topic_icon (const gchar *id)
 		{ "overview",        FS_ICON_SHIELD },
 		{ "events",          FS_ICON_LIST },
 		{ "activity",        FS_ICON_ACTIVITY },
+		{ "topology",        FS_ICON_WIFI },
 		{ "policy",          FS_ICON_SLIDERS },
 		{ "copilot",         FS_ICON_CHAT },
 		{ "whatif",          FS_ICON_SHIELD_QUESTION },
@@ -1591,17 +1592,17 @@ fs_help_topic_for_page (gint page)
 	/* By name, not by position: a table indexed by page number went
 	 * one page out for everything after Activity when Topology was
 	 * added to FsAppPage, and F1 on Policy opened Threat Intel's
-	 * topic.  Topology and Nexora have no topic of their own yet and
-	 * open the start page. */
+	 * topic.  Nexora has no topic of its own and opens the start
+	 * page. */
 	switch ((FsAppPage) page) {
 	case FS_PAGE_OVERVIEW: return "overview";
 	case FS_PAGE_EVENTS:   return "events";
 	case FS_PAGE_ACTIVITY: return "activity";
+	case FS_PAGE_TOPOLOGY: return "topology";
 	case FS_PAGE_POLICY:   return "policy";
 	case FS_PAGE_INTEL:    return "threat-intel";
 	case FS_PAGE_COPILOT:  return "copilot";
 	case FS_PAGE_TRUST:    return "trust";
-	case FS_PAGE_TOPOLOGY:
 	case FS_PAGE_NEXORA:
 	case FS_PAGE_COUNT:
 	default:

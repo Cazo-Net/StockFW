@@ -1077,6 +1077,23 @@ rule_field_is_mono (FsRuleKind kind, gint index)
 	}
 }
 
+/* The name of a field in the drawer: its column's heading.  Two kinds
+ * head their first column with the group's own title ("Allow
+ * connections from host", "Forward service"); the drawer's title says
+ * that already and a name that long would push the values out of line,
+ * so there the field is named for what it holds.  By kind, not by
+ * comparing the two texts: the forward rule's first field is a
+ * service, not a host. */
+static const gchar *
+rule_field_name (FsRuleKind kind, const gchar *column, gint index)
+{
+	if (index == 0 && kind == FS_RULE_INBOUND_ALLOW_FROM)
+		return _("Host");
+	if (index == 0 && kind == FS_RULE_INBOUND_FORWARD)
+		return _("Service");
+	return _(column);
+}
+
 /* A heading and its fields, with a gap above every heading but the
  * first. */
 static void
@@ -1150,15 +1167,11 @@ rule_details_show (FsPolicyGroup *group, gint row)
 	}
 
 	/* Rule: one field for each column of the table, empty ones too,
-	 * so the drawer and the row can be compared field for field.  A
-	 * column headed with the group's own title ("Allow connections
-	 * from host") is the host: the drawer's title says the rest, and a
-	 * name that long would push the values out of line. */
+	 * so the drawer and the row can be compared field for field. */
 	fields = fs_drawer_fields_new ();
 	for (gint i = 0; i < n; i++)
 		fs_drawer_field (fields,
-		                 g_strcmp0 (_(columns[i]), group->title) == 0
-		                 ? _("Host") : _(columns[i]),
+		                 rule_field_name (group->kind, columns[i], i),
 		                 values[i] != NULL && *values[i] != '\0'
 		                 ? values[i] : "-",
 		                 rule_field_is_mono (group->kind, i));
@@ -1254,7 +1267,12 @@ rule_details_show (FsPolicyGroup *group, gint row)
 	g_free (problem);
 }
 
-/* [ on_details_clicked ] -- a group's Details button. */
+/* [ on_details_clicked ] -- a group's Details button.
+ * The keyboard goes to the group's list first, as on the pages whose
+ * list opens the drawer itself: the drawer gives it back to whatever
+ * had it when it opened, and this button cannot take it again once
+ * the drawer's Remove rule has left the group with nothing selected
+ * (the button is switched off then). */
 static void
 on_details_clicked (GtkButton *button, gpointer data)
 {
@@ -1262,6 +1280,7 @@ on_details_clicked (GtkButton *button, gpointer data)
 
 	(void) button;
 
+	gtk_widget_grab_focus (group->view);
 	rule_details_show (group, selected_row (group));
 }
 
@@ -1397,8 +1416,11 @@ build_group (FsRuleKind kind, const gchar *title)
 	gtk_container_add (GTK_CONTAINER (scroll), group->view);
 	gtk_box_pack_start (GTK_BOX (box), scroll, TRUE, TRUE, 0);
 
+	/* At the start of the row, under the first columns: the detail
+	 * drawer lies over the right-hand end of the page, and Details,
+	 * which opens it, must not end up under it with the others. */
 	button_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
-	gtk_widget_set_halign (button_box, GTK_ALIGN_END);
+	gtk_widget_set_halign (button_box, GTK_ALIGN_START);
 
 	/* The Direction setting -- only where the kind has a twin.  On the
 	 * kinds without one a second entry would be a choice that does

@@ -40,6 +40,11 @@
  *      components, by the same amount in every state, and taking a
  *      sheet away gives back exactly what was there.
  *
+ *   5. SHARED CLASSES -- the Overview's status board and the Threat
+ *      Intel page's status card are built from the same classes; each
+ *      keeps its own padding, facts and title size.  An adapter's kind
+ *      on the Overview is inked by the stylesheet in both modes.
+ *
  * The checks read the stylesheet the way the app applies it: install
  * the generated CSS on the default screen at APPLICATION priority,
  * then ask GTK for sizes and rendered pixels.
@@ -890,6 +895,24 @@ padding_of (const gchar *klass, const gchar *inside)
 	return padding.top + padding.bottom;
 }
 
+/* The same for a button that carries a class: the Overview's latest
+ * blocks are buttons. */
+static gint
+button_padding_of (const gchar *klass)
+{
+	GtkWidget *button = gtk_button_new ();
+	GtkStyleContext *ctx = gtk_widget_get_style_context (button);
+	GtkBorder padding = { 0 };
+
+	g_object_ref_sink (button);
+	gtk_style_context_add_class (ctx, klass);
+	gtk_style_context_get_padding (ctx, gtk_style_context_get_state (ctx),
+	                               &padding);
+	gtk_widget_destroy (button);
+	g_object_unref (button);
+	return padding.top + padding.bottom;
+}
+
 /* Everything the comfortable sheet pads, measured now. */
 enum {
 	D_NAV, D_SIDE, D_HEADING, D_HELP_ROW, D_PALETTE_ROW, D_MENU_ITEM,
@@ -913,7 +936,7 @@ measure_density (gint out[D_N])
 	out[D_PALETTE_ROW] = list_row_height ("fs-palette-list");
 	out[D_MENU_ITEM] = menu_item_height ();
 	out[D_PREF_ROW] = padding_of ("pref-row", NULL);
-	out[D_RECENT_ROW] = padding_of ("recent-row", NULL);
+	out[D_RECENT_ROW] = button_padding_of ("recent-row");
 	out[D_PROFILE_ROW] = padding_of ("profile-row", NULL);
 	out[D_CARD_PROFILE_ROW] = padding_of ("profile-row", "card-frame");
 }
@@ -1004,7 +1027,7 @@ check_density (void)
 	 * already had the most room and get 2px. */
 	measure_density (comfortable);
 	for (guint i = 0; i < D_N; i++) {
-		gint want = compact[i] + (i == D_RECENT_ROW ? 4 : 6);
+		gint want = compact[i] + 6;
 
 		CHECK (comfortable[i] == want,
 		       "comfortable: %s goes from %dpx to %dpx (want %d)",
@@ -1025,6 +1048,129 @@ check_density (void)
 	       "rows back");
 }
 
+/* ---------------------------------------------------------------- *
+ * 5. The Overview's classes, where another page shares them          *
+ * ---------------------------------------------------------------- */
+
+/* A card as both pages build it: a box `.hero' holding a fact
+ * (`.hero-tile') and a title (`.hero-title'), named when it is the
+ * Threat Intel page's.  Gives the card's and the fact's padding (top /
+ * left), the fact's border and the title's size. */
+static void
+measure_status_card (const gchar *name, gint out[6])
+{
+	GtkWidget *card = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+	GtkWidget *fact = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+	GtkWidget *title = gtk_label_new ("Off");
+	GtkStyleContext *ctx;
+	GtkBorder box = { 0 };
+	gdouble size = 0;
+
+	g_object_ref_sink (card);
+	if (name != NULL)
+		gtk_widget_set_name (card, name);
+	gtk_style_context_add_class (gtk_widget_get_style_context (card),
+	                             "hero");
+	gtk_style_context_add_class (gtk_widget_get_style_context (fact),
+	                             "hero-tile");
+	gtk_style_context_add_class (gtk_widget_get_style_context (title),
+	                             "hero-title");
+	gtk_container_add (GTK_CONTAINER (card), fact);
+	gtk_container_add (GTK_CONTAINER (card), title);
+
+	ctx = gtk_widget_get_style_context (card);
+	gtk_style_context_get_padding (ctx, gtk_style_context_get_state (ctx),
+	                               &box);
+	out[0] = box.top;
+	out[1] = box.left;
+	ctx = gtk_widget_get_style_context (fact);
+	gtk_style_context_get_padding (ctx, gtk_style_context_get_state (ctx),
+	                               &box);
+	out[2] = box.top;
+	out[3] = box.left;
+	gtk_style_context_get_border (ctx, gtk_style_context_get_state (ctx),
+	                              &box);
+	out[4] = box.top;
+	ctx = gtk_widget_get_style_context (title);
+	gtk_style_context_get (ctx, gtk_style_context_get_state (ctx),
+	                       "font-size", &size, NULL);
+	out[5] = (gint) (size + 0.5);
+
+	gtk_widget_destroy (card);
+	g_object_unref (card);
+}
+
+/* Whether a label of these two classes is written in the named colour
+ * as it resolves now. */
+static gboolean
+label_ink_is (const gchar *klass, const gchar *klass2, const gchar *name)
+{
+	GtkWidget *label = gtk_label_new ("Ethernet");
+	GtkStyleContext *ctx = gtk_widget_get_style_context (label);
+	GdkRGBA ink, want;
+	gboolean same;
+
+	g_object_ref_sink (label);
+	gtk_style_context_add_class (ctx, klass);
+	gtk_style_context_add_class (ctx, klass2);
+	gtk_style_context_get_color (ctx, gtk_style_context_get_state (ctx),
+	                             &ink);
+	same = gtk_style_context_lookup_color (ctx, name, &want) &&
+	       gdk_rgba_equal (&ink, &want);
+	gtk_widget_destroy (label);
+	g_object_unref (label);
+	return same;
+}
+
+static void
+check_shared_classes (void)
+{
+	GtkCssProvider *light = gtk_css_provider_new ();
+	gint board[6], intel[6];
+	gboolean dark_ink, light_ink = FALSE;
+
+	/* The Overview's status board keeps its padding in two inner
+	 * boxes and does not box its facts.  The Threat Intel page's
+	 * status card (ui/fs-intelview.c, #intel-hero) is built from the
+	 * same classes without those boxes: its padding, its boxed facts
+	 * and its title's size are its own. */
+	measure_status_card (NULL, board);
+	CHECK (board[0] == 0 && board[1] == 0 && board[2] == 0 &&
+	       board[3] == 0 && board[4] == 0 && board[5] == 14,
+	       "the Overview's board: no padding on the card itself, facts "
+	       "not boxed, a 14px title (card %d/%d, fact %d/%d border %d, "
+	       "title %d)", board[0], board[1], board[2], board[3], board[4],
+	       board[5]);
+	measure_status_card ("intel-hero", intel);
+	CHECK (intel[0] == 16 && intel[1] == 16,
+	       "the Threat Intel status card keeps 16px of padding (%d/%d)",
+	       intel[0], intel[1]);
+	CHECK (intel[2] == 8 && intel[3] == 12 && intel[4] == 1,
+	       "its facts stay boxed: 8px 12px inside a 1px border (%d/%d, "
+	       "border %d)", intel[2], intel[3], intel[4]);
+	CHECK (intel[5] == 16, "and its title stays 16px (%d)", intel[5]);
+
+	/* An adapter's kind (Overview, Network adapters) takes its ink
+	 * from the stylesheet, so a row that is kept across a Dark mode
+	 * switch is repainted in the new palette. */
+	dark_ink = label_ink_is ("adapter-name", "adapter-kind",
+	                         "fs_text_weak");
+	if (gtk_css_provider_load_from_data (light, fs_theme_light_css, -1,
+	                                     NULL)) {
+		gtk_style_context_add_provider_for_screen (
+			gdk_screen_get_default (), GTK_STYLE_PROVIDER (light),
+			GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+		light_ink = label_ink_is ("adapter-name", "adapter-kind",
+		                          "fs_text_weak");
+		gtk_style_context_remove_provider_for_screen (
+			gdk_screen_get_default (), GTK_STYLE_PROVIDER (light));
+	}
+	g_object_unref (light);
+	CHECK (dark_ink && light_ink,
+	       "an adapter's kind is written in fs_text_weak, dark (%d) and "
+	       "light (%d)", dark_ink, light_ink);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -1037,6 +1183,7 @@ main (int argc, char **argv)
 		check_light_palette ();
 		check_accents ();
 		check_density ();
+		check_shared_classes ();
 	}
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",

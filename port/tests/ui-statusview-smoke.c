@@ -406,6 +406,14 @@ check_latest_blocks (GtkWidget *page)
 	g_ptr_array_unref (titles);
 }
 
+/* The page's clock, two seconds ahead: the next reading of the adapter
+ * counters is then a full interval after the last. */
+static gint64
+two_seconds_on (void)
+{
+	return g_get_monotonic_time () + 2 * G_USEC_PER_SEC;
+}
+
 static void
 check_overview (GtkWidget *page)
 {
@@ -549,24 +557,38 @@ check_overview (GtkWidget *page)
 
 	check_latest_blocks (page);
 
-	/* The live cards, on whatever this machine reports: the accessors
-	 * stay inside their bounds.  The numbers themselves are checked
-	 * against a fake backend in ui-overview-place-smoke.c. */
+	/* The live cards, on whatever this machine reports.  The numbers
+	 * themselves, and the two minutes the graph keeps, are checked
+	 * against a fake backend in ui-overview-place-smoke.c; here it is
+	 * the real backend's counters that must reach the graph.  One more
+	 * reading, two seconds on by the page's clock, is one more point
+	 * where this machine has adapter counters and none where it has
+	 * not. */
 	{
-		guint64 *rx = NULL, *tx = NULL;
-		guint n = fs_statusview_traffic_points (&rx, &tx);
-		gchar **busy = fs_statusview_busiest_programs ();
+		GList *stats = backend->list_interface_stats != NULL
+		               ? backend->list_interface_stats () : NULL;
+		gboolean counters = stats != NULL;
+		guint had = fs_statusview_traffic_points (NULL, NULL), n, want;
+		gchar **busy;
 
-		CHECK (n <= 60 && rx != NULL && tx != NULL,
-		       "the Traffic graph holds at most two minutes of points "
-		       "(%u)", n);
+		g_list_free_full (stats, (GDestroyNotify) fs_iface_stat_free);
+		fs_statusview_set_clock (two_seconds_on);
+		fs_statusview_refresh ();
+		fs_statusview_set_clock (NULL);
+		n = fs_statusview_traffic_points (NULL, NULL);
+		want = counters ? MIN (had + 1, 60) : 0;
+		CHECK (n == want,
+		       "a reading two seconds on: %s (%u points before, %u "
+		       "after)", counters ? "this machine's adapter counters "
+		       "give the Traffic graph one more point"
+		       : "no adapter counters here, and the Traffic graph "
+		       "stays empty", had, n);
 		CHECK (fs_statusview_traffic_scale () >= 1024,
 		       "its scale is never under 1 KiB/s");
+		busy = fs_statusview_busiest_programs ();
 		CHECK (g_strv_length (busy) <= 5,
 		       "Busiest programs ranks at most five (%u)",
 		       g_strv_length (busy));
-		g_free (rx);
-		g_free (tx);
 		g_strfreev (busy);
 	}
 

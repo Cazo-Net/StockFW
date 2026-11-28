@@ -81,6 +81,25 @@ dialog_parent (void)
 	return GTK_IS_WINDOW (toplevel) ? toplevel : NULL;
 }
 
+/* [ page_on_show ]
+ * Is this the page the window shows?  The window's notebook takes the
+ * pages it is not showing out by their child-visible flag, on the
+ * container fs-app.c wraps each page in.  Not "is it mapped": that is
+ * also FALSE with the window in the tray, where the report should
+ * still be there on return, and with no window at all (the smoke test
+ * builds the page alone), where there is no other page to be on. */
+static gboolean
+page_on_show (void)
+{
+	GtkWidget *w;
+
+	for (w = page_widget; w != NULL; w = gtk_widget_get_parent (w))
+		if (!gtk_widget_get_child_visible (w))
+			return FALSE;
+
+	return page_widget != NULL;
+}
+
 static const gchar *
 change_list_name (FsTrustChange change)
 {
@@ -327,10 +346,14 @@ inspect_ready (GObject *source_object, GAsyncResult *result,
 		            _("Report ready.") :
 		            _("The file could not be read."));
 
-		/* A row was activated: its report opens in the drawer.  A
-		 * drawer of this page that is already open follows every
-		 * inspect, so it never shows another file than the card. */
-		if (drawer_wanted || fs_drawer_owner () == &drawer_owner)
+		/* A row was activated: its report opens in the drawer, if
+		 * this page is still the one on show (a big file takes a
+		 * while, and the drawer must not open over another page).
+		 * A drawer of this page that is already open follows every
+		 * inspect, so it never shows another file than the card;
+		 * a page switch closes it, so that one needs no such test. */
+		if ((drawer_wanted && page_on_show ()) ||
+		    fs_drawer_owner () == &drawer_owner)
 			trust_details_show ();
 	}
 	drawer_wanted = FALSE;

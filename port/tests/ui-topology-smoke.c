@@ -25,12 +25,25 @@
  *     is polled only while the page is on screen;
  *   - a click or Enter on a node opens its details in the drawer, and
  *     the arrow keys move between nodes;
+ *   - a click or Enter between a block and the repaint that follows it
+ *     opens the node that is on screen, or nothing when it has gone;
+ *   - a line whose connections were opened both ways is neither
+ *     outbound nor inbound: it does not move, it has an arrowhead at
+ *     each end, and the tooltip and the details count the two kinds;
+ *   - past the 32 addresses it remembers, the page says "more than 32"
+ *     and does not claim that the table lists them all;
+ *   - open details follow the diagram: left alone when nothing changed,
+ *     filled again when something did, closed when their node goes;
+ *   - in a window that hosts the drawer, the page is laid out in the
+ *     width the open drawer leaves, the hit test agrees with the
+ *     picture, and the arrow keys take the details with them;
  *   - destroying the page while it animates leaves nothing running, and
  *     nothing above raises a GTK warning.
  *
  * Teeth: make anim_sync ignore area_mapped (or the animation setting)
  * and the "no tick" checks fail; make expire_blocks keep everything and
- * the expiry checks fail.
+ * the expiry checks fail; make diagram_width return the width it is
+ * given and the "legend that cannot give way" checks fail.
  */
 
 #include <gtk/gtk.h>
@@ -101,12 +114,25 @@ static const FakeConn six[] = {
 	  "HTTPS", "Outbound" },
 };
 
+/* A server: nginx answers three clients and has opened one connection
+ * itself, sshd has one client on the local network, curl is on its way
+ * out.  The first four rows alone leave no line that runs one way. */
+static const FakeConn mixed[] = {
+	{ "nginx", "192.168.1.50", "203.0.113.1",   "443", "HTTPS", "Inbound"  },
+	{ "nginx", "192.168.1.50", "203.0.113.2",   "443", "HTTPS", "Inbound"  },
+	{ "nginx", "192.168.1.50", "203.0.113.3",   "443", "HTTPS", "Inbound"  },
+	{ "nginx", "192.168.1.50", "198.51.100.5",  "443", "HTTPS", "Outbound" },
+	{ "sshd",  "192.168.1.50", "192.168.1.20",  "22",  "SSH",   "Inbound"  },
+	{ "curl",  "192.168.1.50", "93.184.216.34", "443", "HTTPS", "Outbound" },
+};
+
 /* One program holding more connections than the drawer lists. */
 #define MANY 25
 
 static const FakeConn *fake_table = busy;
 static guint           fake_rows = G_N_ELEMENTS (busy);
 static gboolean        fake_many = FALSE;
+static guint           fake_many_rows = MANY;
 static guint           fake_calls = 0;
 
 static FsConnection *
@@ -131,7 +157,7 @@ fake_list (void)
 
 	fake_calls++;
 	if (fake_many) {
-		for (guint i = 0; i < MANY; i++) {
+		for (guint i = 0; i < fake_many_rows; i++) {
 			FakeConn f = { "rsync", "10.0.0.5", NULL, "873", "rsync",
 			               "Outbound" };
 			gchar *remote = g_strdup_printf ("10.0.1.%u", i + 1);
@@ -266,12 +292,121 @@ has_label (GtkWidget *widget, const gchar *text)
 	return found;
 }
 
+/* TRUE when some label under `widget' contains `text'. */
+static gboolean
+has_label_with (GtkWidget *widget, const gchar *text)
+{
+	gboolean found = FALSE;
+
+	if (GTK_IS_LABEL (widget))
+		return strstr (gtk_label_get_text (GTK_LABEL (widget)), text) != NULL;
+	if (GTK_IS_CONTAINER (widget)) {
+		GList *children = gtk_container_get_children (GTK_CONTAINER (widget));
+
+		for (GList *l = children; l != NULL && !found; l = l->next)
+			found = has_label_with (GTK_WIDGET (l->data), text);
+		g_list_free (children);
+	}
+	return found;
+}
+
 static const gchar *
 drawer_title (void)
 {
 	GtkWidget *label = find_by_name (fs_drawer_widget (), "fs-drawer-title");
 
 	return label != NULL ? gtk_label_get_text (GTK_LABEL (label)) : "(none)";
+}
+
+/* What the drawer was last filled with: the one child of its body. */
+static GtkWidget *
+drawer_body (void)
+{
+	GtkWidget *slot = find_by_name (fs_drawer_widget (), "fs-drawer-body");
+	GList *children = slot != NULL
+		? gtk_container_get_children (GTK_CONTAINER (slot)) : NULL;
+	GtkWidget *body = children != NULL ? children->data : NULL;
+
+	g_list_free (children);
+	return body;
+}
+
+/* The colour of one pixel of the diagram as the window last painted it
+ * (0xRRGGBB); x and y are the diagram's own. */
+static guint32
+pixel_at (GtkWidget *window, GtkWidget *area, gint x, gint y)
+{
+	cairo_surface_t *surface = gtk_offscreen_window_get_surface (
+		GTK_OFFSCREEN_WINDOW (window));
+	cairo_surface_t *one = cairo_image_surface_create (CAIRO_FORMAT_RGB24,
+	                                                   1, 1);
+	cairo_t *cr = cairo_create (one);
+	gint wx = 0, wy = 0;
+	guint32 pixel = 0;
+
+	gtk_widget_translate_coordinates (area, window, x, y, &wx, &wy);
+	cairo_set_source_surface (cr, surface, -wx, -wy);
+	cairo_paint (cr);
+	cairo_destroy (cr);
+	cairo_surface_flush (one);
+	memcpy (&pixel, cairo_image_surface_get_data (one), sizeof pixel);
+	cairo_surface_destroy (one);
+	return pixel & 0xffffff;
+}
+
+/* Is an arrowhead painted where the line of node `index' leaves it?
+ * `right' is the side of the node the line is on.  Six pixels along
+ * the line an arrowhead is some three pixels tall on each side of it;
+ * the line itself is at most two.  Compared with the card's ground,
+ * taken well above the line. */
+static gboolean
+arrowhead_at_node (GtkWidget *window, GtkWidget *area, guint index,
+                   gboolean right)
+{
+	GdkRectangle r;
+	gint x;
+
+	fs_topology_node_rect (index, &r);
+	x = right ? r.x + r.width + 6 : r.x - 7;
+	return pixel_at (window, area, x, r.y + r.height / 2 - 3) !=
+	       pixel_at (window, area, x, r.y + 2);
+}
+
+/* Where the drawer's panel begins, in the diagram's coordinates. */
+static gint
+drawer_left (GtkWidget *area)
+{
+	gint x = -1;
+
+	if (!gtk_widget_translate_coordinates (fs_drawer_widget (), area, 0, 0,
+	                                       &x, NULL))
+		return -1;
+	return x;
+}
+
+/* The right edge of `widget', in the diagram's coordinates. */
+static gint
+right_edge (GtkWidget *widget, GtkWidget *area)
+{
+	gint x = -1;
+
+	gtk_widget_translate_coordinates (widget, area,
+		gtk_widget_get_allocated_width (widget), 0, &x, NULL);
+	return x;
+}
+
+/* Every node ends at or before `x'. */
+static gboolean
+nodes_left_of (gint x)
+{
+	for (guint i = 0; i < fs_topology_node_count (); i++) {
+		GdkRectangle r;
+
+		fs_topology_node_rect (i, &r);
+		if (r.x + r.width > x)
+			return FALSE;
+	}
+	return TRUE;
 }
 
 static void
@@ -361,6 +496,24 @@ build (gint width, gint height)
 	gtk_window_set_default_size (GTK_WINDOW (window), width, height);
 	gtk_container_add (GTK_CONTAINER (window), fs_topology_page ());
 	gtk_widget_show_all (window);   /* as fs-app.c does */
+	spin (100);
+	return window;
+}
+
+/* The page under the drawer, as the main window hosts them: the drawer
+ * is an overlay at the right edge of the pages.  Destroying the window
+ * destroys the drawer with it; the next use makes a new one. */
+static GtkWidget *
+build_hosted (gint width, gint height)
+{
+	GtkWidget *window = gtk_offscreen_window_new ();
+	GtkWidget *overlay = gtk_overlay_new ();
+
+	gtk_window_set_default_size (GTK_WINDOW (window), width, height);
+	gtk_container_add (GTK_CONTAINER (overlay), fs_topology_page ());
+	gtk_overlay_add_overlay (GTK_OVERLAY (overlay), fs_drawer_widget ());
+	gtk_container_add (GTK_CONTAINER (window), overlay);
+	gtk_widget_show_all (window);
 	spin (100);
 	return window;
 }
@@ -669,6 +822,273 @@ main (int argc, char **argv)
 	       fs_topology_node_count () == 9,
 	       "and then the diagram shows no blocked node");
 
+	/* ---- a click or Enter between a block and its repaint ----
+	 * A new block moves every blocked node down by one, and the
+	 * diagram is repainted a tenth of a second later.  Until then the
+	 * picture on screen is the old one, and it is the old picture the
+	 * user clicks on. */
+	fs_drawer_close ();
+	t0 = g_get_monotonic_time ();
+	block ("203.0.113.10", TRUE, "22", "SSH", t0);
+	block ("203.0.113.20", TRUE, "22", "SSH", t0 + 1);
+	blocked = fs_topology_find_node ("203.0.113.10");
+	fs_topology_node_rect ((guint) blocked, &rect);
+	CHECK (draw_offscreen (window, "900-two") && blocked == 10,
+	       "two blocked addresses are painted, 203.0.113.10 second");
+	block ("203.0.113.30", TRUE, "22", "SSH", t0 + 2);
+	click (area, rect.x + rect.width / 2, rect.y + rect.height / 2);
+	CHECK (fs_drawer_is_open () &&
+	       g_strcmp0 (drawer_title (), "203.0.113.10") == 0,
+	       "a click just after another block opens the node that was "
+	       "clicked, not the one that took its place (title \"%s\")",
+	       drawer_title ());
+	fs_drawer_close ();
+	block ("203.0.113.40", TRUE, "22", "SSH", t0 + 3);
+	press_key (area, GDK_KEY_Return);
+	CHECK (fs_drawer_is_open () &&
+	       g_strcmp0 (drawer_title (), "203.0.113.10") == 0,
+	       "Enter just after another block opens the node under the "
+	       "ring (title \"%s\")", drawer_title ());
+	fs_drawer_close ();
+	blocked = fs_topology_find_node ("203.0.113.10");
+	fs_topology_node_rect ((guint) blocked, &rect);
+	block ("203.0.113.50", TRUE, "22", "SSH", t0 + 4);
+	click (area, rect.x + rect.width / 2, rect.y + rect.height / 2);
+	CHECK (blocked == 12 && !fs_drawer_is_open () &&
+	       fs_topology_find_node ("203.0.113.10") < 0,
+	       "a click on a node that the new block pushed off the diagram "
+	       "opens nothing (open: %d, title \"%s\")",
+	       fs_drawer_is_open (), drawer_title ());
+
+	/* ---- more addresses than are remembered ---- */
+	fs_topology_expire (t0 + 11 * MINUTE);
+	t0 = g_get_monotonic_time ();
+	block ("198.18.0.1", TRUE, "23", "Telnet", t0);
+	for (guint i = 2; i <= 33; i++) {
+		gchar *remote = g_strdup_printf ("198.18.0.%u", i);
+
+		block (remote, TRUE, "23", "Telnet", t0 + MINUTE);
+		g_free (remote);
+	}
+	CHECK (fs_topology_blocked_count () == 32 &&
+	       fs_topology_find_node ("198.18.0.33") == 9 &&
+	       fs_topology_table_rows () == 16 + 32,
+	       "33 addresses blocked: the newest 32 are remembered and "
+	       "listed (%u, %u rows)", fs_topology_blocked_count (),
+	       fs_topology_table_rows ());
+	CHECK (strstr (gtk_label_get_text (GTK_LABEL (caption)),
+	               "More than 32 addresses were blocked in the last "
+	               "10 minutes") != NULL &&
+	       strstr (gtk_label_get_text (GTK_LABEL (caption)),
+	               "the table lists the newest 32.") != NULL &&
+	       strstr (gtk_label_get_text (GTK_LABEL (caption)),
+	               "them all") == NULL,
+	       "the caption says more than 32, and that the table lists the "
+	       "newest 32, not all (got \"%s\")",
+	       gtk_label_get_text (GTK_LABEL (caption)));
+	CHECK (fs_topology_activate_node (0) &&
+	       has_label (fs_drawer_widget (), "More than 32"),
+	       "and so do the details of This computer");
+	fs_topology_expire (t0 + 10 * MINUTE + G_USEC_PER_SEC);
+	CHECK (fs_topology_blocked_count () == 32 &&
+	       fs_topology_node_count () == 13 &&
+	       strstr (gtk_label_get_text (GTK_LABEL (caption)),
+	               "32 addresses were blocked in the last 10 minutes") != NULL &&
+	       strstr (gtk_label_get_text (GTK_LABEL (caption)),
+	               "More than") == NULL &&
+	       strstr (gtk_label_get_text (GTK_LABEL (caption)),
+	               "the table lists them all.") != NULL,
+	       "ten minutes after the block that was pushed out, 32 is the "
+	       "whole count again (got \"%s\")",
+	       gtk_label_get_text (GTK_LABEL (caption)));
+	CHECK (fs_drawer_is_open () && has_label (fs_drawer_widget (), "32") &&
+	       !has_label (fs_drawer_widget (), "More than 32"),
+	       "and the open details of This computer were brought up to "
+	       "date");
+	fs_topology_expire (t0 + 12 * MINUTE);
+	CHECK (fs_topology_blocked_count () == 0 &&
+	       fs_topology_node_count () == 9 &&
+	       strstr (gtk_label_get_text (GTK_LABEL (caption)),
+	               "Nothing was blocked") != NULL,
+	       "and then nothing is left");
+
+	/* ---- open details follow the diagram ---- */
+	{
+		GtkWidget *body;
+
+		CHECK (fs_topology_activate_node (1) &&
+		       g_strcmp0 (drawer_title (), "firefox") == 0 &&
+		       has_label (fs_drawer_widget (), "4 open connections"),
+		       "firefox is open in the drawer with its 4 connections");
+		body = drawer_body ();
+		g_object_add_weak_pointer (G_OBJECT (body), (gpointer *) &body);
+		fs_topology_refresh ();
+		spin (50);
+		CHECK (body != NULL && drawer_body () == body,
+		       "a sample that changes nothing leaves the drawer's content "
+		       "alone");
+		fake_rows = 3;                 /* firefox closed one */
+		fs_topology_refresh ();
+		spin (50);
+		CHECK (fs_drawer_is_open () &&
+		       g_strcmp0 (drawer_title (), "firefox") == 0 &&
+		       has_label (fs_drawer_widget (), "3 open connections") &&
+		       !has_label (fs_drawer_widget (), "4 open connections") &&
+		       !has_label (fs_drawer_widget (), "142.250.74.14") &&
+		       body == NULL,
+		       "a sample with one connection fewer fills it again: 3 open "
+		       "connections");
+		fake_rows = G_N_ELEMENTS (busy);
+		fs_topology_refresh ();
+
+		t0 = g_get_monotonic_time ();
+		block ("203.0.113.7", TRUE, "22", "SSH", t0);
+		blocked = fs_topology_find_node ("203.0.113.7");
+		CHECK (blocked >= 0 && fs_topology_activate_node ((guint) blocked) &&
+		       has_label_with (fs_drawer_widget (), "1 time, since "),
+		       "a blocked address is open in the drawer: blocked 1 time");
+		block ("203.0.113.7", TRUE, "22", "SSH", t0 + 1);
+		block ("203.0.113.7", TRUE, "22", "SSH", t0 + 2);
+		CHECK (fs_topology_node_count () == 10 &&
+		       g_strcmp0 (drawer_title (), "203.0.113.7") == 0 &&
+		       has_label_with (fs_drawer_widget (), "3 times, since ") &&
+		       !has_label_with (fs_drawer_widget (), "1 time, since "),
+		       "two more blocks from it and the drawer says 3 times");
+		fs_topology_expire (t0 + 11 * MINUTE);
+		CHECK (fs_topology_find_node ("203.0.113.7") < 0 &&
+		       !fs_drawer_is_open (),
+		       "when the address leaves the diagram its details close");
+
+		CHECK (fs_topology_activate_node (1) &&
+		       g_strcmp0 (drawer_title (), "firefox") == 0,
+		       "firefox is open again");
+		fake_table = six;
+		fake_rows = G_N_ELEMENTS (six);
+		fs_topology_refresh ();
+		CHECK (fs_topology_find_node ("firefox") < 0 && !fs_drawer_is_open (),
+		       "and when firefox has no connection left its details close");
+		fake_table = busy;
+		fake_rows = G_N_ELEMENTS (busy);
+		fs_topology_refresh ();
+	}
+
+	/* ---- connections opened both ways ---- */
+	{
+		gint nginx, curl, sshd;
+		gchar *tip;
+
+		fake_table = mixed;
+		fake_rows = G_N_ELEMENTS (mixed);
+		fs_topology_refresh ();
+		nginx = fs_topology_find_node ("nginx");
+		curl = fs_topology_find_node ("curl");
+		sshd = fs_topology_find_node ("sshd");
+		lan = fs_topology_find_node ("Local network");
+		net = fs_topology_find_node ("Internet");
+		CHECK (nginx == 1 && curl == 2 && sshd == 3 && lan == 4 && net == 5,
+		       "a server: nginx, curl, sshd, Local network and Internet");
+		CHECK (fs_topology_node_flow ((guint) curl) ==
+		       FS_TOPOLOGY_FLOW_OUTBOUND,
+		       "curl's one connection was opened here: its line is "
+		       "outbound");
+		CHECK (fs_topology_node_flow ((guint) sshd) ==
+		       FS_TOPOLOGY_FLOW_INBOUND &&
+		       fs_topology_node_flow ((guint) lan) ==
+		       FS_TOPOLOGY_FLOW_INBOUND,
+		       "sshd's one connection was opened from the local network: "
+		       "both lines are inbound");
+		CHECK (fs_topology_node_flow ((guint) nginx) ==
+		       FS_TOPOLOGY_FLOW_MIXED &&
+		       fs_topology_node_flow ((guint) net) == FS_TOPOLOGY_FLOW_MIXED,
+		       "nginx (3 in, 1 out) and Internet (3 in, 2 out) are mixed, "
+		       "not outbound (%d, %d)",
+		       fs_topology_node_flow ((guint) nginx),
+		       fs_topology_node_flow ((guint) net));
+		CHECK (fs_topology_node_flow (0) == FS_TOPOLOGY_FLOW_NONE &&
+		       fs_topology_node_flow (99) == FS_TOPOLOGY_FLOW_NONE,
+		       "This computer and a node that does not exist have no line");
+
+		tip = fs_topology_node_tooltip ((guint) nginx);
+		CHECK (tip != NULL && strstr (tip, "4 open connections") != NULL &&
+		       strstr (tip, "1 opened here, 3 opened from outside") != NULL,
+		       "nginx's tooltip gives the split");
+		g_free (tip);
+		tip = fs_topology_node_tooltip ((guint) net);
+		CHECK (tip != NULL &&
+		       strstr (tip, "2 opened here, 3 opened from outside") != NULL,
+		       "and so does Internet's");
+		g_free (tip);
+		tip = fs_topology_node_tooltip ((guint) curl);
+		CHECK (tip != NULL && strstr (tip, "opened") == NULL,
+		       "curl's has none to give");
+		g_free (tip);
+		CHECK (fs_topology_node_tooltip (99) == NULL,
+		       "a node that does not exist has no tooltip");
+
+		CHECK (fs_topology_activate_node ((guint) nginx) &&
+		       has_label (fs_drawer_widget (),
+		                  "1 opened here, 3 opened from outside"),
+		       "nginx's details give the split");
+		CHECK (fs_topology_activate_node ((guint) net) &&
+		       has_label (fs_drawer_widget (),
+		                  "2 opened here, 3 opened from outside"),
+		       "Internet's details give it");
+		CHECK (fs_topology_activate_node (0) &&
+		       has_label (fs_drawer_widget (),
+		                  "2 opened here, 4 opened from outside"),
+		       "and This computer's details give it for all six");
+		CHECK (fs_topology_activate_node ((guint) curl) &&
+		       !has_label_with (fs_drawer_widget (), "opened here"),
+		       "curl's details have no split");
+		fs_drawer_close ();
+		CHECK (has_label (page, "Opened both ways"),
+		       "the legend has a sample of a line opened both ways");
+
+		/* The picture.  Moving: a mixed line has an arrowhead where it
+		 * leaves its program and where it reaches Internet; an
+		 * outbound one is dashes only. */
+		CHECK (fs_topology_animating () &&
+		       draw_offscreen (window, "900-mixed"),
+		       "the server draws, and curl's and sshd's lines move");
+		CHECK (arrowhead_at_node (window, area, (guint) nginx, TRUE) &&
+		       arrowhead_at_node (window, area, (guint) net, FALSE),
+		       "moving: the mixed lines carry an arrowhead at nginx and at "
+		       "Internet");
+		CHECK (!arrowhead_at_node (window, area, (guint) curl, TRUE),
+		       "moving: curl's outbound line carries none where it "
+		       "starts");
+		set_animations (FALSE);
+		CHECK (draw_offscreen (window, "900-mixed-static") &&
+		       arrowhead_at_node (window, area, (guint) nginx, TRUE) &&
+		       arrowhead_at_node (window, area, (guint) net, FALSE),
+		       "still: the mixed lines carry them too");
+		CHECK (!arrowhead_at_node (window, area, (guint) curl, TRUE) &&
+		       arrowhead_at_node (window, area, (guint) sshd, TRUE) &&
+		       !arrowhead_at_node (window, area, (guint) lan, FALSE),
+		       "still: an outbound line has its arrowhead at the far end "
+		       "only, an inbound one at the program");
+		set_animations (TRUE);
+
+		fake_rows = 4;                 /* nginx alone */
+		fs_topology_refresh ();
+		CHECK (fs_topology_link_count () == 2 &&
+		       fs_topology_node_flow (1) == FS_TOPOLOGY_FLOW_MIXED &&
+		       fs_topology_node_flow (2) == FS_TOPOLOGY_FLOW_MIXED &&
+		       !fs_topology_animating (),
+		       "with mixed lines only, nothing is animated: a mixed line "
+		       "has no moving dashes");
+		CHECK (draw_offscreen (window, "900-mixed-only"),
+		       "and the page draws");
+
+		fake_table = busy;
+		fake_rows = G_N_ELEMENTS (busy);
+		fs_topology_refresh ();
+		CHECK (fs_topology_animating () &&
+		       fs_topology_node_flow (1) == FS_TOPOLOGY_FLOW_OUTBOUND,
+		       "back to the busy computer: firefox is outbound and the "
+		       "lines move again");
+	}
+
 	/* ---- six programs, a path for a name, a long list ---- */
 	fake_table = six;
 	fake_rows = G_N_ELEMENTS (six);
@@ -774,6 +1194,192 @@ main (int argc, char **argv)
 		CHECK (fs_topology_find_node ("tool.exe") >= 0 &&
 		       fs_topology_node_connections (0) == 7,
 		       "a list handed over directly builds the same model");
+	}
+
+	/* ---- beside the drawer, as the main window hosts it ----
+	 * The drawer is 380 pixels at the right edge of the pages, over
+	 * the diagram's right column.  With GTK animations off it is there
+	 * at once, and nothing but the page's own handlers repaints the
+	 * diagram. */
+	{
+		GtkWidget *toggle, *card, *legend, *scroller;
+		GtkAdjustment *adj;
+		GtkWidget *body;
+		gint area_w, edge;
+
+		set_animations (FALSE);
+		window = build_hosted (1400, 800);
+		page = gtk_bin_get_child (GTK_BIN (gtk_bin_get_child (GTK_BIN (window))));
+		area = find_by_name (page, "topology-diagram");
+		caption = find_by_name (page, "topology-caption");
+		toggle = find_by_name (page, "topology-table-toggle");
+		legend = find_by_name (page, "topology-legend");
+		card = gtk_widget_get_parent (legend);
+		lan = fs_topology_find_node ("Local network");
+		net = fs_topology_find_node ("Internet");
+		area_w = gtk_widget_get_allocated_width (area);
+		fs_topology_node_rect ((guint) net, &rect);
+		CHECK (!fs_drawer_is_open () && toggle != NULL && lan > 0 && net > 0 &&
+		       fs_topology_node_count () == 13 &&
+		       rect.x + rect.width > area_w - 380 &&
+		       right_edge (toggle, area) > area_w - 380,
+		       "hosted, drawer closed: Internet and Show as table stand "
+		       "where the drawer will lie (node ends at %d of %d)",
+		       rect.x + rect.width, area_w);
+
+		gtk_widget_grab_focus (area);
+		click (area, rect.x + rect.width / 2, rect.y + rect.height / 2);
+		spin (200);
+		edge = drawer_left (area);
+		CHECK (fs_drawer_is_open () &&
+		       g_strcmp0 (drawer_title (), "Internet") == 0 &&
+		       gtk_widget_get_mapped (fs_drawer_widget ()) &&
+		       edge > 640 && edge < area_w,
+		       "a click on Internet opens the drawer over the page (its "
+		       "edge at %d of %d)", edge, area_w);
+		CHECK (right_edge (card, area) <= edge &&
+		       right_edge (toggle, area) <= edge &&
+		       right_edge (caption, area) <= edge &&
+		       right_edge (legend, area) <= edge,
+		       "the card, the caption, the legend and Show as table end "
+		       "where the drawer begins (%d, %d, %d, %d; drawer at %d)",
+		       right_edge (card, area), right_edge (caption, area),
+		       right_edge (legend, area), right_edge (toggle, area), edge);
+		CHECK (nodes_left_of (edge) && nodes_apart (area),
+		       "every node is beside the drawer, none under it, and none "
+		       "overlap");
+		CHECK (fs_topology_diagram_width () > 0 &&
+		       fs_topology_diagram_width () <= edge,
+		       "and that is the width the diagram was painted in, with "
+		       "nothing asked of it (%d)", fs_topology_diagram_width ());
+		fs_topology_node_rect ((guint) lan, &rect);
+		click (area, rect.x + rect.width / 2, rect.y + rect.height / 2);
+		CHECK (g_strcmp0 (drawer_title (), "Local network") == 0,
+		       "a click where Local network now stands opens it: the hit "
+		       "test agrees with the picture (title \"%s\")",
+		       drawer_title ());
+
+		/* The arrow keys take the details with them. */
+		press_key (area, GDK_KEY_Down);
+		CHECK (g_strcmp0 (drawer_title (), "Internet") == 0,
+		       "Down moves the ring to Internet and the drawer follows "
+		       "without Enter (title \"%s\")", drawer_title ());
+		press_key (area, GDK_KEY_Left);
+		CHECK (g_strcmp0 (drawer_title (), "This computer") == 0,
+		       "Left: This computer (title \"%s\")", drawer_title ());
+		press_key (area, GDK_KEY_Left);
+		for (guint i = 0; i < 8; i++)
+			press_key (area, GDK_KEY_Up);
+		CHECK (g_strcmp0 (drawer_title (), "firefox") == 0 &&
+		       gtk_window_get_focus (GTK_WINDOW (window)) == area,
+		       "Left and Up: firefox, and the keyboard is still on the "
+		       "diagram (title \"%s\")", drawer_title ());
+		fs_drawer_close ();
+		press_key (area, GDK_KEY_Down);
+		CHECK (!fs_drawer_is_open (),
+		       "with the drawer closed the arrow keys open nothing");
+
+		/* Closed: the page has its width back, by itself. */
+		spin (200);
+		fs_topology_node_rect ((guint) net, &rect);
+		CHECK (gtk_widget_get_allocated_width (area) == area_w &&
+		       fs_topology_diagram_width () == area_w &&
+		       rect.x + rect.width > area_w - 380 &&
+		       right_edge (toggle, area) > area_w - 380,
+		       "closing the drawer gives the page its width back (%d "
+		       "painted of %d)", fs_topology_diagram_width (), area_w);
+
+		/* A long list in the drawer: reading it is not disturbed. */
+		fake_many = TRUE;
+		fs_topology_refresh ();
+		CHECK (fs_topology_activate_node (1) &&
+		       g_strcmp0 (drawer_title (), "rsync") == 0,
+		       "rsync and its 25 connections are open in the drawer");
+		spin (200);
+		body = drawer_body ();
+		g_object_add_weak_pointer (G_OBJECT (body), (gpointer *) &body);
+		scroller = gtk_widget_get_ancestor (body, GTK_TYPE_SCROLLED_WINDOW);
+		adj = gtk_scrolled_window_get_vadjustment (
+			GTK_SCROLLED_WINDOW (scroller));
+		gtk_adjustment_set_value (adj, 120.0);
+		gtk_widget_grab_focus (area);
+		fs_topology_refresh ();
+		spin (100);
+		CHECK (gtk_adjustment_get_value (adj) == 120.0 && body != NULL &&
+		       drawer_body () == body &&
+		       gtk_window_get_focus (GTK_WINDOW (window)) == area,
+		       "the list is longer than the drawer and scrolled; a sample "
+		       "that changes nothing leaves it where it was (at %.0f)",
+		       gtk_adjustment_get_value (adj));
+		fake_many_rows = MANY - 1;
+		fs_topology_refresh ();
+		spin (100);
+		CHECK (fs_drawer_is_open () &&
+		       has_label (fs_drawer_widget (), "24 open connections") &&
+		       has_label (fs_drawer_widget (), "and 4 more") &&
+		       gtk_window_get_focus (GTK_WINDOW (window)) == area,
+		       "one connection fewer: the drawer says 24, and the keyboard "
+		       "stays on the diagram (scrolled to %.0f)",
+		       gtk_adjustment_get_value (adj));
+		if (body != NULL)
+			g_object_remove_weak_pointer (G_OBJECT (body),
+			                              (gpointer *) &body);
+		fake_many_rows = MANY;
+		fake_many = FALSE;
+		fs_drawer_close ();
+		fs_topology_refresh ();
+		spin (200);
+
+		/* A legend that cannot give way (a long translation): the card
+		 * stays wider than what the drawer leaves, and the diagram
+		 * keeps to that by itself. */
+		gtk_widget_set_size_request (legend, 1150, -1);
+		spin (100);
+		net = fs_topology_find_node ("Internet");
+		fs_topology_node_rect ((guint) net, &rect);
+		click (area, rect.x + rect.width / 2, rect.y + rect.height / 2);
+		spin (200);
+		edge = drawer_left (area);
+		CHECK (g_strcmp0 (drawer_title (), "Internet") == 0 &&
+		       gtk_widget_get_allocated_width (area) > edge,
+		       "with a legend 1150 pixels wide the diagram's area runs on "
+		       "under the drawer (%d wide, drawer at %d)",
+		       gtk_widget_get_allocated_width (area), edge);
+		CHECK (fs_topology_diagram_width () == edge &&
+		       nodes_left_of (edge) && nodes_apart (area),
+		       "but the diagram is painted in what the drawer leaves, "
+		       "every node beside it (%d)", fs_topology_diagram_width ());
+		lan = fs_topology_find_node ("Local network");
+		fs_topology_node_rect ((guint) lan, &rect);
+		click (area, rect.x + rect.width / 2, rect.y + rect.height / 2);
+		CHECK (g_strcmp0 (drawer_title (), "Local network") == 0,
+		       "and a click where Local network is painted opens it "
+		       "(title \"%s\")", drawer_title ());
+		CHECK (draw_offscreen (window, "1400-drawer"),
+		       "the page draws beside the open drawer");
+		CHECK (warnings == 0, "no GTK warning or critical hosted (%u)",
+		       warnings);
+		gtk_widget_destroy (window);
+		spin (50);
+		CHECK (!fs_drawer_is_open (),
+		       "destroying the window closes the drawer with it");
+
+		/* A window too narrow for both: the diagram keeps its smallest
+		 * width and its right column goes under the drawer. */
+		window = build_hosted (900, 500);
+		page = gtk_bin_get_child (GTK_BIN (gtk_bin_get_child (GTK_BIN (window))));
+		area = find_by_name (page, "topology-diagram");
+		CHECK (fs_topology_activate_node (0), "hosted at 900x500, drawer open");
+		spin (200);
+		edge = drawer_left (area);
+		CHECK (edge > 0 && edge < 640 &&
+		       fs_topology_diagram_width () == 640 && nodes_apart (area),
+		       "at 900x500 the diagram is not squeezed below its smallest "
+		       "width (painted in %d, drawer at %d)",
+		       fs_topology_diagram_width (), edge);
+		gtk_widget_destroy (window);
+		spin (50);
+		set_animations (TRUE);
 	}
 
 	CHECK (warnings == 0,

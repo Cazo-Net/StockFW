@@ -541,6 +541,62 @@ main (int argc, char **argv)
 	       "that removal reached the audit log as well");
 	g_clear_pointer (&contents, g_free);
 
+	/* --- a report that arrives after the user has left the page must
+	 * not open the drawer over the page they went to.  The window's
+	 * notebook is what takes a page off show, so the page goes into
+	 * one here, beside a stand-in for another page.  The switch comes
+	 * before the main loop has turned once, so before the result. */
+	{
+		GtkWidget *book = gtk_notebook_new ();
+		GtkWidget *other = gtk_label_new ("another page");
+
+		g_object_ref_sink (book);
+		gtk_notebook_append_page (GTK_NOTEBOOK (book), page, NULL);
+		gtk_notebook_append_page (GTK_NOTEBOOK (book), other, NULL);
+		gtk_widget_show_all (book);
+
+		gtk_entry_set_text (GTK_ENTRY (entry), payload);
+		gtk_button_clicked (GTK_BUTTON (inspect));
+		pump_until_idle ();
+		auto_confirm = TRUE;
+		gtk_button_clicked (GTK_BUTTON (attest));
+		CHECK (pump_until_idle () && !auto_confirm &&
+		       fs_trustview_list_count () == 1 && !fs_drawer_is_open (),
+		       "in a notebook now, the file is attested once more");
+
+		gtk_entry_set_text (GTK_ENTRY (entry), "");
+		activate_row (tree, 0);
+		gtk_notebook_set_current_page (GTK_NOTEBOOK (book), 1);
+		CHECK (fs_trustview_busy () &&
+		       gtk_notebook_get_current_page (GTK_NOTEBOOK (book)) == 1,
+		       "a row is activated and the page left before its report "
+		       "is in");
+		CHECK (pump_until_idle () && !fs_drawer_is_open (),
+		       "the report that arrives then does not open the drawer "
+		       "over the other page");
+		CHECK (fs_trustview_current () != NULL &&
+		       g_strcmp0 (fs_trustview_current ()->path, payload) == 0,
+		       "the page's own card has it all the same");
+
+		gtk_notebook_set_current_page (GTK_NOTEBOOK (book), 0);
+		gtk_button_clicked (GTK_BUTTON (inspect));
+		CHECK (pump_until_idle () && !fs_drawer_is_open (),
+		       "back on the page, the request is not left over for the "
+		       "next inspection");
+		activate_row (tree, 0);
+		CHECK (pump_until_idle () && fs_drawer_is_open () &&
+		       g_strcmp0 (drawer_field ("File"), payload) == 0,
+		       "and a row opens in the drawer as before");
+
+		/* As it was found: nothing attested, the drawer closed. */
+		auto_confirm = TRUE;
+		if (drawer_button ("Forget") != NULL)
+			gtk_button_clicked (GTK_BUTTON (drawer_button ("Forget")));
+		CHECK (pump_until_idle () && !auto_confirm &&
+		       fs_trustview_list_count () == 0 && !fs_drawer_is_open (),
+		       "the file is forgotten again");
+	}
+
 	/* --- inspect something that is not there. */
 	gtk_entry_set_text (GTK_ENTRY (entry),
 	                    "Z:\\definitely\\not\\here.exe");

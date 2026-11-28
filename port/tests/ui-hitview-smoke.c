@@ -2495,6 +2495,18 @@ check_policy_details (const gchar *config)
 	             "203.0.113.9", NULL);
 	policy_rule (policy, FS_RULE_OUTBOUND_DENY_TO, NULL, NULL,
 	             "2001:db8::5", "second");
+	/* And a forward, whose first column is headed with its group's
+	 * title as the host rule's is, but holds a service. */
+	{
+		FsRule *forward = fs_rule_new (FS_RULE_INBOUND_FORWARD);
+
+		forward->service = g_strdup ("HTTP");
+		forward->port    = g_strdup ("80");
+		forward->to      = g_strdup ("192.168.1.10");
+		forward->to_port = g_strdup ("8080");
+		fs_policy_add (policy, forward);
+		fs_rule_free (forward);
+	}
 	CHECK (fs_policy_save (policy),
 	       "policy: the sample rules are saved to the scratch folder");
 
@@ -2560,6 +2572,30 @@ check_policy_details (const gchar *config)
 	       g_strcmp0 (drawer_field ("Host"), "203.0.113.9") == 0,
 	       "policy: selecting a rule in another group refreshes the open "
 	       "drawer (\"%s\")", drawer_text ("fs-drawer-title"));
+
+	/* The forward rule: the drawer's title is the group's, and the
+	 * first field is the service it forwards, not a host. */
+	tree_select (trees->pdata[2], 0);
+	CHECK (g_strcmp0 (drawer_text ("fs-drawer-title"),
+	                  "Forward service") == 0 &&
+	       g_strcmp0 (drawer_text ("fs-drawer-subtitle"),
+	                  "HTTP \xc2\xb7 80 \xc2\xb7 192.168.1.10 \xc2\xb7 8080")
+	       == 0,
+	       "policy: the forward rule's drawer (\"%s\", \"%s\")",
+	       drawer_text ("fs-drawer-title"),
+	       drawer_text ("fs-drawer-subtitle"));
+	CHECK (drawer_field ("Host") == NULL &&
+	       g_strcmp0 (drawer_field ("Service"), "HTTP") == 0,
+	       "policy: its service is named Service, not Host (Host \"%s\", "
+	       "Service \"%s\")",
+	       drawer_field ("Host") != NULL ? drawer_field ("Host") : "",
+	       drawer_field ("Service") != NULL ? drawer_field ("Service")
+	                                        : "");
+	CHECK (g_strcmp0 (drawer_field ("Firewall port"), "80") == 0 &&
+	       g_strcmp0 (drawer_field ("To"), "192.168.1.10") == 0 &&
+	       g_strcmp0 (drawer_field ("Port"), "8080") == 0 &&
+	       g_strcmp0 (drawer_field ("Comment"), "-") == 0,
+	       "policy: ...and its other four columns keep their headings");
 
 	/* The SSH rule has been selected in its group all along
 	 * (fs_policyview_select above), so going there changes no

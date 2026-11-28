@@ -60,11 +60,37 @@ gint         fs_topology_find_node (const gchar *title);
  * FALSE for an index that does not exist. */
 gboolean     fs_topology_node_rect (guint index, GdkRectangle *rect);
 
+/* The width the diagram was last painted in: its area's own, or less
+ * while the details panel shows one of its nodes and lies over the
+ * right of the page.  fs_topology_node_rect () uses the same width. */
+gint         fs_topology_diagram_width (void);
+
 guint fs_topology_link_count (void);
 guint fs_topology_blocked_link_count (void);
-/* How many addresses are remembered as blocked (the diagram draws the
- * newest four; the table lists them all). */
+/* How many addresses are remembered as blocked: 32 at most, the newest.
+ * The diagram draws the newest four and the table lists these.  When
+ * more than 32 were blocked inside the ten minutes, the caption and
+ * the details of This computer say "more than 32". */
 guint fs_topology_blocked_count (void);
+
+/* Which way the open connections on a node's line were opened.  One
+ * connection each way makes the line mixed: it is then drawn still,
+ * with an arrowhead at each end, in place of dashes or an arrowhead
+ * that would be wrong about some of them. */
+typedef enum
+{
+	FS_TOPOLOGY_FLOW_NONE = -1,   /* no such line: This computer, a
+	                               * blocked address, no such node   */
+	FS_TOPOLOGY_FLOW_OUTBOUND,    /* all opened by this computer     */
+	FS_TOPOLOGY_FLOW_INBOUND,     /* all opened from outside         */
+	FS_TOPOLOGY_FLOW_MIXED
+} FsTopologyFlow;
+
+FsTopologyFlow fs_topology_node_flow (guint index);
+
+/* The node's tooltip, to be freed; NULL for an index that does not
+ * exist. */
+gchar *fs_topology_node_tooltip (guint index);
 
 /* The sentence the diagram shows where the programs would be when it
  * has none to show, or NULL when it has some. */
@@ -81,7 +107,14 @@ void    fs_topology_set_phase (gdouble seconds);
 gdouble fs_topology_get_phase (void);
 
 /* What a click or Enter on the node does: opens its details in the
- * drawer.  FALSE for an index that does not exist. */
+ * drawer.  FALSE for an index that does not exist.
+ *
+ * Between a block and the repaint that follows it (a tenth of a second)
+ * an index names a node of the picture still on screen; the node is
+ * then found again by what it is, and FALSE is returned when it has
+ * left the diagram.  While the details are open they follow the
+ * diagram: they are filled again when what they say has changed, and
+ * closed when their node leaves it. */
 gboolean fs_topology_activate_node (guint index);
 
 /* The "Show as table" switch, and how many rows the table holds. */

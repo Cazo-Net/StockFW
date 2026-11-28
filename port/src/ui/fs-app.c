@@ -517,6 +517,53 @@ on_window_key_after (GtkWidget *widget, GdkEventKey *event, gpointer data)
 	return TRUE;
 }
 
+/* [ on_window_focus_moved ]
+ * The open drawer lies over the right-hand edge of the page, and what
+ * is under it can still be reached with Tab.  When the keyboard goes
+ * to a control of the page that is wholly under the drawer, the drawer
+ * closes, so the control that has the keyboard can be seen.  (The
+ * mouse cannot get there: the drawer takes it over its own rectangle.)
+ *
+ * Left alone: the drawer's own buttons; the sidebar; a list or a
+ * diagram that only runs under the drawer with its right-hand part;
+ * and anything while the drawer is still sliding in, when it is the
+ * control that opened the drawer taking the keyboard.  A control
+ * that already has the keyboard when the drawer opens over it is not
+ * a move, and is left alone too.  Connected AFTER the window's own
+ * handler, so the keyboard is already where it is going and the
+ * close has nothing to give back. */
+static void
+on_window_focus_moved (GtkWindow *window, GtkWidget *focus, gpointer data)
+{
+	GtkWidget *drawer, *pages, *panel;
+	gint x = 0, y = 0, width = 0;
+
+	(void) data;
+
+	if (focus == NULL || fsapp.notebook == NULL || !fs_drawer_is_open ())
+		return;
+
+	drawer = fs_drawer_widget ();
+	pages = gtk_widget_get_parent (drawer);
+	panel = gtk_bin_get_child (GTK_BIN (drawer));
+	if (pages == NULL || panel == NULL ||
+	    gtk_widget_get_toplevel (drawer) != GTK_WIDGET (window) ||
+	    !gtk_widget_get_mapped (drawer) ||
+	    !gtk_revealer_get_child_revealed (GTK_REVEALER (drawer)) ||
+	    !gtk_widget_is_ancestor (focus, fsapp.notebook))
+		return;
+
+	/* The drawer is as tall as the pages and ends at their right edge,
+	 * so a control that starts at or past the drawer's left edge is
+	 * all under it.  Where that edge is comes from the width the
+	 * drawer's panel asks for, not from where the drawer was last
+	 * laid out: one shown a moment ago has not been laid out again. */
+	gtk_widget_get_preferred_width (panel, &width, NULL);
+	if (gtk_widget_translate_coordinates (focus, pages, 0, 0, &x, &y) &&
+	    x >= gtk_widget_get_allocated_width (pages) - width)
+		fs_drawer_close ();
+}
+
 /* [ side_text ] -- a label the rail hides. */
 static GtkWidget *
 side_text (GtkWidget *label)
@@ -2452,10 +2499,23 @@ fs_app_activate (GtkApplication *app)
 	 * rest of the page still takes the mouse. */
 	{
 		GtkWidget *pages = gtk_overlay_new ();
+		GList *chain = NULL;
 
 		gtk_container_add (GTK_CONTAINER (pages), fsapp.notebook);
 		gtk_overlay_add_overlay (GTK_OVERLAY (pages),
 		                         fs_drawer_widget ());
+		/* Tab goes through the page and then into the drawer, and
+		 * Shift+Tab back.  Left to sort the two by where they are,
+		 * GTK puts the drawer first (an overlay child counts as
+		 * being at 0,0), which is between the sidebar and the page:
+		 * a whole round of the window away from the list that
+		 * opened it.  While the drawer is hidden it is skipped. */
+		chain = g_list_append (chain, fsapp.notebook);
+		chain = g_list_append (chain, fs_drawer_widget ());
+		G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+		gtk_container_set_focus_chain (GTK_CONTAINER (pages), chain);
+		G_GNUC_END_IGNORE_DEPRECATIONS
+		g_list_free (chain);
 		gtk_box_pack_start (GTK_BOX (box), pages, TRUE, TRUE, 0);
 	}
 
@@ -2463,6 +2523,8 @@ fs_app_activate (GtkApplication *app)
 	                  G_CALLBACK (on_page_switched), NULL);
 	g_signal_connect_after (fsapp.window, "key-press-event",
 	                        G_CALLBACK (on_window_key_after), NULL);
+	g_signal_connect_after (fsapp.window, "set-focus",
+	                        G_CALLBACK (on_window_focus_moved), NULL);
 
 	add_page (_("Overview"), NULL, fs_statusview_page (), FALSE);
 	add_page (_("Events"),

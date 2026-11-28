@@ -4122,8 +4122,8 @@ rm -rf "$D4"
 H="$TMP/pr4e"
 mkdir -p "$H"
 "$S" --json help topics > "$H/topics.json" 2> "$H/err"
-check "PR4-E: help --json topics is one JSON document of 25 topics" \
-  py "import json; d = json.load(open('$H/topics.json')); assert len(d['topics']) == 25, len(d['topics'])"
+check "PR4-E: help --json topics is one JSON document of 26 topics" \
+  py "import json; d = json.load(open('$H/topics.json')); assert len(d['topics']) == 26, len(d['topics'])"
 check "PR4-E: every topic id renders: exit 0, its title first, its summary, no markup left" py "
 import json, subprocess
 for t in json.load(open('$H/topics.json'))['topics']:
