@@ -46,13 +46,25 @@
  *       at about 80 characters on a wide window; related-topic chips
  *       sit 6 pixels apart; Help and Preferences share one sidebar
  *       width
+ *   S1  the main window's sidebar folds to a rail of icons on Ctrl+B
+ *       and on its fold button, and opens again: no text is left in
+ *       the rail, every item is still there at the same height with a
+ *       tooltip that names it, the search button still takes the
+ *       keyboard and opens the command palette, and the fold is
+ *       written to the settings
+ *   D1  the detail drawer: fs_hitview_show_details () opens it over
+ *       the right edge of the page, clear of the sidebar, with the
+ *       keyboard left in the list; Escape, its close button and a page
+ *       switch close it; an Escape the command palette, the Events
+ *       search field or an Activity graph uses is not the drawer's
  *   T1  under the theme in GTK_THEME (Adwaita:dark when unset) every
  *       label in Help and About is 4.5:1 or more against what is
  *       painted behind it
  *   W   no GTK warning or critical while any of it runs
  *
- * STOCKFW_HELP_SHOTS=<dir> saves PNGs of three topics and of About,
- * named after GTK_THEME ("light" or "dark").
+ * STOCKFW_HELP_SHOTS=<dir> saves PNGs of three topics, of About, of
+ * the folded sidebar and of the open drawer, named after GTK_THEME
+ * ("light" or "dark").
  *
  *   ninja -C build-linux fs-help-smoke
  *   xvfb-run -a ./build-linux/fs-help-smoke
@@ -63,8 +75,11 @@
 #include "ui/fs-dialogs.h"
 #include "core/fs-helpcontent.h"
 #include "ui/fs-helpwindow.h"
+#include "ui/fs-hitview.h"
+#include "ui/fs-drawer.h"
 #include "core/fs-backend.h"
 #include "core/fs-prefs.h"
+#include "core/fs-types.h"
 #include "core/fs-whatif.h"
 
 #include <gtk/gtk.h>
@@ -1992,6 +2007,438 @@ check_layout (void)
 	close_help ();
 }
 
+/* ======================================================== the shell */
+
+/* Where the fold of the sidebar is remembered (fs-app.c). */
+#define SIDEBAR_KEY "/apps/stockfw/client/ui/sidebar_collapsed"
+
+/* How many labels under root are on screen. */
+static guint
+labels_mapped (GtkWidget *root)
+{
+	GPtrArray *labels = g_ptr_array_new ();
+	guint n = 0;
+
+	collect_labels (root, labels);
+	for (guint i = 0; i < labels->len; i++)
+		if (gtk_widget_get_mapped (labels->pdata[i]))
+			n++;
+	g_ptr_array_unref (labels);
+	return n;
+}
+
+/* The sidebar's width once a fold or an unfold has been laid out. */
+static gint
+sidebar_width (GtkWidget *bar)
+{
+	pump ();
+	pump ();
+	return gtk_widget_get_allocated_width (bar);
+}
+
+/* S1-S4: the sidebar folds to a rail of icons on Ctrl+B and on its own
+ * button and opens again; the rail keeps every control, names each one
+ * in a tooltip, and is remembered. */
+static void
+check_sidebar (void)
+{
+	GtkWidget *main_window =
+		GTK_WIDGET (gtk_application_get_active_window (app));
+	GtkWidget *bar = find_named (main_window, "fs-sidebar");
+	GtkWidget *toggle = find_named (main_window, "nav-collapse");
+	GtkWidget *search = find_named (main_window, "nav-search");
+	GtkWidget *first = find_named (main_window, "nav-page1");
+	GtkWidget *scrim = find_named (main_window, "fs-palette");
+	GtkWidget *commands = find_named (main_window, "fs-palette-list");
+	GPtrArray *items, *footers;
+	const gchar *name;
+	gchar *tip, *text = NULL;
+	gint wide, rail, item_h;
+	guint texts, mute = 0;
+
+	close_help ();
+	CHECK (bar != NULL && toggle != NULL && search != NULL
+	       && first != NULL && scrim != NULL && commands != NULL,
+	       "[S1] the sidebar has its fold button, its search button and "
+	       "its page items");
+	if (bar == NULL || toggle == NULL || search == NULL || first == NULL
+	    || scrim == NULL || commands == NULL)
+		return;
+
+	wide = sidebar_width (bar);
+	item_h = gtk_widget_get_allocated_height (first);
+	texts = labels_mapped (bar);
+	CHECK (wide == 232 && texts >= 20
+	       && !fs_prefs_get_bool (SIDEBAR_KEY, FALSE),
+	       "[S1] it starts expanded: %d pixels wide, %u labels showing",
+	       wide, texts);
+	tip = gtk_widget_get_tooltip_text (toggle);
+	name = atk_object_get_name (gtk_widget_get_accessible (toggle));
+	CHECK (tip != NULL && strstr (tip, "Ctrl+B") != NULL
+	       && name != NULL && *name != '\0',
+	       "[S1] the fold button has a name (\"%s\") and a tooltip with "
+	       "its shortcut (\"%s\")", name != NULL ? name : "",
+	       tip != NULL ? tip : "");
+	g_free (tip);
+	tip = gtk_widget_get_tooltip_text (first);
+	CHECK (tip == NULL, "[S1] expanded, a page item has no tooltip: its "
+	       "label says it");
+	g_free (tip);
+
+	/* ---- folded */
+	send_key (main_window, GDK_KEY_b, GDK_CONTROL_MASK);
+	rail = sidebar_width (bar);
+	CHECK (rail > 0 && rail <= 60,
+	       "[S2] Ctrl+B folds it to a rail %d pixels wide", rail);
+	CHECK (labels_mapped (bar) == 0,
+	       "[S2] ...with no text left in it (%u labels showing)",
+	       labels_mapped (bar));
+	CHECK (gtk_widget_get_mapped (search)
+	       && gtk_widget_get_can_focus (search)
+	       && gtk_widget_get_allocated_width (search) >= 24
+	       && gtk_widget_get_allocated_width (search) <= rail,
+	       "[S2] the search button stays, as an icon %d pixels wide",
+	       gtk_widget_get_allocated_width (search));
+	CHECK (gtk_widget_get_allocated_height (first) == item_h,
+	       "[S2] a page item is as tall in the rail (%d) as expanded (%d)",
+	       gtk_widget_get_allocated_height (first), item_h);
+	tip = gtk_widget_get_tooltip_text (first);
+	CHECK (g_strcmp0 (tip, "Overview (Ctrl+1)") == 0,
+	       "[S2] ...and says its name and its shortcut in a tooltip "
+	       "(\"%s\")", tip != NULL ? tip : "");
+	g_free (tip);
+
+	items = g_ptr_array_new ();
+	collect_class (bar, "nav-item", items);
+	for (guint i = 0; i < items->len; i++) {
+		tip = gtk_widget_get_tooltip_text (items->pdata[i]);
+		name = atk_object_get_name (
+			gtk_widget_get_accessible (items->pdata[i]));
+		if (tip == NULL || *tip == '\0' || name == NULL || *name == '\0'
+		    || !gtk_widget_get_mapped (items->pdata[i]))
+			mute++;
+		g_free (tip);
+	}
+	CHECK (items->len == FS_PAGE_COUNT + 3 && mute == 0,
+	       "[S2] all %u items are in the rail, each with a tooltip and a "
+	       "name for a screen reader (%u without)", items->len, mute);
+	g_ptr_array_unref (items);
+
+	/* The verdict line is hidden with the rest of the text; what it
+	 * says is what the tooltip on the dot must say. */
+	footers = g_ptr_array_new ();
+	collect_class (bar, "fs-sidebar-footer", footers);
+	collect_class (bar, "fs-side-state", footers);
+	tip = footers->len == 2
+	    ? gtk_widget_get_tooltip_text (footers->pdata[0]) : NULL;
+	name = footers->len == 2
+	     ? gtk_label_get_text (GTK_LABEL (footers->pdata[1])) : "";
+	CHECK (tip != NULL && *name != '\0' && g_str_has_prefix (tip, name),
+	       "[S2] the footer's dot says the firewall's state in a tooltip "
+	       "(\"%s\")", name);
+	g_free (tip);
+	g_ptr_array_unref (footers);
+
+	CHECK (fs_prefs_get_bool (SIDEBAR_KEY, FALSE),
+	       "[S2] the fold is written to the settings");
+	fs_prefs_save ();
+	g_file_get_contents (fs_prefs_path (), &text, NULL, NULL);
+	CHECK (text != NULL && strstr (text, "sidebar_collapsed=true") != NULL,
+	       "[S2] ...and saved with them, for the next start");
+	g_free (text);
+
+	/* ---- the palette from the rail */
+	gtk_widget_grab_focus (search);
+	pump ();
+	CHECK (gtk_window_get_focus (GTK_WINDOW (main_window)) == search,
+	       "[S3] the rail's search button takes the keyboard");
+	send_key (main_window, GDK_KEY_k, GDK_CONTROL_MASK);
+	CHECK (gtk_widget_get_visible (scrim),
+	       "[S3] Ctrl+K opens the command palette over the rail");
+	send_key (main_window, GDK_KEY_Escape, 0);
+	CHECK (!gtk_widget_get_visible (scrim)
+	       && gtk_window_get_focus (GTK_WINDOW (main_window)) == search,
+	       "[S3] Escape closes it, the keyboard back on the search button");
+	text = text_of (commands);
+	CHECK (strstr (text, "Toggle sidebar") != NULL
+	       && strstr (text, "Ctrl+B") != NULL,
+	       "[S3] the palette lists \"Toggle sidebar\" with its shortcut");
+	g_free (text);
+
+	/* ---- and back */
+	send_key (main_window, GDK_KEY_b, GDK_CONTROL_MASK);
+	CHECK (sidebar_width (bar) == wide && labels_mapped (bar) == texts
+	       && !fs_prefs_get_bool (SIDEBAR_KEY, FALSE),
+	       "[S4] Ctrl+B again opens it as it was (%d pixels, %u labels) "
+	       "and that is remembered too", sidebar_width (bar),
+	       labels_mapped (bar));
+	tip = gtk_widget_get_tooltip_text (first);
+	CHECK (tip == NULL, "[S4] ...the rail's tooltip gone from a page item");
+	g_free (tip);
+
+	click (main_window, "nav-collapse");
+	CHECK (sidebar_width (bar) == rail
+	       && fs_prefs_get_bool (SIDEBAR_KEY, FALSE),
+	       "[S4] the fold button folds it");
+	shot (main_window, "sidebar-rail");
+	click (main_window, "nav-collapse");
+	CHECK (sidebar_width (bar) == wide
+	       && !fs_prefs_get_bool (SIDEBAR_KEY, FALSE),
+	       "[S4] ...and opens it");
+}
+
+/* An event that never happened, for the drawer to show. */
+static void
+made_up_hit (FsHit *hit)
+{
+	memset (hit, 0, sizeof *hit);
+	hit->time        = (gchar *) "2026-11-28T09:14:07.0000000Z";
+	hit->direction   = (gchar *) "Out";
+	hit->source      = (gchar *) "192.168.1.20";
+	hit->destination = (gchar *) "203.0.113.77";
+	hit->port        = (gchar *) "443";
+	hit->protocol    = (gchar *) "TCP";
+	hit->service     = (gchar *) "HTTPS";
+}
+
+/* Waits for the drawer's slide, in or out, to end. */
+static void
+settle_drawer (GtkWidget *drawer)
+{
+	for (gint i = 0; i < 40; i++) {
+		pump ();
+		if (gtk_revealer_get_child_revealed (GTK_REVEALER (drawer))
+		    == gtk_revealer_get_reveal_child (GTK_REVEALER (drawer)))
+			break;
+	}
+	pump ();
+}
+
+/* The first drawing area under root that takes the keyboard: on the
+ * Activity page, a graph. */
+static GtkWidget *
+find_focus_area (GtkWidget *root)
+{
+	GtkWidget *found = NULL;
+	GList *children;
+
+	if (GTK_IS_DRAWING_AREA (root) && gtk_widget_get_can_focus (root)
+	    && gtk_widget_get_mapped (root))
+		return root;
+	if (!GTK_IS_CONTAINER (root))
+		return NULL;
+	children = gtk_container_get_children (GTK_CONTAINER (root));
+	for (GList *l = children; l != NULL && found == NULL; l = l->next)
+		found = find_focus_area (l->data);
+	g_list_free (children);
+	return found;
+}
+
+/* Runs after the graph's own key handler, so only for a key the graph
+ * did not use. */
+static gboolean graph_passed_escape = FALSE;
+
+static gboolean
+on_graph_key_after (GtkWidget *widget, GdkEventKey *event, gpointer data)
+{
+	(void) widget;
+	(void) data;
+	if (event->keyval == GDK_KEY_Escape)
+		graph_passed_escape = TRUE;
+	return FALSE;
+}
+
+/* D1-D5: the detail drawer.  fs_hitview_show_details () opens it over
+ * the right edge of the page, never over the sidebar, and leaves the
+ * keyboard where it was; Escape and a page switch close it; an Escape
+ * that something else uses (the command palette, a search field, a
+ * graph) is not the drawer's. */
+static void
+check_drawer (void)
+{
+	GtkWidget *main_window =
+		GTK_WIDGET (gtk_application_get_active_window (app));
+	GtkWidget *bar = find_named (main_window, "fs-sidebar");
+	GtkWidget *drawer = find_named (main_window, "fs-drawer");
+	GtkWidget *scrim = find_named (main_window, "fs-palette");
+	GtkWidget *list = find_named (main_window, "events-list");
+	GtkWidget *filter = find_named (main_window, "events-filter-text");
+	GtkWidget *title, *body, *close, *graph;
+	GString *unnamed;
+	const gchar *name;
+	gchar *text, *tip;
+	gint x = -1, y = -1;
+	FsHit hit;
+
+	close_help ();
+	made_up_hit (&hit);
+
+	CHECK (drawer != NULL && GTK_IS_REVEALER (drawer)
+	       && !gtk_widget_get_visible (drawer) && !fs_drawer_is_open (),
+	       "[D1] the drawer is in the main window and starts closed");
+	CHECK (bar != NULL && scrim != NULL && list != NULL && filter != NULL,
+	       "[D1] (the sidebar, the palette and the Events list are there)");
+	if (drawer == NULL || !GTK_IS_REVEALER (drawer) || bar == NULL
+	    || scrim == NULL || list == NULL || filter == NULL)
+		return;
+	title = find_named (drawer, "fs-drawer-title");
+	body = find_named (drawer, "fs-drawer-body");
+	close = find_named (drawer, "fs-drawer-close");
+	CHECK (title != NULL && body != NULL && close != NULL,
+	       "[D1] it has a title, a body and a close button");
+	if (title == NULL || body == NULL || close == NULL)
+		return;
+
+	/* ---- opening */
+	fs_app_show_page (FS_PAGE_EVENTS);
+	pump ();
+	gtk_widget_grab_focus (list);
+	pump ();
+	fs_hitview_show_details (&hit);
+	settle_drawer (drawer);
+
+	text = text_of (body);
+	CHECK (fs_drawer_is_open () && gtk_widget_get_mapped (title)
+	       && *gtk_label_get_text (GTK_LABEL (title)) != '\0',
+	       "[D2] fs_hitview_show_details opens it, titled \"%s\"",
+	       gtk_label_get_text (GTK_LABEL (title)));
+	CHECK (strstr (text, "203.0.113.77") != NULL,
+	       "[D2] ...showing the event it was given");
+	g_free (text);
+	CHECK (gtk_window_get_focus (GTK_WINDOW (main_window)) == list,
+	       "[D2] ...and the keyboard stays in the list");
+
+	gtk_widget_translate_coordinates (drawer, main_window, 0, 0, &x, &y);
+	CHECK (gtk_widget_get_allocated_width (drawer) == 380
+	       && x + 380 == gtk_widget_get_allocated_width (main_window)
+	       && x >= gtk_widget_get_allocated_width (bar)
+	       && gtk_widget_get_allocated_height (drawer)
+	          == gtk_widget_get_allocated_height (main_window),
+	       "[D2] it is 380 pixels wide at the right edge, the full height "
+	       "of the page, clear of the sidebar (x %d, %d wide)", x,
+	       gtk_widget_get_allocated_width (drawer));
+
+	unnamed = g_string_new (NULL);
+	unnamed_controls (drawer, unnamed);
+	tip = gtk_widget_get_tooltip_text (close);
+	name = atk_object_get_name (gtk_widget_get_accessible (close));
+	CHECK (unnamed->len == 0 && tip != NULL && *tip != '\0'
+	       && gtk_button_get_label (GTK_BUTTON (close)) == NULL,
+	       "[D2] the close button is an icon with a name (\"%s\") and a "
+	       "tooltip (\"%s\")%s", name != NULL ? name : "",
+	       tip != NULL ? tip : "", unnamed->str);
+	g_free (tip);
+	g_string_free (unnamed, TRUE);
+	shot (main_window, "drawer");
+
+	/* ---- closing */
+	send_key (main_window, GDK_KEY_Escape, 0);
+	CHECK (!fs_drawer_is_open (), "[D3] Escape closes it");
+	settle_drawer (drawer);
+	CHECK (!gtk_widget_get_visible (drawer),
+	       "[D3] ...and once it has slid out it is off the page "
+	       "altogether");
+	CHECK (gtk_window_get_focus (GTK_WINDOW (main_window)) == list,
+	       "[D3] ...the keyboard still in the list");
+
+	fs_hitview_show_details (&hit);
+	settle_drawer (drawer);
+	gtk_button_clicked (GTK_BUTTON (close));
+	CHECK (!fs_drawer_is_open (), "[D3] its close button closes it");
+	settle_drawer (drawer);
+
+	fs_hitview_show_details (&hit);
+	settle_drawer (drawer);
+	fs_app_show_page (FS_PAGE_POLICY);
+	CHECK (!fs_drawer_is_open (), "[D3] a page switch closes it");
+	settle_drawer (drawer);
+	fs_app_show_page (FS_PAGE_EVENTS);
+	pump ();
+	CHECK (!fs_drawer_is_open () && !gtk_widget_get_visible (drawer),
+	       "[D3] ...and coming back does not bring it back");
+
+	/* ---- an Escape that is someone else's */
+	gtk_widget_grab_focus (list);
+	fs_hitview_show_details (&hit);
+	settle_drawer (drawer);
+	send_key (main_window, GDK_KEY_k, GDK_CONTROL_MASK);
+	CHECK (gtk_widget_get_visible (scrim) && fs_drawer_is_open (),
+	       "[D4] the command palette opens over the open drawer");
+	send_key (main_window, GDK_KEY_Escape, 0);
+	CHECK (!gtk_widget_get_visible (scrim) && fs_drawer_is_open (),
+	       "[D4] Escape closes the palette and leaves the drawer");
+	send_key (main_window, GDK_KEY_Escape, 0);
+	CHECK (!fs_drawer_is_open (), "[D4] ...and the next one closes the "
+	       "drawer");
+	settle_drawer (drawer);
+
+	gtk_widget_grab_focus (filter);
+	pump ();
+	fs_hitview_show_details (&hit);
+	settle_drawer (drawer);
+	send_key (main_window, GDK_KEY_Escape, 0);
+	CHECK (fs_drawer_is_open ()
+	       && gtk_window_get_focus (GTK_WINDOW (main_window)) == filter,
+	       "[D4] Escape typed in the Events search field is the field's: "
+	       "the drawer stays");
+	gtk_widget_grab_focus (list);
+	pump ();
+	send_key (main_window, GDK_KEY_Escape, 0);
+	CHECK (!fs_drawer_is_open (), "[D4] ...from the list it closes it");
+	settle_drawer (drawer);
+
+	/* The Activity graphs take Escape while they hold readings (it
+	 * drops the highlighted interval) and pass it on while they hold
+	 * none.  Either way the drawer goes exactly when the graph did
+	 * not use the key. */
+	fs_app_show_page (FS_PAGE_ACTIVITY);
+	pump ();
+	pump ();
+	/* Only the page showing is mapped, so this is one of its graphs. */
+	graph = find_focus_area (main_window);
+	CHECK (graph != NULL, "[D5] (the Activity page has a graph that "
+	       "takes the keyboard)");
+	if (graph != NULL) {
+		gulong probe = g_signal_connect_after (
+			graph, "key-press-event",
+			G_CALLBACK (on_graph_key_after), NULL);
+
+		gtk_widget_grab_focus (graph);
+		pump ();
+		fs_hitview_show_details (&hit);
+		settle_drawer (drawer);
+		graph_passed_escape = FALSE;
+		send_key (main_window, GDK_KEY_Escape, 0);
+		CHECK (fs_drawer_is_open () == !graph_passed_escape,
+		       "[D5] Escape on a focused Activity graph: the graph %s "
+		       "it, so the drawer %s",
+		       graph_passed_escape ? "passed" : "used",
+		       fs_drawer_is_open () ? "stays" : "closes");
+		g_signal_handler_disconnect (graph, probe);
+	}
+	fs_drawer_close ();
+	settle_drawer (drawer);
+
+	/* Opened from a page that is not showing the list (the Overview's
+	 * latest blocks do this), and opened twice: one drawer, refilled. */
+	fs_app_show_page (FS_PAGE_OVERVIEW);
+	pump ();
+	fs_hitview_show_details (&hit);
+	hit.destination = (gchar *) "198.51.100.42";
+	fs_hitview_show_details (&hit);
+	settle_drawer (drawer);
+	text = text_of (body);
+	CHECK (fs_drawer_is_open () && strstr (text, "198.51.100.42") != NULL
+	       && strstr (text, "203.0.113.77") == NULL,
+	       "[D5] opened again while open, it shows the new event in "
+	       "place of the old one");
+	g_free (text);
+	fs_drawer_close ();
+	settle_drawer (drawer);
+	CHECK (!fs_drawer_is_open () && !gtk_widget_get_visible (drawer),
+	       "[D5] fs_drawer_close closes it");
+}
+
 /* ============================================================ main */
 
 /* The command palette the Shortcuts topic lists (Ctrl+K, and
@@ -2075,6 +2522,8 @@ run_all (gpointer data)
 	STEP (check_help_keys);
 	STEP (check_palette);
 	STEP (check_layout);
+	STEP (check_sidebar);
+	STEP (check_drawer);
 	STEP (check_theme);
 #undef STEP
 	begin_step ("quit");

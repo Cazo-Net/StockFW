@@ -1068,6 +1068,35 @@ textview text {
 	font-family: "IBM Plex Mono", "JetBrains Mono", "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace;
 }
 
+/* The fold button at the end of the brand row (Ctrl+B).  As tall as
+ * the brand tile beside it, so it adds nothing to the row. */
+button.fs-side-toggle {
+	background-image: none;
+	background-color: transparent;
+	border: 1px solid transparent;
+	border-radius: 6px;
+	box-shadow: none;
+	color: @fs_text_weaker;
+	padding: 3px;
+	margin: 0;
+	min-height: 16px;
+	min-width: 16px;
+}
+button.fs-side-toggle:hover {
+	background-image: none;
+	background-color: @fs_surface;
+	border-color: transparent;
+	color: @fs_text_strong;
+	box-shadow: none;
+}
+button.fs-side-toggle:active {
+	background-image: none;
+	background-color: @fs_surface_2;
+	border-color: transparent;
+	color: @fs_text_strong;
+	box-shadow: none;
+}
+
 /* The command-palette trigger: reads as a search field. */
 button.fs-side-search {
 	background-image: none;
@@ -1177,6 +1206,28 @@ button.nav-item label.fs-kbd {
 	font-size: 11px;
 }
 
+/* The rail: the same sidebar folded to its icons (fs-app.c hides the
+ * text and sets the width).  Only what would not fit a 52px column
+ * changes here; button.nav-item is left exactly as it is above, in
+ * the rail too, so its height is the same in both. */
+.fs-sidebar.rail .fs-brand {
+	padding: 4px 0 10px 0;
+}
+.fs-sidebar.rail button.fs-side-search {
+	padding: 5px 0;
+	margin: 0 0 8px 0;
+}
+.fs-sidebar.rail .fs-sidebar-footer {
+	padding: 10px 0 2px 0;
+}
+/* Stands where a group's heading was. */
+.fs-side-rule {
+	background-image: none;
+	background-color: @fs_border;
+	min-height: 1px;
+	margin: 7px 8px 7px 8px;
+}
+
 /* Status dots */
 .dot-ok      { color: @fs_ok; text-shadow: none; }
 .dot-warn    { color: @fs_warn; text-shadow: none; }
@@ -1203,6 +1254,92 @@ button.nav-item label.fs-kbd {
 .muted {
 	color: @fs_text_weak;
 	font-size: 12px;
+}
+
+/* =====================================================================
+ * Detail drawer (ui/fs-drawer.c): slides in over the right edge of the
+ * page for the event, rule or program a list has selected.  An opaque
+ * surface with one hairline on the side it meets the page; no shadow
+ * and no scrim, the list behind stays in use.
+ * ===================================================================== */
+.fs-drawer {
+	background-image: none;
+	background-color: @fs_surface;
+	border-left: 1px solid @fs_border;
+	box-shadow: none;
+}
+.fs-drawer scrolledwindow,
+.fs-drawer viewport {
+	background-image: none;
+	background-color: transparent;
+	border: none;
+}
+.fs-drawer-head {
+	padding: 14px 12px 14px 16px;
+	border-bottom: 1px solid @fs_border;
+}
+.fs-drawer-title {
+	font-size: 15px;
+	font-weight: 600;
+	color: @fs_text_strong;
+}
+.fs-drawer-subtitle {
+	font-size: 12px;
+	color: @fs_text_weak;
+}
+/* The cross: a bare glyph until the pointer or the keyboard is on it. */
+button.fs-drawer-close {
+	background-image: none;
+	background-color: transparent;
+	border: 1px solid transparent;
+	border-radius: 6px;
+	box-shadow: none;
+	color: @fs_text_weak;
+	padding: 5px;
+	margin: 0;
+	min-height: 16px;
+	min-width: 16px;
+}
+button.fs-drawer-close:hover {
+	background-image: none;
+	background-color: @fs_surface_2;
+	border-color: transparent;
+	color: @fs_text_strong;
+	box-shadow: none;
+}
+button.fs-drawer-close:active {
+	background-image: none;
+	background-color: @fs_surface_3;
+	border-color: transparent;
+	color: @fs_text_strong;
+	box-shadow: none;
+}
+.fs-drawer-body {
+	padding: 16px;
+}
+/* A heading between groups of fields: small and quiet, set a little
+ * wide so it reads as a label and not as a value. */
+.fs-drawer-section {
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.5px;
+	color: @fs_text_weaker;
+	margin-top: 4px;
+}
+.fs-drawer-name {
+	font-size: 12px;
+	color: @fs_text_weak;
+}
+.fs-drawer-value {
+	font-size: 13px;
+	color: @fs_text;
+}
+.fs-drawer-value.mono {
+	font-size: 12px;
+}
+.fs-drawer-foot {
+	padding: 12px 16px 16px 16px;
+	border-top: 1px solid @fs_border;
 }
 
 /* --- Overview: verdict card ---------------------------------------------------- */

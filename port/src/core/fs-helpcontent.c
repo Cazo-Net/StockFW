@@ -1500,6 +1500,8 @@ static const FsHelpBlock shortcuts[] = {
 	  "does the same") },
 	{ FS_HELP_KEYS, N_("Ctrl+1|Go to the first page in the sidebar; "
 	  "Ctrl+2 to Ctrl+9 for the ones below it") },
+	{ FS_HELP_KEYS, N_("Ctrl+B|Collapse the sidebar to a strip of icons, "
+	  "or expand it again") },
 	{ FS_HELP_KEYS, N_("Ctrl+,|Preferences") },
 	{ FS_HELP_KEYS, N_("Ctrl+Q|Quit StockFW") },
 	{ FS_HELP_KEYS, N_("Alt+A|Policy: apply the policy") },
@@ -1508,6 +1510,8 @@ static const FsHelpBlock shortcuts[] = {
 	{ FS_HELP_KEYS, N_("Left Right Home End|Activity: read one interval "
 	  "of the focused graph") },
 	{ FS_HELP_KEYS, N_("Enter|Trust: inspect the path you typed") },
+	{ FS_HELP_KEYS, N_("Escape|Close the details panel at the right of "
+	  "the page") },
 	{ FS_HELP_HEAD, N_("Preferences") },
 	{ FS_HELP_KEYS, N_("F1|Help for the page shown") },
 	{ FS_HELP_KEYS, N_("Escape|Cancel and close") },

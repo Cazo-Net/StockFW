@@ -5,7 +5,14 @@
  *
  * There is one drawer for the whole window.  A page fills it with
  * fs_drawer_open () and names itself as the owner, so it can tell
- * later whether what is showing is still its own. */
+ * later whether what is showing is still its own.
+ *
+ * The window closes it on Escape and when the page is switched.  The
+ * keyboard stays where it was when the drawer opens (in the list); Tab
+ * reaches the drawer's buttons after the page's own controls, and a
+ * close gives the keyboard back to the list if it was left on one of
+ * them.  The panel is 380 pixels wide whatever is put in it: labels in
+ * a body should wrap (fs_drawer_field's do). */
 #ifndef FS_DRAWER_H
 #define FS_DRAWER_H
 
