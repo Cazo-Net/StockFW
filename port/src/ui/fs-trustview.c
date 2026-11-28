@@ -14,6 +14,7 @@
 
 #include "ui/fs-trustview.h"
 #include "ui/fs-dialogs.h"
+#include "ui/fs-drawer.h"
 #include "core/fs-backend.h"
 #include "core/fs-i18n.h"
 
@@ -50,6 +51,19 @@ static FsTrustAssessment *current = NULL;
 
 /* One task at a time; 0 = idle. */
 static guint busy_tasks = 0;
+
+/* [ the detail drawer ]
+ * Activating a row of the list inspects that file and, when the
+ * result is in, shows it in the window's drawer (ui/fs-drawer.h).
+ * drawer_owner is the token this page gives the drawer; drawer_wanted
+ * is set between the activation and its result.  An open drawer of
+ * this page always shows `current', the same file as the "Selected
+ * file" card. */
+static gint     drawer_owner;
+static gboolean drawer_wanted = FALSE;
+
+static void trust_details_show (void);
+static void trust_details_sync (void);
 
 /*----------------------------------------------------------- helpers */
 
@@ -118,6 +132,37 @@ format_mtime (gint64 unix_time)
 
 /*------------------------------------------------------ the report */
 
+/* [ baseline_text ]
+ * How the file compares with the baseline, as a sentence.  The card
+ * and the detail drawer both say it.  g_free. */
+static gchar *
+baseline_text (const FsTrustAssessment *assessment)
+{
+	switch (assessment->change) {
+	case FS_TRUST_CHANGE_NEW:
+		return g_strdup (_("Not attested yet - this file is not "
+		                   "in the baseline."));
+	case FS_TRUST_CHANGE_UNCHANGED:
+		return g_strdup (_("Matches the attested baseline."));
+	case FS_TRUST_CHANGE_CHANGED:
+		return g_strdup_printf (
+			_("CHANGED since attestation. The baseline has "
+			  "hash %s - the file on disk no longer matches "
+			  "it."),
+			assessment->baseline_sha256 ?
+			assessment->baseline_sha256 : "-");
+	case FS_TRUST_CHANGE_GONE:
+		return g_strdup_printf (
+			_("Attested earlier, now missing. The baseline "
+			  "remembers hash %s."),
+			assessment->baseline_sha256 ?
+			assessment->baseline_sha256 : "-");
+	case FS_TRUST_CHANGE_UNREADABLE:
+	default:
+		return g_strdup (_("The file could not be read."));
+	}
+}
+
 static void
 show_assessment (const FsTrustAssessment *assessment)
 {
@@ -151,41 +196,9 @@ show_assessment (const FsTrustAssessment *assessment)
 		g_free (text);
 	}
 
-	switch (assessment->change) {
-	case FS_TRUST_CHANGE_NEW:
-		gtk_label_set_text (GTK_LABEL (baseline_label),
-		                    _("Not attested yet - this file is not "
-		                      "in the baseline."));
-		break;
-	case FS_TRUST_CHANGE_UNCHANGED:
-		gtk_label_set_text (GTK_LABEL (baseline_label),
-		                    _("Matches the attested baseline."));
-		break;
-	case FS_TRUST_CHANGE_CHANGED:
-		text = g_strdup_printf (
-			_("CHANGED since attestation. The baseline has "
-			  "hash %s - the file on disk no longer matches "
-			  "it."),
-			assessment->baseline_sha256 ?
-			assessment->baseline_sha256 : "-");
-		gtk_label_set_text (GTK_LABEL (baseline_label), text);
-		g_free (text);
-		break;
-	case FS_TRUST_CHANGE_GONE:
-		text = g_strdup_printf (
-			_("Attested earlier, now missing. The baseline "
-			  "remembers hash %s."),
-			assessment->baseline_sha256 ?
-			assessment->baseline_sha256 : "-");
-		gtk_label_set_text (GTK_LABEL (baseline_label), text);
-		g_free (text);
-		break;
-	case FS_TRUST_CHANGE_UNREADABLE:
-	default:
-		gtk_label_set_text (GTK_LABEL (baseline_label),
-		                    _("The file could not be read."));
-		break;
-	}
+	text = baseline_text (assessment);
+	gtk_label_set_text (GTK_LABEL (baseline_label), text);
+	g_free (text);
 }
 
 static void
@@ -313,7 +326,14 @@ inspect_ready (GObject *source_object, GAsyncResult *result,
 		set_status (current->report != NULL ?
 		            _("Report ready.") :
 		            _("The file could not be read."));
+
+		/* A row was activated: its report opens in the drawer.  A
+		 * drawer of this page that is already open follows every
+		 * inspect, so it never shows another file than the card. */
+		if (drawer_wanted || fs_drawer_owner () == &drawer_owner)
+			trust_details_show ();
 	}
+	drawer_wanted = FALSE;
 
 	set_buttons ();
 }
@@ -351,19 +371,20 @@ assess_list_ready (GObject *source_object, GAsyncResult *result,
 
 /* ------------------------------------------------ the task starters */
 
-static void
+/* TRUE when the task was started. */
+static gboolean
 start_inspect (const gchar *path)
 {
 	GTask *task;
 
 	if (busy_tasks > 0) {
 		set_status (_("Still working - one task at a time."));
-		return;
+		return FALSE;
 	}
 
 	if (path == NULL || *path == '\0') {
 		set_status (_("Type the path of a file to inspect."));
-		return;
+		return FALSE;
 	}
 
 	busy_tasks++;
@@ -374,6 +395,8 @@ start_inspect (const gchar *path)
 	g_task_set_task_data (task, g_strdup (path), g_free);
 	g_task_run_in_thread (task, inspect_worker);
 	g_object_unref (task);
+
+	return TRUE;
 }
 
 static void
@@ -503,16 +526,23 @@ on_scan_clicked (GtkButton *button, gpointer data)
 	start_assess_paths (paths);
 }
 
+/* [ attest_current ]
+ * Attest: the inspected file goes into the baseline.  Shared by the
+ * card's button and the detail drawer; both ask first. */
 static void
-on_attest_clicked (GtkButton *button, gpointer data)
+attest_current (void)
 {
 	const FsTrustReport *report;
 	gchar *question;
 	gboolean confirmed = FALSE;
 	GError *error = NULL;
 
-	(void) button;
-	(void) data;
+	/* The card's button is insensitive while a task runs; the
+	 * drawer's cannot be, so it is refused here. */
+	if (busy_tasks > 0) {
+		set_status (_("Still working - one task at a time."));
+		return;
+	}
 
 	if (current == NULL || current->report == NULL) {
 		set_status (_("Inspect a readable file first."));
@@ -529,6 +559,13 @@ on_attest_clicked (GtkButton *button, gpointer data)
 	g_free (question);
 
 	if (!confirmed) {
+		set_status (_("Attestation cancelled."));
+		return;
+	}
+
+	/* The question ran a main loop: go on only for the file it asked
+	 * about. */
+	if (busy_tasks > 0 || current == NULL || current->report != report) {
 		set_status (_("Attestation cancelled."));
 		return;
 	}
@@ -557,30 +594,50 @@ on_attest_clicked (GtkButton *button, gpointer data)
 	current->baseline_publisher = g_strdup (report->publisher);
 	current->change = FS_TRUST_CHANGE_UNCHANGED;
 	show_assessment (current);
+	trust_details_sync ();
 
 	set_status (_("Attested and recorded in the audit log."));
 	start_refresh ();
 }
 
 static void
-on_forget_clicked (GtkButton *button, gpointer data)
+on_attest_clicked (GtkButton *button, gpointer data)
 {
-	const gchar *path;
+	(void) button;
+	(void) data;
+
+	attest_current ();
+}
+
+/* [ forget_path ]
+ * Forget: `given' leaves the baseline.  Shared by the card's button
+ * (the path in the entry) and the detail drawer (the file it shows);
+ * both ask first. */
+static void
+forget_path (const gchar *given)
+{
+	/* A copy: the entry's text and the drawer's file can both change
+	 * while the question is up. */
+	gchar *path = g_strdup (given);
 	gchar *question;
 	gboolean confirmed = FALSE;
 	GError *error = NULL;
 
-	(void) button;
-	(void) data;
+	if (busy_tasks > 0) {
+		set_status (_("Still working - one task at a time."));
+		g_free (path);
+		return;
+	}
 
-	path = gtk_entry_get_text (GTK_ENTRY (path_entry));
 	if (path == NULL || *path == '\0') {
 		set_status (_("Type the path to forget."));
+		g_free (path);
 		return;
 	}
 
 	if (fs_trust_store_count (trust_store) == 0) {
 		set_status (_("The baseline is empty - nothing to forget."));
+		g_free (path);
 		return;
 	}
 
@@ -591,15 +648,18 @@ on_forget_clicked (GtkButton *button, gpointer data)
 	fs_dialogs_confirm (dialog_parent (), question, &confirmed);
 	g_free (question);
 
-	if (!confirmed) {
+	if (!confirmed || busy_tasks > 0) {
 		set_status (_("Nothing was removed."));
+		g_free (path);
 		return;
 	}
 
 	if (!fs_trust_remove (trust_store, path)) {
 		set_status (_("That path is not in the baseline."));
+		g_free (path);
 		return;
 	}
+	g_free (path);
 
 	if (!fs_trust_store_save (trust_store, &error)) {
 		fs_dialogs_error (dialog_parent (),
@@ -611,12 +671,22 @@ on_forget_clicked (GtkButton *button, gpointer data)
 
 	g_clear_pointer (&current, fs_trust_assessment_free);
 	clear_report ();
+	trust_details_sync ();
 	set_status (_("Forgotten, and recorded in the audit log."));
 
 	if (fs_trust_store_count (trust_store) > 0)
 		start_refresh ();
 	else
 		gtk_list_store_clear (list_store);
+}
+
+static void
+on_forget_clicked (GtkButton *button, gpointer data)
+{
+	(void) button;
+	(void) data;
+
+	forget_path (gtk_entry_get_text (GTK_ENTRY (path_entry)));
 }
 
 static void
@@ -646,6 +716,187 @@ set_buttons (void)
 	path = gtk_entry_get_text (GTK_ENTRY (path_entry));
 	gtk_widget_set_sensitive (forget_button,
 	                          idle && path != NULL && *path != '\0');
+}
+
+/* ------------------------------------------------- the detail drawer */
+
+static void
+on_details_attest (gpointer data)
+{
+	(void) data;
+
+	attest_current ();
+}
+
+/* The drawer's Forget is for the file the drawer shows, whatever the
+ * path entry holds by now. */
+static void
+on_details_forget (gpointer data)
+{
+	(void) data;
+
+	if (current != NULL)
+		forget_path (current->path);
+}
+
+/* A heading and its fields, with a gap above every heading but the
+ * first. */
+static void
+details_group (GtkWidget *body, const gchar *heading, GtkWidget *content)
+{
+	GtkWidget *section = fs_drawer_section (heading);
+	GList *before = gtk_container_get_children (GTK_CONTAINER (body));
+
+	if (before != NULL)
+		gtk_widget_set_margin_top (section, 10);
+	g_list_free (before);
+
+	gtk_box_pack_start (GTK_BOX (body), section, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (body), content, FALSE, FALSE, 0);
+}
+
+/* A sentence in the body: wrapped, and selectable like the field
+ * values, since it can carry a fingerprint worth copying. */
+static GtkWidget *
+details_sentence (const gchar *text, const gchar *klass)
+{
+	GtkWidget *label = gtk_label_new (text);
+
+	gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+	gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
+	gtk_label_set_line_wrap_mode (GTK_LABEL (label), PANGO_WRAP_WORD_CHAR);
+	gtk_label_set_max_width_chars (GTK_LABEL (label), 44);
+	gtk_label_set_selectable (GTK_LABEL (label), TRUE);
+	gtk_widget_set_can_focus (label, FALSE);
+	gtk_style_context_add_class (gtk_widget_get_style_context (label),
+	                             klass);
+	return label;
+}
+
+/* [ trust_details_show ]
+ * Fills the drawer from `current': the same report as the "Selected
+ * file" card, with the fingerprint in full, and the card's two
+ * actions where they can do something. */
+static void
+trust_details_show (void)
+{
+	const FsTrustAssessment *assessment = current;
+	const FsTrustReport *report;
+	FsDrawerAction actions[2];
+	guint n_actions = 0;
+	GtkWidget *body, *fields;
+	gchar *name, *folder, *text;
+
+	if (assessment == NULL || assessment->path == NULL)
+		return;
+	report = assessment->report;
+
+	body = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+
+	fields = fs_drawer_fields_new ();
+	fs_drawer_field (fields, _("File"), assessment->path, TRUE);
+	if (report != NULL) {
+		text = g_format_size (report->size);
+		fs_drawer_field (fields, _("Size"), text, FALSE);
+		g_free (text);
+		text = format_mtime (report->mtime);
+		fs_drawer_field (fields, _("Modified"), text, FALSE);
+		g_free (text);
+	}
+	details_group (body, _("On disk"), fields);
+	if (report == NULL)
+		gtk_box_pack_start (GTK_BOX (body),
+		                    details_sentence (
+		                    	_("File not found or unreadable"),
+		                    	"muted"),
+		                    FALSE, FALSE, 0);
+
+	if (report != NULL) {
+		fields = fs_drawer_fields_new ();
+		fs_drawer_field (fields, _("Publisher"),
+		                 report->publisher ? report->publisher
+		                                   : _("(no signer)"), FALSE);
+		fs_drawer_field (fields, _("Signature"),
+		                 fs_trust_sig_name (report->sig), FALSE);
+		fs_drawer_field (fields, _("SHA-256"), report->sha256, TRUE);
+		details_group (body, _("Signature and fingerprint"), fields);
+	}
+
+	text = baseline_text (assessment);
+	details_group (body, _("Baseline"),
+	               details_sentence (text, "fs-drawer-value"));
+	g_free (text);
+
+	/* Attest needs a file that was read; Forget one the baseline
+	 * holds.  Both ask first, as the card's buttons do. */
+	if (report != NULL) {
+		actions[n_actions].label = _("Attest");
+		actions[n_actions].klass = "btn-subtle";
+		actions[n_actions].run = on_details_attest;
+		actions[n_actions].data = NULL;
+		n_actions++;
+	}
+	if (assessment->baseline_sha256 != NULL) {
+		actions[n_actions].label = _("Forget");
+		actions[n_actions].klass = "btn-danger";
+		actions[n_actions].run = on_details_forget;
+		actions[n_actions].data = NULL;
+		n_actions++;
+	}
+
+	name = g_path_get_basename (assessment->path);
+	folder = g_path_get_dirname (assessment->path);
+	fs_drawer_open (&drawer_owner, name,
+	                g_strcmp0 (folder, ".") != 0 ? folder : NULL,
+	                body, actions, n_actions);
+	g_free (name);
+	g_free (folder);
+}
+
+/* [ trust_details_sync ]
+ * After Attest or Forget changed `current': an open drawer of this
+ * page says the new state, or closes when the file was forgotten. */
+static void
+trust_details_sync (void)
+{
+	if (fs_drawer_owner () != &drawer_owner)
+		return;
+
+	if (current != NULL)
+		trust_details_show ();
+	else
+		fs_drawer_close ();
+}
+
+/* [ on_row_activated ]
+ * Enter or a double click on a row of the list: inspect that file,
+ * as typing its path and pressing Inspect does, and show the report
+ * in the drawer when it arrives.  The keyboard focus stays in the
+ * list. */
+static void
+on_row_activated (GtkTreeView *tree, GtkTreePath *path,
+                  GtkTreeViewColumn *column, gpointer data)
+{
+	GtkTreeModel *model = gtk_tree_view_get_model (tree);
+	GtkTreeIter iter;
+	gchar *file = NULL;
+
+	(void) column;
+	(void) data;
+
+	if (model == NULL || !gtk_tree_model_get_iter (model, &iter, path))
+		return;
+
+	gtk_tree_model_get (model, &iter, COL_PATH, &file, -1);
+	if (file != NULL && *file != '\0') {
+		/* Not while a task runs: the entry would then name a file
+		 * the card does not show. */
+		if (busy_tasks == 0)
+			gtk_entry_set_text (GTK_ENTRY (path_entry), file);
+		if (start_inspect (file))
+			drawer_wanted = TRUE;
+	}
+	g_free (file);
 }
 
 /* --------------------------------------------------------- building */
@@ -787,6 +1038,12 @@ build_page (void)
 
 	tree = gtk_tree_view_new_with_model (GTK_TREE_MODEL (list_store));
 	g_object_unref (list_store);   /* the view holds it now */
+	gtk_widget_set_name (tree, "trust-list");
+	gtk_widget_set_tooltip_text (tree,
+		_("Press Enter or double-click a file to inspect it and "
+		  "see its full report at the side."));
+	g_signal_connect (tree, "row-activated",
+	                  G_CALLBACK (on_row_activated), NULL);
 
 	renderer = gtk_cell_renderer_text_new ();
 	column = gtk_tree_view_column_new_with_attributes (

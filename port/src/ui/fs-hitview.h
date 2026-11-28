@@ -110,8 +110,14 @@ void     fs_hitview_reload (void);
 const FsHit *fs_hitview_selected (void);
 
 /* Open the detail drawer (ui/fs-drawer.h) for one event: what it was,
- * where it came from and went to, and what blocked it.  The hit is
- * copied.  The Overview's list of latest blocks calls this too. */
+ * where it came from and went to, what the log says about why, and the
+ * actions the list's right-click menu offers for it (through the same
+ * code, with the same confirm dialogs).  The hit is copied; whether it
+ * was blocked is read from the hit itself (fs_hit_is_blocked).  For
+ * events of other pages, such as the Overview's latest blocks: the
+ * Events list opens its own rows itself, on Enter, a double click or
+ * "Details" in the menu, and moves an open drawer along with the
+ * selection. */
 void fs_hitview_show_details (const FsHit *hit);
 
 /* Puts `text' in the filter bar and filters at once (the Copilot's

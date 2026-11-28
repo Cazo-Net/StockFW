@@ -192,9 +192,23 @@ static const FsHelpBlock events[] = {
 	  "When StockFW starts the newest of them fill the list again, and "
 	  "<tt>stockfw events --history</tt> searches further back with the "
 	  "same filters. The system's own log stays the full record.") },
+	{ FS_HELP_HEAD, N_("One event in detail") },
+	{ FS_HELP_PARA, N_("Press Enter on a row, double-click it, or "
+	  "right-click it and choose <b>Details</b>, to open the event in the "
+	  "details panel on the right: the connection, the packet, what the "
+	  "log says about why it was blocked or allowed, and when it was "
+	  "logged. Addresses are shown whole there, where a narrow column "
+	  "cuts them short.") },
+	{ FS_HELP_ITEM, N_("While the panel is open it follows the row you "
+	  "select, so the arrow keys walk through the events one by one.") },
+	{ FS_HELP_ITEM, N_("New events arriving do not change what it shows. "
+	  "It closes with Escape, and by itself when its event leaves the "
+	  "list: when you press <b>Clear</b>, or when a full list drops that "
+	  "event as its oldest.") },
 	{ FS_HELP_HEAD, N_("From an event to a rule") },
-	{ FS_HELP_PARA, N_("Right-click a row to turn it into a rule. StockFW "
-	  "offers only what that event can express:") },
+	{ FS_HELP_PARA, N_("Right-click a row to turn it into a rule, or use "
+	  "the buttons at the bottom of the details panel: both offer the "
+	  "same actions. StockFW offers only what that event can express:") },
 	{ FS_HELP_ITEM, N_("Outbound: block the destination, allow the "
 	  "destination, or block this service to the destination.") },
 	{ FS_HELP_ITEM, N_("Inbound: trust the source (an inbound allow), or "
@@ -233,7 +247,8 @@ static const FsHelpBlock events[] = {
 	  "Their row names the list, such as "
 	  "<i>Threat intel: Spamhaus DROP (IPv4)</i>, and right-clicking it "
 	  "offers <b>Add exception</b>, which puts the address on the allow "
-	  "list. A block by one of your country or network rules is logged "
+	  "list. The details panel names the list too, and has the same "
+	  "button. A block by one of your country or network rules is logged "
 	  "and named the same way, with the rule's name.") },
 	{ FS_HELP_PARA, N_("On Windows the Security log does not name the rule "
 	  "that blocked a connection, so Events cannot say which list blocked "
@@ -306,6 +321,15 @@ static const FsHelpBlock policy[] = {
 	  "for you to fill in. On the groups that have a twin in the other "
 	  "direction, the menu beside Add can make it <b>Bi-directional</b>: "
 	  "both rows are saved together, or neither is.") },
+	{ FS_HELP_PARA, N_("<b>Details</b>, beside Remove, opens the selected "
+	  "rule in the details panel on the right: every field of the row, "
+	  "which addresses the rule covers and why, the program a service "
+	  "rule is bound to, what is wrong with a rule the firewall would not "
+	  "take, and whether its twin for the other direction is in the "
+	  "policy. While the panel is open it follows the rule you select, in "
+	  "any group. <b>Remove rule</b> there does what Remove does, and a "
+	  "service rule has <b>Bind App</b> there as well. Editing stays in "
+	  "the cells.") },
 	{ FS_HELP_HEAD, N_("Services, ports and hosts") },
 	{ FS_HELP_PARA, N_("A service names a port, such as SSH for 22 or "
 	  "HTTPS for 443. A port is one number or a range such as 6000-6010. "
@@ -598,6 +622,11 @@ static const FsHelpBlock trust[] = {
 	{ FS_HELP_PARA, N_("<b>Refresh list</b> checks every file in the "
 	  "baseline again. <b>Scan processes</b> inspects the programs that "
 	  "are running now (Windows).") },
+	{ FS_HELP_PARA, N_("Press Enter on a row of the baseline list, or "
+	  "double-click it, to inspect that file again and open its report in "
+	  "the details panel on the right. The panel shows the path and the "
+	  "fingerprint whole, and has <b>Attest</b> and <b>Forget</b> for "
+	  "that file; they ask first, like the buttons on the page.") },
 	{ FS_HELP_NOTE, N_("Signatures are checked on Windows only, with "
 	  "Windows' own Authenticode check, offline: nothing is downloaded "
 	  "and revocation is not checked. On Linux the signature reads "

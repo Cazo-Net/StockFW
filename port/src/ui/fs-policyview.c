@@ -14,6 +14,7 @@
 #include "ui/fs-policyview.h"
 #include "ui/fs-dialogs.h"
 #include "ui/fs-statusview.h"
+#include "ui/fs-drawer.h"
 #include "core/fs-prefs.h"
 #include "core/fs-backend.h"
 #include "core/fs-fwrule.h"
@@ -34,6 +35,7 @@ typedef struct
 	gint           num_columns;
 	GtkWidget     *direction;  /* Direction combo, or NULL when the
 	                              kind has no counterpart */
+	GtkWidget     *details;    /* the Details button */
 } FsPolicyGroup;
 
 /* The kinds shown, in the order they appear on the page. */
@@ -52,6 +54,27 @@ static const struct
 
 static GList    *groups = NULL;
 static FsPolicy *current_policy = NULL;
+
+/* [ the detail drawer ]
+ * Filled further down (rule_details_show).  rule_drawer_owner is the
+ * token this page gives the drawer; rule_drawer_group and
+ * rule_drawer_rule say which rule it shows.  The rule is a copy and
+ * is found again by content, the way the policy store itself
+ * identifies a rule: a reload or an Add rebuilds every row, so a row
+ * number would not survive.
+ *
+ * rows_changing is set while a group's rows are rebuilt.  The tree
+ * view moves its selection from row to row as they are deleted, and
+ * none of that is the user choosing a rule. */
+static gint           rule_drawer_owner;
+static FsPolicyGroup *rule_drawer_group = NULL;
+static FsRule        *rule_drawer_rule = NULL;
+static guint          rows_changing = 0;
+
+static void     rule_details_show  (FsPolicyGroup *group, gint row);
+static void     rule_details_sync  (FsPolicyGroup *group);
+static gboolean rule_details_shows (FsPolicyGroup *group, const FsRule *rule);
+static gint     selected_row       (FsPolicyGroup *group);
 
 /* [ column_count ] */
 static gint
@@ -257,13 +280,12 @@ refresh_group (FsPolicyGroup *group, const FsPolicy *policy)
 {
 	GtkTreeIter iter;
 
+	rows_changing++;
 	gtk_list_store_clear (group->store);
 	g_ptr_array_set_size (group->rules, 0);
 
-	if (policy == NULL)
-		return;
-
-	for (guint i = 0; i < policy->kinds[group->kind]->len; i++) {
+	for (guint i = 0; policy != NULL &&
+	                  i < policy->kinds[group->kind]->len; i++) {
 		FsRule *rule = g_ptr_array_index (policy->kinds[group->kind], i);
 		const gchar *fields[5] = { NULL, NULL, NULL, NULL, NULL };
 		gint n = rule_fields (rule, fields, 5);
@@ -278,6 +300,13 @@ refresh_group (FsPolicyGroup *group, const FsPolicy *policy)
 
 		g_ptr_array_add (group->rules, fs_rule_copy (rule));
 	}
+	rows_changing--;
+
+	if (group->details != NULL)
+		gtk_widget_set_sensitive (group->details,
+		                          selected_row (group) >= 0);
+	/* The drawer's rule may have gone with the old rows. */
+	rule_details_sync (group);
 }
 
 /* Defined below; runs the policy through the backend when the
@@ -292,11 +321,39 @@ is_service_kind (FsRuleKind kind)
 	       kind == FS_RULE_OUTBOUND_DENY_SERVICE;
 }
 
-static void
-on_bind_app_clicked (GtkButton *button, gpointer data)
+/* [ rule_row ]
+ * The row of the group's mirror holding a rule identical to `rule'
+ * (identity is the CSV form, as in fs_policy_remove), or -1. */
+static gint
+rule_row (FsPolicyGroup *group, const FsRule *rule)
 {
-	FsPolicyGroup *group = data;
-	gint row;
+	gchar *needle;
+	gint found = -1;
+
+	if (group == NULL || rule == NULL || rule->kind != group->kind)
+		return -1;
+
+	needle = fs_rule_to_csv (rule);
+	for (guint i = 0; i < group->rules->len && found < 0; i++) {
+		gchar *csv = fs_rule_to_csv (g_ptr_array_index (group->rules, i));
+
+		if (g_strcmp0 (csv, needle) == 0)
+			found = (gint) i;
+		g_free (csv);
+	}
+	g_free (needle);
+
+	return found;
+}
+
+/* [ bind_app ]
+ * "Bind App...": ties the service rule on `row' to one program, picked
+ * in a file chooser.  Shared by the group's button and the detail
+ * drawer. */
+static void
+bind_app (FsPolicyGroup *group, gint row)
+{
+	GtkWidget *top;
 	FsRule *rule;
 	GtkFileChooserNative *native;
 	gint res;
@@ -304,7 +361,6 @@ on_bind_app_clicked (GtkButton *button, gpointer data)
 	if (current_policy == NULL)
 		return;
 
-	row = selected_row (group);
 	if (row < 0 || (guint) row >= group->rules->len)
 		return;
 
@@ -312,26 +368,39 @@ on_bind_app_clicked (GtkButton *button, gpointer data)
 	if (!is_service_kind (rule->kind))
 		return;
 
+	top = gtk_widget_get_toplevel (group->view);
 	native = gtk_file_chooser_native_new (_("Select Application Executable"),
-	                                     GTK_WINDOW (gtk_widget_get_toplevel (GTK_WIDGET (button))),
+	                                     GTK_IS_WINDOW (top) ? GTK_WINDOW (top) : NULL,
 	                                     GTK_FILE_CHOOSER_ACTION_OPEN,
 	                                     _("_Select"),
 	                                     _("_Cancel"));
 
 	res = gtk_native_dialog_run (GTK_NATIVE_DIALOG (native));
-	if (res == GTK_RESPONSE_ACCEPT) {
+	/* The chooser ran a main loop of its own: do nothing if the rows
+	 * were rebuilt under it (a rule staged from the Events page). */
+	if (res == GTK_RESPONSE_ACCEPT && (guint) row < group->rules->len &&
+	    g_ptr_array_index (group->rules, row) == rule) {
 		gchar *filename = gtk_file_chooser_get_filename (GTK_FILE_CHOOSER (native));
 		if (filename != NULL) {
 			FsRule *new_rule = fs_rule_copy (rule);
+			const gboolean shown = rule_details_shows (group, rule);
+			gint now;
+
 			g_free (new_rule->program);
 			new_rule->program = filename;
 
 			fs_policy_remove (current_policy, rule);
 			fs_policy_add (current_policy, new_rule);
 
-			fs_rule_free (new_rule);
 			refresh_group (group, current_policy);
-			select_row (group, row);
+			/* The store puts the bound rule last in its group. */
+			now = rule_row (group, new_rule);
+			select_row (group, now >= 0 ? now : row);
+			/* The drawer follows the rule it showed to its new
+			 * form, Program and all. */
+			if (shown && now >= 0)
+				rule_details_show (group, now);
+			fs_rule_free (new_rule);
 			fs_policyview_save (current_policy);
 			maybe_apply_instantly ();
 		}
@@ -339,17 +408,26 @@ on_bind_app_clicked (GtkButton *button, gpointer data)
 	g_object_unref (native);
 }
 
-/* [ on_remove_clicked ] */
 static void
-on_remove_clicked (GtkButton *button, gpointer data)
+on_bind_app_clicked (GtkButton *button, gpointer data)
 {
 	FsPolicyGroup *group = data;
-	gint row;
 
+	(void) button;
+
+	bind_app (group, selected_row (group));
+}
+
+/* [ remove_rule ]
+ * Takes the rule on `row' out of the policy and saves.  Shared by the
+ * group's Remove button and the detail drawer.  Neither asks first:
+ * the firewall changes only at Apply (or at once, when the preference
+ * says so). */
+static void
+remove_rule (FsPolicyGroup *group, gint row)
+{
 	if (current_policy == NULL)
 		return;
-
-	row = selected_row (group);
 
 	if (row < 0 || (guint) row >= group->rules->len)
 		return;
@@ -360,6 +438,17 @@ on_remove_clicked (GtkButton *button, gpointer data)
 		fs_policyview_save (current_policy);
 		maybe_apply_instantly ();
 	}
+}
+
+/* [ on_remove_clicked ] */
+static void
+on_remove_clicked (GtkButton *button, gpointer data)
+{
+	FsPolicyGroup *group = data;
+
+	(void) button;
+
+	remove_rule (group, selected_row (group));
 }
 
 /* [ blank_rule ]
@@ -470,6 +559,7 @@ on_cell_edited (GtkCellRendererText *renderer, gchar *path_string,
 	gint row = atoi (path_string);
 	FsRule *old_rule;
 	FsRule *new_rule;
+	gboolean shown;
 
 	if (current_policy == NULL)
 		return;
@@ -483,6 +573,7 @@ on_cell_edited (GtkCellRendererText *renderer, gchar *path_string,
 		return;
 
 	old_rule = g_ptr_array_index (group->rules, row);
+	shown = rule_details_shows (group, old_rule);
 
 	/* The mirror still holds the pre-edit rule, so it matches the
 	 * copy inside the policy and can be removed by content. */
@@ -503,6 +594,10 @@ on_cell_edited (GtkCellRendererText *renderer, gchar *path_string,
 			set_coverage (group, &iter, new_rule);
 	}
 	fs_rule_free (new_rule);
+
+	/* The drawer showed this rule: it shows the edited one now. */
+	if (shown)
+		rule_details_show (group, row);
 
 	fs_policyview_save (current_policy);
 	maybe_apply_instantly ();
@@ -877,6 +972,352 @@ maybe_apply_instantly (void)
 	apply_policy_now (FALSE);
 }
 
+/* ---- the detail drawer ------------------------------------------------
+ *
+ * One rule in the window's drawer (ui/fs-drawer.h): its fields, what
+ * it covers and why, and anything wrong with it, said in sentences
+ * where the table has only a column and a tooltip.  Each group's
+ * Details button opens it; a plain selection never does, because a
+ * click on a row is also how a cell is edited.  While it is open it
+ * follows the selection in every group.  Editing stays in the cells. */
+
+/* [ rule_details_shows ] -- TRUE while the drawer shows this rule. */
+static gboolean
+rule_details_shows (FsPolicyGroup *group, const FsRule *rule)
+{
+	gchar *a, *b;
+	gboolean same;
+
+	if (rule_drawer_group != group || rule_drawer_rule == NULL ||
+	    rule == NULL || fs_drawer_owner () != &rule_drawer_owner)
+		return FALSE;
+
+	a = fs_rule_to_csv (rule_drawer_rule);
+	b = fs_rule_to_csv (rule);
+	same = g_strcmp0 (a, b) == 0;
+	g_free (a);
+	g_free (b);
+
+	return same;
+}
+
+static void
+rule_details_forget (void)
+{
+	rule_drawer_group = NULL;
+	g_clear_pointer (&rule_drawer_rule, fs_rule_free);
+}
+
+/* [ rule_details_sync ]
+ * After a group's rows were rebuilt (a reload, an Add, a Remove, an
+ * import): the drawer goes on showing its rule when the rule is still
+ * there, and closes when it is not. */
+static void
+rule_details_sync (FsPolicyGroup *group)
+{
+	gint row;
+
+	if (rule_drawer_group != group)
+		return;
+
+	if (fs_drawer_owner () != &rule_drawer_owner) {
+		/* Closed, or another page has the drawer now. */
+		rule_details_forget ();
+		return;
+	}
+
+	row = rule_row (group, rule_drawer_rule);
+	if (row >= 0) {
+		rule_details_show (group, row);
+	} else {
+		rule_details_forget ();
+		fs_drawer_close ();
+	}
+}
+
+/* The drawer's two actions work on the rule the drawer shows, found
+ * again by content, not on whatever row is selected by the time the
+ * button is pressed. */
+static void
+on_details_remove (gpointer data)
+{
+	FsPolicyGroup *group = rule_drawer_group;
+
+	(void) data;
+
+	if (group != NULL)
+		remove_rule (group, rule_row (group, rule_drawer_rule));
+}
+
+static void
+on_details_bind_app (gpointer data)
+{
+	FsPolicyGroup *group = rule_drawer_group;
+
+	(void) data;
+
+	if (group != NULL)
+		bind_app (group, rule_row (group, rule_drawer_rule));
+}
+
+/* Host and port fields are set in the fixed-width face, names and
+ * comments in the UI face.  `index' counts rule_fields () entries. */
+static gboolean
+rule_field_is_mono (FsRuleKind kind, gint index)
+{
+	switch (kind) {
+	case FS_RULE_INBOUND_FORWARD:
+		return index >= 1 && index <= 3;     /* port, to, to port */
+	case FS_RULE_INBOUND_ALLOW_SERVICE:
+	case FS_RULE_OUTBOUND_ALLOW_SERVICE:
+	case FS_RULE_OUTBOUND_DENY_SERVICE:
+		return index == 1 || index == 2;     /* port, for */
+	default:
+		return index == 0;                   /* the host */
+	}
+}
+
+/* A heading and its fields, with a gap above every heading but the
+ * first. */
+static void
+rule_details_group (GtkWidget *body, const gchar *heading, GtkWidget *fields)
+{
+	GtkWidget *section = fs_drawer_section (heading);
+	GList *before = gtk_container_get_children (GTK_CONTAINER (body));
+
+	if (before != NULL)
+		gtk_widget_set_margin_top (section, 10);
+	g_list_free (before);
+
+	gtk_box_pack_start (GTK_BOX (body), section, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (body), fields, FALSE, FALSE, 0);
+}
+
+/* A sentence under the fields, in the quiet face. */
+static void
+rule_details_note (GtkWidget *body, const gchar *text)
+{
+	GtkWidget *label = gtk_label_new (text);
+
+	gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+	gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
+	gtk_label_set_max_width_chars (GTK_LABEL (label), 44);
+	gtk_style_context_add_class (gtk_widget_get_style_context (label),
+	                             "muted");
+	gtk_widget_set_margin_top (label, 2);
+	gtk_box_pack_start (GTK_BOX (body), label, FALSE, FALSE, 0);
+}
+
+/* [ rule_details_show ]
+ * Fills the drawer for the rule on `row' of `group'. */
+static void
+rule_details_show (FsPolicyGroup *group, gint row)
+{
+	const gboolean names =
+		(fs_backend ()->fw_honors & FS_FWHON_HOST_NAMES) != 0;
+	const gchar * const *columns;
+	const gchar *values[5] = { NULL, NULL, NULL, NULL, NULL };
+	FsDrawerAction actions[2];
+	guint n_actions = 0;
+	GtkWidget *body, *fields;
+	const FsRule *rule;
+	FsRule *counterpart;
+	GString *line;
+	gchar *detail = NULL, *problem;
+	FsFamily fam;
+	gint n = 0;
+
+	if (row < 0 || (guint) row >= group->rules->len)
+		return;
+	rule = g_ptr_array_index (group->rules, row);
+
+	columns = fs_rule_columns (group->kind, &n);
+	if (n > 5)
+		n = 5;
+	rule_fields (rule, values, 5);
+
+	body = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+
+	/* The rule in one line, as the row reads: its fields without the
+	 * comment (the last column of every kind). */
+	line = g_string_new (NULL);
+	for (gint i = 0; i < n - 1; i++) {
+		if (values[i] == NULL || *values[i] == '\0')
+			continue;
+		if (line->len > 0)
+			g_string_append (line, " \xc2\xb7 ");
+		g_string_append (line, values[i]);
+	}
+
+	/* Rule: one field for each column of the table, empty ones too,
+	 * so the drawer and the row can be compared field for field.  A
+	 * column headed with the group's own title ("Allow connections
+	 * from host") is the host: the drawer's title says the rest, and a
+	 * name that long would push the values out of line. */
+	fields = fs_drawer_fields_new ();
+	for (gint i = 0; i < n; i++)
+		fs_drawer_field (fields,
+		                 g_strcmp0 (_(columns[i]), group->title) == 0
+		                 ? _("Host") : _(columns[i]),
+		                 values[i] != NULL && *values[i] != '\0'
+		                 ? values[i] : "-",
+		                 rule_field_is_mono (group->kind, i));
+	rule_details_group (body, _("Rule"), fields);
+
+	/* Effect: what the Covers column says and the sentence its
+	 * tooltip holds, the program a service rule is bound to, and why
+	 * the firewall would not take the rule, when it would not. */
+	fam = fs_rule_coverage (rule, names, &detail);
+	problem = fs_rule_problem (rule);
+
+	fields = fs_drawer_fields_new ();
+	fs_drawer_field (fields, _("Covers"),
+	                 fam == FS_FAMILY_NONE ? _("Nothing")
+	                                       : _(fs_util_families_label (fam)),
+	                 FALSE);
+	if (!rule->enabled)
+		fs_drawer_field (fields, _("Status"),
+		                 _("Switched off: kept in the policy, not "
+		                   "applied."), FALSE);
+	fs_drawer_field (fields, _("Program"), rule->program, TRUE);
+	if (problem != NULL) {
+		gchar *sentence = g_strdup_printf (
+			_("Not a valid rule: %s."), problem);
+
+		fs_drawer_field (fields, _("Problem"), sentence, FALSE);
+		g_free (sentence);
+	}
+	rule_details_group (body, _("Effect"), fields);
+	if (detail != NULL && *detail != '\0')
+		rule_details_note (body, detail);
+#ifdef G_OS_WIN32
+	if (is_service_kind (rule->kind) &&
+	    (rule->program == NULL || *rule->program == '\0'))
+		rule_details_note (body,
+			_("Not bound to a program: the rule applies to every "
+			  "program."));
+#else
+	/* The Linux generator (fs-script.c) writes no program match. */
+	if (rule->program != NULL && *rule->program != '\0')
+		rule_details_note (body,
+			_("On Linux the firewall does not match programs: the "
+			  "rule applies to every program."));
+#endif
+
+	/* The twin in the other direction, when the policy holds it. */
+	counterpart = fs_rule_counterpart (rule);
+	if (counterpart != NULL && current_policy != NULL &&
+	    fs_policy_contains (current_policy, counterpart)) {
+		FsPolicyGroup *other = group_for_kind (counterpart->kind);
+		gchar *note = other != NULL
+			? g_strdup_printf (
+				_("Bi-directional: its twin for the other "
+				  "direction is in the policy too, under "
+				  "\"%s\"."), other->title)
+			: g_strdup (_("Bi-directional: its twin for the other "
+			              "direction is in the policy too."));
+
+		rule_details_note (body, note);
+		g_free (note);
+	}
+	fs_rule_free (counterpart);
+
+	if (is_service_kind (rule->kind)) {
+		actions[n_actions].label = _("Bind App...");
+		actions[n_actions].klass = "btn-subtle";
+		actions[n_actions].run = on_details_bind_app;
+		actions[n_actions].data = NULL;
+		n_actions++;
+	}
+	actions[n_actions].label = _("Remove rule");
+	actions[n_actions].klass = "btn-danger";
+	actions[n_actions].run = on_details_remove;
+	actions[n_actions].data = NULL;
+	n_actions++;
+
+	/* Remembered before the drawer is filled, as a copy: `rule' may be
+	 * the very rule being replaced (a refresh for the same row). */
+	{
+		FsRule *copy = fs_rule_copy (rule);
+
+		rule_details_forget ();
+		rule_drawer_group = group;
+		rule_drawer_rule = copy;
+	}
+
+	fs_drawer_open (&rule_drawer_owner, group->title,
+	                line->len > 0 ? line->str : NULL, body,
+	                actions, n_actions);
+
+	g_string_free (line, TRUE);
+	g_free (detail);
+	g_free (problem);
+}
+
+/* [ on_details_clicked ] -- a group's Details button. */
+static void
+on_details_clicked (GtkButton *button, gpointer data)
+{
+	FsPolicyGroup *group = data;
+
+	(void) button;
+
+	rule_details_show (group, selected_row (group));
+}
+
+/* [ rule_details_follow ]
+ * An open drawer of this page moves to the group's selected rule. */
+static void
+rule_details_follow (FsPolicyGroup *group)
+{
+	gint row = selected_row (group);
+
+	if (row >= 0 && (guint) row < group->rules->len &&
+	    fs_drawer_owner () == &rule_drawer_owner &&
+	    !rule_details_shows (group, g_ptr_array_index (group->rules, row)))
+		rule_details_show (group, row);
+}
+
+/* [ on_rule_selection_changed ]
+ * A group's selection moved.  The Details button works only with a
+ * rule selected; an open drawer of this page follows the selection,
+ * in whichever group it is.  A closed drawer stays closed: selecting
+ * is also how editing starts, and how "Open rule in Policy" points at
+ * a rule (fs_policyview_select). */
+static void
+on_rule_selection_changed (GtkTreeSelection *selection, gpointer data)
+{
+	FsPolicyGroup *group = data;
+	gint row;
+
+	(void) selection;
+
+	/* Rows being rebuilt: refresh_group settles both afterwards. */
+	if (rows_changing > 0)
+		return;
+
+	row = selected_row (group);
+	gtk_widget_set_sensitive (group->details, row >= 0);
+	rule_details_follow (group);
+}
+
+/* [ on_rule_view_focus_in ]
+ * Every group keeps a selection of its own.  Going to a group whose
+ * rule is selected already (a click on that row, or Tab) changes no
+ * selection, so an open drawer is moved from here. */
+static gboolean
+on_rule_view_focus_in (GtkWidget *widget, GdkEventFocus *event,
+                       gpointer data)
+{
+	(void) widget;
+	(void) event;
+
+	if (rows_changing == 0)
+		rule_details_follow (data);
+
+	return FALSE;
+}
+
 /* [ build_group ] */
 static GtkWidget *
 build_group (FsRuleKind kind, const gchar *title)
@@ -992,6 +1433,27 @@ build_group (FsRuleKind kind, const gchar *title)
 	g_signal_connect (button, "clicked", G_CALLBACK (on_remove_clicked),
 	                  group);
 	gtk_box_pack_start (GTK_BOX (button_box), button, FALSE, FALSE, 0);
+
+	/* The selected rule in the detail drawer.  A button, not a double
+	 * click: that starts editing the cell. */
+	button = gtk_button_new_with_label (_("Details"));
+	gtk_style_context_add_class (gtk_widget_get_style_context (button),
+	                             "btn-subtle");
+	gtk_widget_set_tooltip_text (button,
+		_("Shows the selected rule at the side of the window: its "
+		  "fields, what it covers and why, and anything wrong with "
+		  "it."));
+	gtk_widget_set_sensitive (button, FALSE);
+	g_signal_connect (button, "clicked", G_CALLBACK (on_details_clicked),
+	                  group);
+	gtk_box_pack_start (GTK_BOX (button_box), button, FALSE, FALSE, 0);
+	group->details = button;
+	g_signal_connect (gtk_tree_view_get_selection (
+	                  	GTK_TREE_VIEW (group->view)),
+	                  "changed", G_CALLBACK (on_rule_selection_changed),
+	                  group);
+	g_signal_connect (group->view, "focus-in-event",
+	                  G_CALLBACK (on_rule_view_focus_in), group);
 
 	if (is_service_kind (kind)) {
 		button = gtk_button_new_with_label (_("Bind App..."));

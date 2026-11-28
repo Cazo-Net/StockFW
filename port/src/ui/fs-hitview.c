@@ -34,6 +34,7 @@
 #include "core/fs-apply.h"
 #include "core/fs-eventlog.h"
 #include "core/fs-eventfilter.h"
+#include "core/fs-netparse.h"
 #include "core/fs-i18n.h"
 #include "ui/fs-themecolor.h"
 #include "ui/fs-drawer.h"
@@ -98,6 +99,31 @@ static gboolean      filter_active = FALSE;   /* any part set         */
 /* The policy the Event -> Rule actions stage into; NULL until
  * fs-app.c hands it over (the page is built before the policy). */
 static FsPolicy     *hitview_policy = NULL;
+
+/* [ the detail drawer ]
+ * Filled further down (fs_hitview_show_details and its helpers); the
+ * list's own code only needs to know what it shows.
+ *
+ * details_owner is the token this page gives the drawer.  details_seq
+ * is the listed event the drawer shows: a seq, never an iter or a
+ * path, because a refilter rebuilds the rows and drops the selection
+ * while the event itself stays where it is.  0 when the drawer shows
+ * nothing of this list (closed, or an event another page handed
+ * over). */
+static gint    details_owner;
+static guint64 details_seq = 0;
+
+/* Set while the store takes an event in, which is when a full list
+ * drops its oldest.  If that was the selected row the tree view moves
+ * the selection to its neighbour, and the drawer must not follow: its
+ * event is gone, so it closes (details_sync). */
+static gboolean store_dropping = FALSE;
+
+static void details_show_seq (guint64 seq);
+static void details_show_selected (void);
+static void details_refresh (void);
+static void details_sync (void);
+
 
 /* Column order matches FsHitColumn; the colour column is last. */
 enum
@@ -1129,6 +1155,7 @@ history_load_install (HistoryLoad *job)
 		FsEventStore *merged = job->store;
 		guint n = fs_eventstore_length (estore);
 		guint64 first = fs_eventstore_first_seq (estore);
+		guint64 details_moved = 0;
 
 		job->store = NULL;
 		if (job->discard_rows || merged == NULL) {
@@ -1144,11 +1171,16 @@ history_load_install (HistoryLoad *job)
 			guint64 seq = first + i;
 			gint64 ticks = fs_eventstore_ticks (estore, seq);
 			FsHit *hit = fs_eventstore_get_hit (estore, seq);
+			guint64 now_seq;
 
 			if (seq < job->next_seq && ticks > job->newest)
 				fs_eventlog_append (elog, hit, ticks);
-			fs_eventstore_append (merged, hit,
-			                      fs_eventstore_time_us (estore, seq));
+			now_seq = fs_eventstore_append (
+				merged, hit, fs_eventstore_time_us (estore, seq));
+			/* The event in the detail drawer has a new seq in
+			 * the merged store. */
+			if (seq == details_seq)
+				details_moved = now_seq;
 			fs_hit_free (hit);
 		}
 		for (guint i = 0; i < job->pending->len; i++) {
@@ -1167,6 +1199,21 @@ history_load_install (HistoryLoad *job)
 		fs_hitview_refilter_now ();   /* the filter, and attach */
 		model_attach ();
 		update_count_label ();
+
+		/* The drawer keeps its event across the swap: the merged
+		 * store numbers its events afresh, so the drawer is filled
+		 * again under the new seq (or closes, had the event not
+		 * been taken over). */
+		if (details_seq != 0) {
+			const gboolean ours =
+				fs_drawer_owner () == &details_owner;
+
+			details_seq = ours ? details_moved : 0;
+			if (ours && details_moved != 0)
+				details_refresh ();
+			else if (ours)
+				fs_drawer_close ();
+		}
 	}
 }
 
@@ -1368,6 +1415,7 @@ fs_hitview_apply_settings (void)
 	emodel = fs_event_model_new (estore);
 	fs_hitview_refilter_now ();       /* the filter, and attach */
 	model_attach ();
+	details_sync ();                  /* its event may have gone */
 	update_count_label ();
 }
 
@@ -1383,7 +1431,9 @@ fs_hitview_append (const FsHit *hit)
 	 * its seen-set when monitoring restarts, and the trailing window
 	 * comes back to a list that still holds those rows (and, since
 	 * 1.0.7, to history read back at start).  The store refuses it. */
+	store_dropping = TRUE;
 	seq = fs_eventstore_append (estore, hit, g_get_real_time ());
+	store_dropping = FALSE;
 	if (seq == 0)
 		return FALSE;
 
@@ -1404,6 +1454,9 @@ fs_hitview_append (const FsHit *hit)
 	 * reader further down is reading history and must not be yanked
 	 * anywhere. */
 	fs_event_model_note_append (emodel, seq);
+
+	/* A full list dropped its oldest event to take this one. */
+	details_sync ();
 
 	update_count_label ();
 
@@ -1437,6 +1490,9 @@ fs_hitview_clear (void)
 		fs_event_model_rebuild (emodel);
 		model_attach ();
 	}
+
+	/* The event in the drawer went with the rest. */
+	details_sync ();
 
 	update_count_label ();
 }
@@ -1844,16 +1900,20 @@ stage_rule (FsRule *rule, const gchar *what)
 	g_free (csv);
 }
 
-/* [ on_menu_rule_activated ] */
+/* ---- what an event can be turned into --------------------------------
+ *
+ * The right-click menu and the detail drawer offer the same actions for
+ * the same event.  Both read them from event_actions () and run them
+ * through event_action_run (), so they cannot drift apart. */
+
+/* [ event_stage ]
+ * Block / Allow / Block this service / Trust: the rule the action
+ * makes of the event, confirmed, saved and pushed (stage_rule). */
 static void
-on_menu_rule_activated (GtkMenuItem *item, gpointer data)
+event_stage (const FsHit *hit, FsEventRuleAction action)
 {
-	FsEventRuleAction action = GPOINTER_TO_INT (data);
-	const FsHit *hit = fs_hitview_selected ();
 	FsRule *rule;
 	gchar *what = NULL;
-
-	(void) item;
 
 	if (hit == NULL)
 		return;
@@ -1891,21 +1951,17 @@ on_menu_rule_activated (GtkMenuItem *item, gpointer data)
 	g_free (what);
 }
 
-/* [ on_menu_untrust_activated ]
+/* [ event_untrust ]
  * The inbound mirror: there is no inbound DENY kind, so "untrust" is
  * removing the stored allow -- default-deny already does the
  * blocking. */
 static void
-on_menu_untrust_activated (GtkMenuItem *item, gpointer data)
+event_untrust (const FsHit *hit)
 {
-	const FsHit *hit = fs_hitview_selected ();
 	FsRule *existing;
 	gchar *source;
 	gchar *question;
 	gboolean confirmed = FALSE;
-
-	(void) item;
-	(void) data;
 
 	if (hit == NULL || hitview_policy == NULL)
 		return;
@@ -1950,15 +2006,12 @@ on_menu_untrust_activated (GtkMenuItem *item, gpointer data)
 	g_free (source);
 }
 
-/* [ on_menu_intel_exception ] -- "Add exception for <address>". */
+/* [ event_add_exception ] -- "Add exception for <address>". */
 static void
-on_menu_intel_exception (GtkMenuItem *item, gpointer data)
+event_add_exception (const FsHit *hit)
 {
-	const FsHit *hit = fs_hitview_selected ();
 	GtkWidget *top;
 
-	(void) item;
-	(void) data;
 	if (hit == NULL)
 		return;
 	top = view != NULL ? gtk_widget_get_toplevel (view) : NULL;
@@ -1969,16 +2022,186 @@ on_menu_intel_exception (GtkMenuItem *item, gpointer data)
 	                            hit->rule);
 }
 
+typedef enum
+{
+	EVENT_ACT_EXCEPTION,        /* a blocklist's block: allow the address */
+	EVENT_ACT_BLOCK_DEST,
+	EVENT_ACT_ALLOW_DEST,
+	EVENT_ACT_BLOCK_SERVICE,
+	EVENT_ACT_TRUST,
+	EVENT_ACT_UNTRUST
+} EventActionId;
+
+/* The most one event offers (an outbound one with a port). */
+#define EVENT_ACTIONS_MAX 3
+
+typedef struct
+{
+	EventActionId id;
+	gchar        *menu_label;     /* names the address; g_free          */
+	const gchar  *drawer_label;   /* the drawer shows the address above */
+	const gchar  *klass;          /* the drawer button's class          */
+} EventAction;
+
+/* [ event_actions ]
+ * What this event can express, in the order offered: outbound events
+ * can block or allow their destination or block its service, inbound
+ * events can trust their source (or drop that trust again), and a
+ * blocklist's block can only be excepted.  Returns how many were
+ * written; none when the event names no direction or no remote
+ * address. */
+static guint
+event_actions (const FsHit *hit, EventAction out[EVENT_ACTIONS_MAX])
+{
+	guint n = 0;
+
+	if (hit == NULL)
+		return 0;
+
+	/* A blocklist's block (design 8, [P2]): an Allow rule would not
+	 * help, the list would still block it; the way out is an
+	 * exception on the Threat Intel page. */
+	if (fs_intelview_rule_is_intel (hit->rule)) {
+		const gchar *remote = hit_is_outbound (hit) ? hit->destination
+		                                            : hit->source;
+
+		if (remote == NULL || *remote == '\0')
+			return 0;
+
+		out[n].id = EVENT_ACT_EXCEPTION;
+		out[n].menu_label = g_strdup_printf (_("Add exception for %s"),
+		                                     remote);
+		out[n].drawer_label = _("Add exception for this address");
+		out[n].klass = "btn-subtle";
+		return n + 1;
+	}
+
+	if (hit_is_outbound (hit) &&
+	    hit->destination != NULL && *hit->destination != '\0') {
+		out[n].id = EVENT_ACT_BLOCK_DEST;
+		out[n].menu_label = g_strdup_printf (_("Block %s (all traffic)"),
+		                                     hit->destination);
+		out[n].drawer_label = _("Block all traffic to this destination");
+		out[n].klass = "btn-subtle";
+		n++;
+
+		out[n].id = EVENT_ACT_ALLOW_DEST;
+		out[n].menu_label = g_strdup_printf (_("Allow %s (all traffic)"),
+		                                     hit->destination);
+		out[n].drawer_label = _("Allow all traffic to this destination");
+		out[n].klass = "btn-subtle";
+		n++;
+
+		if (hit->port != NULL && *hit->port != '\0') {
+			out[n].id = EVENT_ACT_BLOCK_SERVICE;
+			out[n].menu_label = g_strdup_printf (
+				_("Block this service to %s"), hit->destination);
+			out[n].drawer_label =
+				_("Block this service to this destination");
+			out[n].klass = "btn-subtle";
+			n++;
+		}
+	} else if (hit_is_inbound (hit) &&
+	           hit->source != NULL && *hit->source != '\0') {
+		if (hitview_policy != NULL &&
+		    fs_eventrule_find_trust (hitview_policy, hit) != NULL) {
+			out[n].id = EVENT_ACT_UNTRUST;
+			out[n].menu_label = g_strdup_printf (
+				_("Remove trust for %s"), hit->source);
+			out[n].drawer_label = _("Remove trust for this source");
+			out[n].klass = "btn-danger";
+		} else {
+			out[n].id = EVENT_ACT_TRUST;
+			out[n].menu_label = g_strdup_printf (
+				_("Trust %s (inbound allow)"), hit->source);
+			out[n].drawer_label = _("Trust this source (inbound allow)");
+			out[n].klass = "btn-subtle";
+		}
+		n++;
+	}
+
+	return n;
+}
+
+static void
+event_actions_clear (EventAction *actions, guint n)
+{
+	for (guint i = 0; i < n; i++)
+		g_clear_pointer (&actions[i].menu_label, g_free);
+}
+
+/* [ event_action_run ]
+ * Runs one action on a copy of the event: every action asks in a
+ * dialog first, the dialog runs a main loop of its own, and in that
+ * loop the list can move on and free the hit the caller holds
+ * (fs_hitview_selected () keeps one hit, the drawer keeps the one it
+ * shows). */
+static void
+event_action_run (const FsHit *event, EventActionId id)
+{
+	FsHit *hit = fs_hit_copy (event);
+
+	if (hit == NULL)
+		return;
+
+	switch (id) {
+	case EVENT_ACT_EXCEPTION:
+		event_add_exception (hit);
+		break;
+	case EVENT_ACT_BLOCK_DEST:
+		event_stage (hit, FS_EVENTRULE_BLOCK_DEST);
+		break;
+	case EVENT_ACT_ALLOW_DEST:
+		event_stage (hit, FS_EVENTRULE_ALLOW_DEST);
+		break;
+	case EVENT_ACT_BLOCK_SERVICE:
+		event_stage (hit, FS_EVENTRULE_BLOCK_SERVICE);
+		break;
+	case EVENT_ACT_TRUST:
+		event_stage (hit, FS_EVENTRULE_TRUST_SOURCE);
+		break;
+	case EVENT_ACT_UNTRUST:
+		event_untrust (hit);
+		break;
+	}
+
+	fs_hit_free (hit);
+}
+
+/* [ on_menu_action ] -- one of the event's actions, from the menu. */
+static void
+on_menu_action (GtkMenuItem *item, gpointer data)
+{
+	(void) item;
+
+	event_action_run (fs_hitview_selected (),
+	                  (EventActionId) GPOINTER_TO_INT (data));
+	/* An open drawer offers what the event can do now (after Trust,
+	 * that is Remove trust). */
+	details_refresh ();
+}
+
+/* [ on_menu_details ] -- "Details": the drawer for the row. */
+static void
+on_menu_details (GtkMenuItem *item, gpointer data)
+{
+	(void) item;
+	(void) data;
+
+	details_show_selected ();
+}
+
 /* [ on_view_button_press ]
- * Right-click selects the row under the cursor and pops the menu of
- * actions that fit this event's direction. */
+ * Right-click selects the row under the cursor and pops the menu:
+ * Details first, then the actions that fit this event. */
 static gboolean
 on_view_button_press (GtkWidget *widget, GdkEventButton *event,
                       gpointer data)
 {
-	GtkWidget *menu;
+	GtkWidget *menu, *item;
 	const FsHit *hit;
-	gboolean added = FALSE;
+	EventAction actions[EVENT_ACTIONS_MAX];
+	guint n;
 
 	(void) data;
 
@@ -2004,104 +2227,73 @@ on_view_button_press (GtkWidget *widget, GdkEventButton *event,
 
 	menu = gtk_menu_new ();
 
-	/* A blocklist's block (design 8, [P2]): an Allow rule would not
-	 * help, the list would still block it; the way out is an
-	 * exception on the Threat Intel page. */
-	if (fs_intelview_rule_is_intel (hit->rule)) {
-		const gchar *remote = hit_is_outbound (hit) ? hit->destination
-		                                            : hit->source;
-		GtkWidget *item;
-		gchar *label;
+	item = gtk_menu_item_new_with_label (_("Details"));
+	g_signal_connect (item, "activate", G_CALLBACK (on_menu_details), NULL);
+	gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
 
-		if (remote == NULL || *remote == '\0') {
-			gtk_widget_destroy (menu);
-			return FALSE;
-		}
-		label = g_strdup_printf (_("Add exception for %s"), remote);
-		item = gtk_menu_item_new_with_label (label);
-		g_free (label);
-		g_signal_connect (item, "activate",
-		                  G_CALLBACK (on_menu_intel_exception), NULL);
+	n = event_actions (hit, actions);
+	if (n > 0)
+		gtk_menu_shell_append (GTK_MENU_SHELL (menu),
+		                       gtk_separator_menu_item_new ());
+	for (guint i = 0; i < n; i++) {
+		item = gtk_menu_item_new_with_label (actions[i].menu_label);
+		g_signal_connect (item, "activate", G_CALLBACK (on_menu_action),
+		                  GINT_TO_POINTER (actions[i].id));
 		gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
-		gtk_widget_show_all (menu);
-		gtk_menu_popup_at_pointer (GTK_MENU (menu), (GdkEvent *) event);
-		return TRUE;
 	}
-
-	if (hit_is_outbound (hit) &&
-	    hit->destination != NULL && *hit->destination != '\0') {
-		GtkWidget *item;
-		gchar *label;
-
-		label = g_strdup_printf (_("Block %s (all traffic)"),
-		                         hit->destination);
-		item = gtk_menu_item_new_with_label (label);
-		g_free (label);
-		g_signal_connect (item, "activate",
-		                  G_CALLBACK (on_menu_rule_activated),
-		                  GINT_TO_POINTER (FS_EVENTRULE_BLOCK_DEST));
-		gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
-		added = TRUE;
-
-		label = g_strdup_printf (_("Allow %s (all traffic)"),
-		                         hit->destination);
-		item = gtk_menu_item_new_with_label (label);
-		g_free (label);
-		g_signal_connect (item, "activate",
-		                  G_CALLBACK (on_menu_rule_activated),
-		                  GINT_TO_POINTER (FS_EVENTRULE_ALLOW_DEST));
-		gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
-
-		if (hit->port != NULL && *hit->port != '\0') {
-			label = g_strdup_printf (
-				_("Block this service to %s"), hit->destination);
-			item = gtk_menu_item_new_with_label (label);
-			g_free (label);
-			g_signal_connect (item, "activate",
-			                  G_CALLBACK (on_menu_rule_activated),
-			                  GINT_TO_POINTER (
-			                  FS_EVENTRULE_BLOCK_SERVICE));
-			gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
-		}
-	} else if (hit_is_inbound (hit) &&
-	           hit->source != NULL && *hit->source != '\0') {
-		GtkWidget *item;
-		gchar *label;
-
-		if (hitview_policy != NULL &&
-		    fs_eventrule_find_trust (hitview_policy, hit) != NULL) {
-			label = g_strdup_printf (
-				_("Remove trust for %s"), hit->source);
-			item = gtk_menu_item_new_with_label (label);
-			g_free (label);
-			g_signal_connect (item, "activate",
-			                  G_CALLBACK (
-			                  on_menu_untrust_activated),
-			                  NULL);
-		} else {
-			label = g_strdup_printf (
-				_("Trust %s (inbound allow)"), hit->source);
-			item = gtk_menu_item_new_with_label (label);
-			g_free (label);
-			g_signal_connect (item, "activate",
-			                  G_CALLBACK (on_menu_rule_activated),
-			                  GINT_TO_POINTER (
-			                  FS_EVENTRULE_TRUST_SOURCE));
-		}
-
-		gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
-		added = TRUE;
-	}
-
-	if (!added) {
-		gtk_widget_destroy (menu);
-		return FALSE;
-	}
+	event_actions_clear (actions, n);
 
 	gtk_widget_show_all (menu);
 	gtk_menu_popup_at_pointer (GTK_MENU (menu), (GdkEvent *) event);
 
 	return TRUE;
+}
+
+/* [ on_row_activated ] -- Enter or a double click: the row's details.
+ * The keyboard focus stays in the list. */
+static void
+on_row_activated (GtkTreeView *tree, GtkTreePath *path,
+                  GtkTreeViewColumn *column, gpointer data)
+{
+	GtkTreeModel *model = gtk_tree_view_get_model (tree);
+	GtkTreeIter iter;
+
+	(void) column;
+	(void) data;
+
+	if (model == NULL || !FS_IS_EVENT_MODEL (model) ||
+	    !gtk_tree_model_get_iter (model, &iter, path))
+		return;
+
+	details_show_seq (fs_event_model_iter_seq (FS_EVENT_MODEL (model),
+	                                           &iter));
+}
+
+/* [ on_selection_changed ]
+ * While the drawer shows an event of this list, it follows the
+ * selection (arrow keys, a click).  It is keyed on the event's seq:
+ * a refilter drops the selection and rebuilds the rows, and the
+ * drawer must then stay on its event, not jump or close.  Nothing is
+ * opened here, and no cell is read. */
+static void
+on_selection_changed (GtkTreeSelection *selection, gpointer data)
+{
+	GtkTreeModel *model = NULL;
+	GtkTreeIter iter;
+	guint64 seq;
+
+	(void) data;
+
+	if (store_dropping || details_seq == 0 ||
+	    fs_drawer_owner () != &details_owner)
+		return;
+	if (!gtk_tree_selection_get_selected (selection, &model, &iter) ||
+	    !FS_IS_EVENT_MODEL (model))
+		return;
+
+	seq = fs_event_model_iter_seq (FS_EVENT_MODEL (model), &iter);
+	if (seq != 0 && seq != details_seq)
+		details_show_seq (seq);
 }
 
 /* [ on_clear_clicked ] */
@@ -2445,9 +2637,15 @@ fs_hitview_page (void)
 	/* Type-ahead would walk every row looking for a match. */
 	gtk_tree_view_set_enable_search (GTK_TREE_VIEW (view), FALSE);
 
-	/* Right-click: Event -> Rule menu. */
+	/* Right-click: Details and the Event -> Rule menu. */
 	g_signal_connect (view, "button-press-event",
 	                  G_CALLBACK (on_view_button_press), NULL);
+	/* Enter or a double click opens the row in the detail drawer, and
+	 * the selection then moves an open drawer along. */
+	g_signal_connect (view, "row-activated",
+	                  G_CALLBACK (on_row_activated), NULL);
+	g_signal_connect (gtk_tree_view_get_selection (GTK_TREE_VIEW (view)),
+	                  "changed", G_CALLBACK (on_selection_changed), NULL);
 
 	for (gint i = 0; i < FS_NUM_HITCOLUMNS; i++) {
 		GtkCellRenderer *renderer;
@@ -2580,30 +2778,369 @@ fs_hitview_page (void)
 	return page;
 }
 
-/* The owner token this page gives the drawer. */
-static gint details_owner;
+/* ---- the detail drawer ------------------------------------------------
+ *
+ * One event in the window's drawer (ui/fs-drawer.h): what it was, where
+ * it came from and went to, what the log says about why, and the same
+ * actions the right-click menu offers.  Enter or a double click on a
+ * row opens it (on_row_activated), so does "Details" in the menu, and
+ * while it is open the selection moves it along
+ * (on_selection_changed).  The list stays usable behind it. */
 
-void
-fs_hitview_show_details (const FsHit *hit)
+/* What one fill of the drawer keeps for its action buttons.  The
+ * drawer's body owns it, so it lives exactly as long as the buttons
+ * that point into it. */
+typedef struct _DetailsData DetailsData;
+
+typedef struct
 {
-	GtkWidget *fields;
-	gchar *when;
+	DetailsData  *of;
+	EventActionId id;
+} DetailsAct;
 
-	if (hit == NULL)
+struct _DetailsData
+{
+	FsHit     *hit;
+	gboolean   blocked;
+	guint64    seq;       /* 0: not a row of this list           */
+	guint      serial;    /* which fill of the drawer this is    */
+	DetailsAct acts[EVENT_ACTIONS_MAX];
+};
+
+static guint details_serial = 0;
+
+static void
+details_data_free (gpointer data)
+{
+	DetailsData *d = data;
+
+	fs_hit_free (d->hit);
+	g_free (d);
+}
+
+/* [ details_group ]
+ * Puts `fields' into the body under `heading'.  A group no field of
+ * which had a value is left out, heading and all: an empty heading
+ * would read as something missing from the page, when it is missing
+ * from the log. */
+static void
+details_group (GtkWidget *body, const gchar *heading, GtkWidget *fields)
+{
+	GList *rows = gtk_container_get_children (GTK_CONTAINER (fields));
+	GList *before;
+	GtkWidget *section;
+
+	if (rows == NULL) {
+		g_object_ref_sink (fields);
+		g_object_unref (fields);
 		return;
+	}
+	g_list_free (rows);
 
-	fields = fs_drawer_fields_new ();
+	section = fs_drawer_section (heading);
+	before = gtk_container_get_children (GTK_CONTAINER (body));
+	if (before != NULL)
+		gtk_widget_set_margin_top (section, 10);
+	g_list_free (before);
+
+	gtk_box_pack_start (GTK_BOX (body), section, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (body), fields, FALSE, FALSE, 0);
+}
+
+/* [ details_note ] -- a sentence under the fields, in the quiet face. */
+static void
+details_note (GtkWidget *body, const gchar *text)
+{
+	GtkWidget *label = gtk_label_new (text);
+
+	gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+	gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
+	gtk_label_set_max_width_chars (GTK_LABEL (label), 44);
+	gtk_style_context_add_class (gtk_widget_get_style_context (label),
+	                             "muted");
+	gtk_widget_set_margin_top (label, 2);
+	gtk_box_pack_start (GTK_BOX (body), label, FALSE, FALSE, 0);
+}
+
+/* [ event_service_text ]
+ * What the title calls the traffic: the service without the parser's
+ * "[BLOCKED]" marker (the title says "Blocked" in words), else the
+ * port, else the protocol.  The same fallbacks as the Overview's list
+ * of latest blocks, which opens this drawer too.  g_free. */
+static gchar *
+event_service_text (const FsHit *hit)
+{
+	gchar *service = fs_hit_service_name (hit);
+
+	g_strstrip (service);
+	if (*service != '\0')
+		return service;
+	g_free (service);
+
+	if (hit->port != NULL && *hit->port != '\0')
+		return g_strdup_printf (_("port %s"), hit->port);
+	if (hit->protocol != NULL && *hit->protocol != '\0')
+		return g_strdup (hit->protocol);
+	return g_strdup (_("traffic"));
+}
+
+static void on_details_action (gpointer data);
+
+/* [ details_fill ]
+ * Fills the drawer for one event.  Takes `hit'.  `blocked' comes from
+ * real data on both paths: the store's own flag for a row of the list,
+ * the "[BLOCKED]" marker for a hit another page handed over.  `seq' is
+ * the row's, or 0. */
+static void
+details_fill (FsHit *hit, gboolean blocked, guint64 seq)
+{
+	DetailsData *d = g_new0 (DetailsData, 1);
+	EventAction actions[EVENT_ACTIONS_MAX];
+	FsDrawerAction buttons[EVENT_ACTIONS_MAX];
+	GtkWidget *body, *fields;
+	const gboolean inbound = hit_is_inbound (hit);
+	const gboolean outbound = hit_is_outbound (hit);
+	const gchar *remote;
+	gchar *what, *service, *when, *title, *subtitle;
+	guint n;
+
+	d->hit = hit;
+	d->blocked = blocked;
+	d->seq = seq;
+	d->serial = ++details_serial;
+
+	body = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+	g_object_set_data_full (G_OBJECT (body), "fs-event-details", d,
+	                        details_data_free);
+
+	/* "Blocked outbound HTTPS", and under it who and when. */
+	what = event_service_text (hit);
+	if (inbound)
+		title = g_strdup_printf (blocked ? _("Blocked inbound %s")
+		                                 : _("Allowed inbound %s"), what);
+	else if (outbound)
+		title = g_strdup_printf (blocked ? _("Blocked outbound %s")
+		                                 : _("Allowed outbound %s"), what);
+	else
+		title = g_strdup_printf (blocked ? _("Blocked %s")
+		                                 : _("Allowed %s"), what);
+	g_free (what);
+
+	if (inbound)
+		remote = hit->source;
+	else if (outbound)
+		remote = hit->destination;
+	else
+		remote = (hit->destination != NULL && *hit->destination != '\0')
+			? hit->destination : hit->source;
 	when = fs_hitview_format_time (hit->time);
-	fs_drawer_field (fields, _("Time"), when, FALSE);
-	fs_drawer_field (fields, _("Direction"), hit->direction, FALSE);
+	if (remote != NULL && *remote != '\0' && *when != '\0')
+		subtitle = g_strdup_printf ("%s \xc2\xb7 %s", remote, when);
+	else
+		subtitle = g_strdup (remote != NULL && *remote != '\0' ? remote
+		                                                       : when);
+
+	/* Connection. */
+	fields = fs_drawer_fields_new ();
+	fs_drawer_field (fields, _("Direction"),
+	                 inbound ? _("Inbound")
+	                 : outbound ? _("Outbound") : hit->direction, FALSE);
 	fs_drawer_field (fields, _("Source"), hit->source, TRUE);
 	fs_drawer_field (fields, _("Destination"), hit->destination, TRUE);
 	fs_drawer_field (fields, _("Port"), hit->port, TRUE);
 	fs_drawer_field (fields, _("Protocol"), hit->protocol, FALSE);
-	fs_drawer_field (fields, _("Service"), hit->service, FALSE);
+	service = fs_hit_service_name (hit);
+	g_strstrip (service);
+	fs_drawer_field (fields, _("Service"), service, FALSE);
+	g_free (service);
+	/* Only an event source that names the program has one (Windows). */
 	fs_drawer_field (fields, _("Program"), hit->program, TRUE);
-	fs_drawer_field (fields, _("Blocked by"), hit->rule, FALSE);
-	g_free (when);
+	details_group (body, _("Connection"), fields);
 
-	fs_drawer_open (&details_owner, _("Event"), NULL, fields, NULL, 0);
+	/* Packet.  In and Out are the list's In and Out columns: network
+	 * adapters on Linux; on Windows the event names no adapter and the
+	 * backend puts this computer's address and the other side's
+	 * there. */
+	fields = fs_drawer_fields_new ();
+#ifdef G_OS_WIN32
+	fs_drawer_field (fields, _("This computer"), hit->in, TRUE);
+	fs_drawer_field (fields, _("Other side"), hit->out, TRUE);
+#else
+	fs_drawer_field (fields, _("In device"), hit->in, TRUE);
+	fs_drawer_field (fields, _("Out device"), hit->out, TRUE);
+#endif
+	fs_drawer_field (fields, _("Length"), hit->length, TRUE);
+	fs_drawer_field (fields, _("ToS"), hit->tos, TRUE);
+	details_group (body, _("Packet"), fields);
+
+	/* Why.  The rule is named only when the log line names it; nothing
+	 * here is worked out from the policy, which may have changed since
+	 * the event. */
+	fields = fs_drawer_fields_new ();
+	if (blocked)
+		fs_drawer_field (fields, _("Blocked by"),
+		                 hit->rule != NULL && *hit->rule != '\0'
+		                 ? hit->rule
+		                 : _("The log does not say which rule."), FALSE);
+	else
+		fs_drawer_field (fields, _("Allowed by"),
+		                 _("The log does not say which rule."), FALSE);
+	details_group (body, _("Why"), fields);
+	if (blocked && fs_intelview_rule_is_intel (hit->rule))
+		details_note (body,
+			_("A threat-intel list blocked this address. An allow "
+			  "rule would not change that; an exception does."));
+
+	/* Logged. */
+	fields = fs_drawer_fields_new ();
+	fs_drawer_field (fields, _("Time"), when, FALSE);
+	if (g_strcmp0 (when, hit->time) != 0)
+		fs_drawer_field (fields, _("Stamp"), hit->time, TRUE);
+	details_group (body, _("Logged"), fields);
+
+	/* The menu's actions, by the menu's conditions. */
+	n = event_actions (hit, actions);
+	for (guint i = 0; i < n; i++) {
+		d->acts[i].of = d;
+		d->acts[i].id = actions[i].id;
+		buttons[i].label = actions[i].drawer_label;
+		buttons[i].klass = actions[i].klass;
+		buttons[i].run = on_details_action;
+		buttons[i].data = &d->acts[i];
+	}
+	if (n == 0)
+		details_note (body,
+			_("No rule can be made from this event: the log gives "
+			  "no direction or no remote address for it."));
+
+	details_seq = seq;
+	fs_drawer_open (&details_owner, title, subtitle, body, buttons, n);
+
+	event_actions_clear (actions, n);
+	g_free (title);
+	g_free (subtitle);
+	g_free (when);
+}
+
+/* [ on_details_action ] -- one of the drawer's action buttons. */
+static void
+on_details_action (gpointer data)
+{
+	const DetailsAct *act = data;
+	/* Copied first: the action asks in a dialog, the dialog runs a
+	 * main loop, and in it the drawer can be refilled, which frees
+	 * `act' and everything it points to. */
+	FsHit *hit = fs_hit_copy (act->of->hit);
+	const gboolean blocked = act->of->blocked;
+	const guint64 seq = act->of->seq;
+	const guint serial = act->of->serial;
+	const EventActionId id = act->id;
+
+	event_action_run (hit, id);
+
+	/* Still this event in the drawer: offer what it can do now (after
+	 * Trust, that is Remove trust). */
+	if (fs_drawer_owner () == &details_owner && details_serial == serial &&
+	    (seq == 0 || (estore != NULL && fs_eventstore_has (estore, seq))))
+		details_fill (hit, blocked, seq);
+	else
+		fs_hit_free (hit);
+}
+
+/* [ details_show_seq ] -- the drawer for one event of the list. */
+static void
+details_show_seq (guint64 seq)
+{
+	FsHit *hit;
+	gboolean blocked;
+
+	if (estore == NULL || seq == 0)
+		return;
+
+	hit = fs_eventstore_get_hit (estore, seq);
+	if (hit == NULL)
+		return;
+
+	/* The rule is the row's only for a block, as the list shows it
+	 * (see fs_hitview_selected). */
+	blocked = fs_eventstore_is_blocked (estore, seq);
+	if (!blocked)
+		g_clear_pointer (&hit->rule, g_free);
+
+	details_fill (hit, blocked, seq);
+}
+
+/* [ details_show_selected ] -- for the menu's "Details". */
+static void
+details_show_selected (void)
+{
+	GtkTreeSelection *selection;
+	GtkTreeModel *model = NULL;
+	GtkTreeIter iter;
+
+	if (view == NULL)
+		return;
+
+	selection = gtk_tree_view_get_selection (GTK_TREE_VIEW (view));
+	if (!gtk_tree_selection_get_selected (selection, &model, &iter) ||
+	    !FS_IS_EVENT_MODEL (model))
+		return;
+
+	details_show_seq (fs_event_model_iter_seq (FS_EVENT_MODEL (model),
+	                                           &iter));
+}
+
+/* [ details_refresh ]
+ * The drawer again for the event it shows, when that is one of this
+ * list's: its actions follow the policy (Trust becomes Remove trust). */
+static void
+details_refresh (void)
+{
+	if (details_seq == 0 || fs_drawer_owner () != &details_owner)
+		return;
+
+	details_show_seq (details_seq);
+}
+
+/* [ details_sync ]
+ * Called wherever events leave the store (a full list dropping its
+ * oldest, Clear, a smaller list size): when the event in the drawer is
+ * one of them, the drawer closes, since there is nothing behind it any
+ * more.  One lookup in the store; no row and no cell is read, so it
+ * costs an append nothing. */
+static void
+details_sync (void)
+{
+	if (details_seq == 0)
+		return;
+
+	if (fs_drawer_owner () != &details_owner) {
+		/* Closed, or another page has the drawer now. */
+		details_seq = 0;
+		return;
+	}
+
+	if (estore == NULL || !fs_eventstore_has (estore, details_seq)) {
+		details_seq = 0;
+		fs_drawer_close ();
+	}
+}
+
+void
+fs_hitview_show_details (const FsHit *hit)
+{
+	FsHit *copy = fs_hit_copy (hit);
+	gboolean blocked;
+
+	if (copy == NULL)
+		return;
+
+	/* Not a row of this list (the Overview's latest blocks): whether
+	 * it was blocked is what the event itself says, and as in the list
+	 * a rule is only shown for a block. */
+	blocked = fs_hit_is_blocked (copy);
+	if (!blocked)
+		g_clear_pointer (&copy->rule, g_free);
+
+	details_fill (copy, blocked, 0);
 }

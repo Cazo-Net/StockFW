@@ -30,6 +30,9 @@
 #include "core/fs-util.h"
 #include "ui/fs-hitview.h"
 #include "ui/fs-eventmodel.h"
+#include "ui/fs-drawer.h"
+#include "ui/fs-policyview.h"
+#include "core/fs-rules.h"
 #include "core/fs-eventstore.h"
 #include "core/fs-eventlog.h"
 
@@ -1899,6 +1902,762 @@ check_history_pending (void)
 	g_free (dir);
 }
 
+/* ---- the detail drawer (2.0.0) --------------------------------------
+ *
+ * The drawer is one panel for the whole window (ui/fs-drawer.h).  No
+ * window hosts it here, which the module allows: it fills its own
+ * unparented revealer, so these checks read the labels and buttons a
+ * user would see from fs_drawer_widget (). */
+
+/* A label of the drawer's head, by widget name; NULL while hidden. */
+static const gchar *
+drawer_text (const gchar *name)
+{
+	GtkWidget *w = find_named (fs_drawer_widget (), name);
+
+	return w != NULL && GTK_IS_LABEL (w) && gtk_widget_get_visible (w)
+		? gtk_label_get_text (GTK_LABEL (w)) : NULL;
+}
+
+/* The value beside the field called `name', looked for in every grid
+ * of name / value rows under `widget'. */
+static const gchar *
+field_under (GtkWidget *widget, const gchar *name)
+{
+	const gchar *found = NULL;
+
+	if (GTK_IS_GRID (widget)) {
+		for (gint row = 0; ; row++) {
+			GtkWidget *n = gtk_grid_get_child_at (GTK_GRID (widget), 0, row);
+			GtkWidget *v = gtk_grid_get_child_at (GTK_GRID (widget), 1, row);
+
+			if (n == NULL || v == NULL)
+				return NULL;
+			if (GTK_IS_LABEL (n) && GTK_IS_LABEL (v) &&
+			    g_strcmp0 (gtk_label_get_text (GTK_LABEL (n)), name) == 0)
+				return gtk_label_get_text (GTK_LABEL (v));
+		}
+	}
+
+	if (GTK_IS_CONTAINER (widget)) {
+		GList *children = gtk_container_get_children (GTK_CONTAINER (widget));
+
+		for (GList *l = children; l != NULL && found == NULL; l = l->next)
+			found = field_under (GTK_WIDGET (l->data), name);
+		g_list_free (children);
+	}
+
+	return found;
+}
+
+static const gchar *
+drawer_field (const gchar *name)
+{
+	GtkWidget *body = find_named (fs_drawer_widget (), "fs-drawer-body");
+
+	return body != NULL ? field_under (body, name) : NULL;
+}
+
+/* TRUE when a label under `widget' contains `needle'. */
+static gboolean
+says_under (GtkWidget *widget, const gchar *needle)
+{
+	gboolean found = FALSE;
+
+	if (GTK_IS_LABEL (widget))
+		return strstr (gtk_label_get_text (GTK_LABEL (widget)),
+		               needle) != NULL;
+
+	if (GTK_IS_CONTAINER (widget)) {
+		GList *children = gtk_container_get_children (GTK_CONTAINER (widget));
+
+		for (GList *l = children; l != NULL && !found; l = l->next)
+			found = says_under (GTK_WIDGET (l->data), needle);
+		g_list_free (children);
+	}
+
+	return found;
+}
+
+static gboolean
+drawer_says (const gchar *needle)
+{
+	GtkWidget *body = find_named (fs_drawer_widget (), "fs-drawer-body");
+
+	return body != NULL && says_under (body, needle);
+}
+
+/* The drawer's action buttons in the order shown, "label|label"; ""
+ * when it offers none.  Caller frees. */
+static gchar *
+drawer_actions (void)
+{
+	GtkWidget *foot = find_named (fs_drawer_widget (), "fs-drawer-actions");
+	GString *out = g_string_new (NULL);
+
+	if (foot != NULL && gtk_widget_get_visible (foot)) {
+		GList *children = gtk_container_get_children (GTK_CONTAINER (foot));
+
+		for (GList *l = children; l != NULL; l = l->next) {
+			if (!GTK_IS_BUTTON (l->data))
+				continue;
+			if (out->len > 0)
+				g_string_append_c (out, '|');
+			g_string_append (out, gtk_button_get_label (
+				GTK_BUTTON (l->data)));
+		}
+		g_list_free (children);
+	}
+
+	return g_string_free (out, FALSE);
+}
+
+static gboolean
+drawer_actions_are (const gchar *want)
+{
+	gchar *got = drawer_actions ();
+	gboolean same = g_strcmp0 (got, want) == 0;
+
+	if (!same)
+		printf ("       (the drawer offers \"%s\")\n", got);
+	g_free (got);
+	return same;
+}
+
+/* Presses the drawer's action button with this label, as a click
+ * does.  FALSE when there is none. */
+static gboolean
+drawer_press (const gchar *label)
+{
+	GtkWidget *foot = find_named (fs_drawer_widget (), "fs-drawer-actions");
+	GtkWidget *button = NULL;
+
+	if (foot != NULL) {
+		GList *children = gtk_container_get_children (GTK_CONTAINER (foot));
+
+		for (GList *l = children; l != NULL && button == NULL; l = l->next)
+			if (GTK_IS_BUTTON (l->data) &&
+			    g_strcmp0 (gtk_button_get_label (GTK_BUTTON (l->data)),
+			               label) == 0)
+				button = GTK_WIDGET (l->data);
+		g_list_free (children);
+	}
+	if (button == NULL)
+		return FALSE;
+
+	gtk_button_clicked (GTK_BUTTON (button));
+	return TRUE;
+}
+
+/* [ cancelling the question an action asks ]
+ * Every action of an event asks before it does anything, in a modal
+ * dialog with a main loop of its own.  This timer runs inside that
+ * loop, notes what was asked and answers Cancel, so the checks can see
+ * that a drawer button reaches the same question as the menu item
+ * without a rule ever being saved or pushed to a firewall. */
+static gchar *asked = NULL;
+
+static gboolean
+cancel_questions (gpointer data)
+{
+	GList *tops = gtk_window_list_toplevels ();
+
+	(void) data;
+	for (GList *l = tops; l != NULL; l = l->next) {
+		if (!GTK_IS_DIALOG (l->data) ||
+		    !gtk_widget_get_visible (GTK_WIDGET (l->data)))
+			continue;
+
+		g_free (asked);
+		asked = NULL;
+		if (GTK_IS_MESSAGE_DIALOG (l->data))
+			g_object_get (l->data, "text", &asked, NULL);
+		else
+			asked = g_strdup (gtk_window_get_title (GTK_WINDOW (l->data)));
+		gtk_dialog_response (GTK_DIALOG (l->data), GTK_RESPONSE_CANCEL);
+	}
+	g_list_free (tops);
+	return G_SOURCE_CONTINUE;
+}
+
+/* Moves the cursor, and with it the selection, to a row: what an arrow
+ * key or a click does. */
+static void
+tree_select (GtkWidget *tree, guint row)
+{
+	GtkTreePath *path = gtk_tree_path_new_from_indices ((gint) row, -1);
+
+	gtk_tree_view_set_cursor (GTK_TREE_VIEW (tree), path, NULL, FALSE);
+	gtk_tree_path_free (path);
+}
+
+/* Enter or a double click on a row. */
+static void
+tree_activate (GtkWidget *tree, guint row)
+{
+	GtkTreePath *path = gtk_tree_path_new_from_indices ((gint) row, -1);
+
+	gtk_tree_view_set_cursor (GTK_TREE_VIEW (tree), path, NULL, FALSE);
+	gtk_tree_view_row_activated (
+		GTK_TREE_VIEW (tree), path,
+		gtk_tree_view_get_column (GTK_TREE_VIEW (tree), 0));
+	gtk_tree_path_free (path);
+}
+
+static void
+sample_event (const gchar *time, const gchar *direction, const gchar *source,
+              const gchar *destination, const gchar *port,
+              const gchar *protocol, const gchar *service, const gchar *rule)
+{
+	FsHit hit;
+
+	memset (&hit, 0, sizeof hit);
+	hit.time        = (gchar *) time;
+	hit.direction   = (gchar *) direction;
+	hit.in          = (gchar *) (strcmp (direction, "In") == 0 ? "eth0" : "");
+	hit.out         = (gchar *) (strcmp (direction, "In") == 0 ? "" : "eth0");
+	hit.source      = (gchar *) source;
+	hit.destination = (gchar *) destination;
+	hit.port        = (gchar *) port;
+	hit.protocol    = (gchar *) protocol;
+	hit.service     = (gchar *) service;
+	hit.length      = (gchar *) "60";
+	hit.rule        = (gchar *) rule;
+	fs_hitview_append (&hit);
+}
+
+#define ACT_BLOCK   "Block all traffic to this destination"
+#define ACT_ALLOW   "Allow all traffic to this destination"
+#define ACT_SERVICE "Block this service to this destination"
+#define ACT_TRUST   "Trust this source (inbound allow)"
+#define ACT_UNTRUST "Remove trust for this source"
+#define ACT_EXCEPT  "Add exception for this address"
+
+/* [ check_details ]
+ * Enter or a double click on an event opens it in the drawer; the
+ * drawer then follows the selection, keyed on the event and not on its
+ * row; it offers what the right-click menu offers for that event, and
+ * runs it through the same question; it never reads a cell, and an
+ * event that leaves the list takes its drawer with it. */
+static void
+check_details (GtkWidget *page)
+{
+	GtkWidget *tree = NULL, *entry = NULL;
+	GtkTreeModel *model;
+	FsPolicy *policy;
+	FsRule *trust;
+	guint64 reads0;
+	guint answer;
+
+	find_tree_view (page, &tree);
+	if (tree == NULL) {
+		CHECK (FALSE, "details: the list is there");
+		return;
+	}
+	model = gtk_tree_view_get_model (GTK_TREE_VIEW (tree));
+
+	fs_hitview_clear ();
+	fs_hitview_set_policy (NULL);
+
+	/* Newest first, so these are rows 0 to 3: an outbound block, an
+	 * inbound allow, a blocklist's block, and an outbound event with
+	 * no port. */
+	sample_event ("2026-11-02T08:00:03Z", "Out", "192.168.1.5",
+	              "203.0.113.9", "443", "TCP", "HTTPS [BLOCKED]", NULL);
+	sample_event ("2026-11-02T08:00:02Z", "In", "10.0.0.8",
+	              "192.168.1.99", "22", "TCP", "SSH", NULL);
+	sample_event ("2026-11-02T08:00:01Z", "Out", "192.168.1.5",
+	              "198.51.100.66", "80", "TCP", "HTTP [BLOCKED]",
+	              "Threat intel: Spamhaus DROP (IPv4)");
+	sample_event ("2026-11-02T08:00:00Z", "Out", "192.168.1.5",
+	              "203.0.113.50", NULL, "ICMP", NULL, NULL);
+	CHECK (fs_hitview_visible_count () == 4, "details: four sample events");
+
+	reads0 = fs_event_model_value_reads (FS_EVENT_MODEL (model));
+
+	/* Selecting is not opening. */
+	fs_drawer_close ();
+	tree_select (tree, 0);
+	CHECK (!fs_drawer_is_open (),
+	       "details: selecting a row does not open the drawer");
+
+	/* Enter or a double click: the outbound block. */
+	tree_activate (tree, 0);
+	CHECK (fs_drawer_is_open (), "details: activating a row opens the drawer");
+	CHECK (g_strcmp0 (drawer_text ("fs-drawer-title"),
+	                  "Blocked outbound HTTPS") == 0,
+	       "details: the title says what happened (\"%s\")",
+	       drawer_text ("fs-drawer-title"));
+	CHECK (drawer_text ("fs-drawer-subtitle") != NULL &&
+	       g_str_has_prefix (drawer_text ("fs-drawer-subtitle"),
+	                         "203.0.113.9 \xc2\xb7 ") &&
+	       strchr (drawer_text ("fs-drawer-subtitle"), ':') != NULL,
+	       "details: the subtitle is the remote address and the time "
+	       "(\"%s\")", drawer_text ("fs-drawer-subtitle"));
+	CHECK (g_strcmp0 (drawer_field ("Destination"), "203.0.113.9") == 0,
+	       "details: Destination is the event's");
+	CHECK (g_strcmp0 (drawer_field ("Direction"), "Outbound") == 0 &&
+	       g_strcmp0 (drawer_field ("Source"), "192.168.1.5") == 0 &&
+	       g_strcmp0 (drawer_field ("Port"), "443") == 0 &&
+	       g_strcmp0 (drawer_field ("Protocol"), "TCP") == 0 &&
+	       g_strcmp0 (drawer_field ("Length"), "60") == 0,
+	       "details: direction, source, port, protocol and length too");
+	CHECK (g_strcmp0 (drawer_field ("Service"), "HTTPS") == 0,
+	       "details: the service is shown without the [BLOCKED] marker "
+	       "(\"%s\")", drawer_field ("Service"));
+	CHECK (g_strcmp0 (drawer_field ("Blocked by"),
+	                  "The log does not say which rule.") == 0,
+	       "details: no rule in the log, and the drawer says so instead "
+	       "of naming one");
+	CHECK (g_strcmp0 (drawer_field ("Stamp"), "2026-11-02T08:00:03Z") == 0 &&
+	       drawer_field ("Time") != NULL,
+	       "details: the time as the list shows it, and the stamp as "
+	       "logged");
+	CHECK (drawer_field ("Program") == NULL && drawer_field ("ToS") == NULL,
+	       "details: a field the log did not give has no row");
+	CHECK (drawer_actions_are (ACT_BLOCK "|" ACT_ALLOW "|" ACT_SERVICE),
+	       "details: an outbound event offers the menu's three: block, "
+	       "allow, block this service");
+
+	/* The selection moves the open drawer: the inbound allow. */
+	tree_select (tree, 1);
+	CHECK (g_strcmp0 (drawer_text ("fs-drawer-title"),
+	                  "Allowed inbound SSH") == 0 &&
+	       g_str_has_prefix (drawer_text ("fs-drawer-subtitle"),
+	                         "10.0.0.8 \xc2\xb7 "),
+	       "details: moving the selection refreshes the drawer (\"%s\")",
+	       drawer_text ("fs-drawer-title"));
+	CHECK (drawer_field ("Blocked by") == NULL &&
+	       drawer_field ("Allowed by") != NULL,
+	       "details: an allowed event is not given a blocker");
+	CHECK (drawer_actions_are (ACT_TRUST),
+	       "details: an inbound event offers Trust, and nothing else");
+
+	/* The blocklist's block. */
+	tree_select (tree, 2);
+	CHECK (g_strcmp0 (drawer_field ("Blocked by"),
+	                  "Threat intel: Spamhaus DROP (IPv4)") == 0,
+	       "details: a blocklist's block names the list");
+	CHECK (drawer_actions_are (ACT_EXCEPT),
+	       "details: it offers Add exception only, as the menu does");
+
+	/* No port: there is no service to block. */
+	tree_select (tree, 3);
+	CHECK (g_strcmp0 (drawer_text ("fs-drawer-title"),
+	                  "Allowed outbound ICMP") == 0,
+	       "details: with no service and no port the title names the "
+	       "protocol (\"%s\")", drawer_text ("fs-drawer-title"));
+	CHECK (drawer_actions_are (ACT_BLOCK "|" ACT_ALLOW),
+	       "details: no port, so no \"block this service\"");
+
+	/* A new event at the top: the drawer stays on its own. */
+	sample_event ("2026-11-02T08:00:09Z", "In", "10.0.0.9",
+	              "192.168.1.99", "3389", "TCP", "RDP [BLOCKED]", NULL);
+	CHECK (fs_drawer_is_open () &&
+	       g_strcmp0 (drawer_field ("Destination"), "203.0.113.50") == 0,
+	       "details: an arriving event does not move the drawer");
+	CHECK (fs_event_model_value_reads (FS_EVENT_MODEL (model)) == reads0,
+	       "details: opening, following and appending read no cell of "
+	       "the model (%" G_GUINT64_FORMAT ")",
+	       fs_event_model_value_reads (FS_EVENT_MODEL (model)) - reads0);
+
+	/* A filter that hides the event: it is still in the list's store,
+	 * and the drawer is keyed on the event, not on a row. */
+	find_search_entry (page, &entry);
+	if (entry != NULL) {
+		gtk_entry_set_text (GTK_ENTRY (entry), "RDP");
+		g_signal_emit_by_name (entry, "search-changed");
+		CHECK (fs_hitview_visible_count () == 1 && fs_drawer_is_open () &&
+		       g_strcmp0 (drawer_field ("Destination"),
+		                  "203.0.113.50") == 0,
+		       "details: a filter that hides the event leaves the drawer "
+		       "on it");
+		gtk_entry_set_text (GTK_ENTRY (entry), "");
+		g_signal_emit_by_name (entry, "search-changed");
+	}
+
+	/* The actions run the menu's code, question first.  Cancelled
+	 * here, so nothing is saved and no firewall is touched. */
+	policy = fs_policy_new ();
+	fs_hitview_set_policy (policy);
+	answer = g_timeout_add (20, cancel_questions, NULL);
+
+	/* Rows now: RDP, HTTPS, SSH, the blocklist's, ICMP. */
+	tree_select (tree, 1);
+	tree_select (tree, 2);                       /* inbound SSH */
+	CHECK (drawer_actions_are (ACT_TRUST) && drawer_press (ACT_TRUST) &&
+	       g_strcmp0 (asked, "Stage this rule") == 0,
+	       "details: Trust asks the menu's question before staging "
+	       "(\"%s\")", asked != NULL ? asked : "(nothing asked)");
+	CHECK (fs_policy_count (policy, FS_RULE_INBOUND_ALLOW_FROM) == 0 &&
+	       fs_drawer_is_open () &&
+	       g_strcmp0 (drawer_text ("fs-drawer-title"),
+	                  "Allowed inbound SSH") == 0,
+	       "details: cancelled, so no rule was added and the drawer is "
+	       "as it was");
+	g_clear_pointer (&asked, g_free);
+
+	/* Trusted already: the menu's condition for Remove trust. */
+	trust = fs_rule_new (FS_RULE_INBOUND_ALLOW_FROM);
+	trust->target = g_strdup ("10.0.0.8");
+	fs_policy_add (policy, trust);
+	fs_rule_free (trust);
+	tree_select (tree, 1);
+	tree_select (tree, 2);
+	CHECK (drawer_actions_are (ACT_UNTRUST),
+	       "details: a source the policy already trusts is offered "
+	       "Remove trust instead");
+	CHECK (drawer_press (ACT_UNTRUST) && asked != NULL &&
+	       strstr (asked, "Remove the inbound allow for 10.0.0.8") != NULL &&
+	       fs_policy_count (policy, FS_RULE_INBOUND_ALLOW_FROM) == 1,
+	       "details: Remove trust asks first, and Cancel keeps the rule");
+	g_clear_pointer (&asked, g_free);
+
+	tree_select (tree, 0);
+	CHECK (g_strcmp0 (drawer_text ("fs-drawer-title"),
+	                  "Blocked inbound RDP") == 0 &&
+	       drawer_actions_are (ACT_TRUST),
+	       "details: a blocked inbound event from another source offers "
+	       "Trust (\"%s\")", drawer_text ("fs-drawer-title"));
+
+	g_source_remove (answer);
+	fs_hitview_set_policy (NULL);
+	fs_policy_free (policy);
+
+	/* An event another page hands over (the Overview's latest
+	 * blocks): blocked is read from the event, and the list's
+	 * selection does not take the drawer over. */
+	{
+		FsHit hit;
+
+		memset (&hit, 0, sizeof hit);
+		hit.time        = (gchar *) "2026-11-02T08:01:00Z";
+		hit.direction   = (gchar *) "Inbound";
+		hit.source      = (gchar *) "198.51.100.7";
+		hit.destination = (gchar *) "192.168.1.99";
+		hit.port        = (gchar *) "445";
+		hit.protocol    = (gchar *) "TCP";
+		hit.service     = (gchar *) "SMB [BLOCKED]";
+		hit.program     = (gchar *) "C:\\Windows\\System32\\svchost.exe";
+		fs_drawer_close ();
+		fs_hitview_show_details (&hit);
+		CHECK (fs_drawer_is_open () &&
+		       g_strcmp0 (drawer_text ("fs-drawer-title"),
+		                  "Blocked inbound SMB") == 0 &&
+		       g_strcmp0 (drawer_field ("Program"),
+		                  "C:\\Windows\\System32\\svchost.exe") == 0 &&
+		       drawer_actions_are (ACT_TRUST),
+		       "details: an event handed over from another page opens "
+		       "the same drawer, with its program (\"%s\")",
+		       drawer_text ("fs-drawer-title"));
+
+		hit.service = (gchar *) "SMB";
+		hit.rule    = (gchar *) "Threat intel: Spamhaus DROP (IPv4)";
+		fs_hitview_show_details (&hit);
+		CHECK (g_strcmp0 (drawer_text ("fs-drawer-title"),
+		                  "Allowed inbound SMB") == 0 &&
+		       drawer_field ("Blocked by") == NULL &&
+		       drawer_actions_are (ACT_TRUST),
+		       "details: without the marker it is not called blocked, "
+		       "whatever rule it carries");
+
+		tree_select (tree, 0);
+		tree_select (tree, 3);
+		CHECK (g_strcmp0 (drawer_text ("fs-drawer-title"),
+		                  "Allowed inbound SMB") == 0,
+		       "details: the list's selection leaves another page's "
+		       "event in the drawer");
+	}
+
+	/* Clear: the event is gone, and so is its drawer. */
+	tree_activate (tree, 0);
+	CHECK (fs_drawer_is_open (), "details: open again on a row");
+	fs_hitview_clear ();
+	CHECK (!fs_drawer_is_open (),
+	       "details: clearing the list closes the drawer");
+
+	/* A full list drops its oldest event.  When that is the one in
+	 * the drawer, the drawer closes: it must not slide to whichever
+	 * row the tree view selects in its place. */
+	fs_prefs_set_string (FS_PREFS_EVENTS_MAX, "1000");
+	fs_hitview_apply_settings ();
+	sample_event ("2026-11-02T07:00:00Z", "Out", "192.168.1.5",
+	              "203.0.113.77", "443", "TCP", "HTTPS", NULL);
+	tree_activate (tree, 0);
+	CHECK (fs_drawer_is_open () &&
+	       g_strcmp0 (drawer_field ("Destination"), "203.0.113.77") == 0,
+	       "details: open on the oldest event of a list of 1,000");
+	{
+		gint64 t0 = 0;
+		guint i;
+
+		fs_event_time_parse ("2026-11-02T08:00:00Z", &t0);
+		for (i = 0; i < 999; i++) {
+			gchar stamp[FS_EVENT_TIME_BUF];
+
+			fs_event_time_format (t0 + (gint64) i * 10000000,
+			                      FS_EVENT_TIME_SECS, stamp);
+			sample_event (stamp, "Out", "192.168.1.5", "203.0.113.78",
+			              "443", "TCP", "HTTPS", NULL);
+		}
+		CHECK (fs_hitview_count () == 1000 && fs_drawer_is_open () &&
+		       g_strcmp0 (drawer_field ("Destination"),
+		                  "203.0.113.77") == 0,
+		       "details: it stays while the list fills up behind it");
+
+		sample_event ("2026-11-02T09:00:00Z", "Out", "192.168.1.5",
+		              "203.0.113.78", "443", "TCP", "HTTPS", NULL);
+		CHECK (fs_hitview_count () == 1000 && !fs_drawer_is_open (),
+		       "details: when the full list drops that event, the "
+		       "drawer closes rather than show its neighbour");
+	}
+
+	fs_drawer_close ();
+	fs_hitview_clear ();
+	fs_prefs_set_string (FS_PREFS_EVENTS_MAX, "100000");
+	fs_hitview_apply_settings ();
+	CHECK (fs_eventstore_capacity (fs_hitview_store ()) ==
+	       FS_HITVIEW_MAX_ROWS,
+	       "details: the list is back at its default size for the "
+	       "checks that follow");
+}
+
+/* ---- the Policy page's Details button -------------------------------- */
+
+static void
+collect (GtkWidget *widget, GType type, const gchar *label, GPtrArray *out)
+{
+	if (G_TYPE_CHECK_INSTANCE_TYPE (widget, type) &&
+	    (label == NULL ||
+	     (GTK_IS_BUTTON (widget) &&
+	      g_strcmp0 (gtk_button_get_label (GTK_BUTTON (widget)),
+	                 label) == 0)))
+		g_ptr_array_add (out, widget);
+
+	if (GTK_IS_CONTAINER (widget)) {
+		GList *children = gtk_container_get_children (GTK_CONTAINER (widget));
+
+		for (GList *l = children; l != NULL; l = l->next)
+			collect (GTK_WIDGET (l->data), type, label, out);
+		g_list_free (children);
+	}
+}
+
+static void
+policy_rule (FsPolicy *policy, FsRuleKind kind, const gchar *service,
+             const gchar *port, const gchar *target, const gchar *comment)
+{
+	FsRule *rule = fs_rule_new (kind);
+
+	rule->service = g_strdup (service);
+	rule->port    = g_strdup (port);
+	rule->target  = g_strdup (target);
+	rule->comment = g_strdup (comment);
+	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+}
+
+/* [ check_policy_details ]
+ * A Policy page over a scratch rules folder: Details needs a selected
+ * rule, opens the drawer for it with one field per column, follows the
+ * selection from group to group while open and never opens on a
+ * selection alone; Remove rule takes the button's path, and a rule
+ * that is gone takes its drawer with it.  Nothing here applies a
+ * policy: the page's own Apply is not pressed and "apply immediately"
+ * is off, as it is by default. */
+static void
+check_policy_details (const gchar *config)
+{
+	gchar *rules = g_build_filename (config, "rules", NULL);
+	gchar *run = g_build_filename (config, "run", NULL);
+	FsPolicy *policy = fs_policy_new ();
+	GPtrArray *trees = g_ptr_array_new ();
+	GPtrArray *details = g_ptr_array_new ();
+	GtkWidget *page;
+	gboolean idle = TRUE;
+
+	g_mkdir_with_parents (rules, 0700);
+	g_mkdir_with_parents (run, 0700);
+	g_setenv ("STOCKFW_RULES_DIR", rules, TRUE);
+	g_setenv ("STOCKFW_RUN_DIR", run, TRUE);
+	CHECK (!fs_prefs_bool (FS_PREFS_APPLY_POLICY_INSTANTLY),
+	       "policy: changes are not applied by themselves here");
+
+	/* A host with its twin in the other direction, a service, and a
+	 * host to deny. */
+	policy_rule (policy, FS_RULE_INBOUND_ALLOW_FROM, NULL, NULL,
+	             "10.0.0.8", "lab");
+	policy_rule (policy, FS_RULE_OUTBOUND_ALLOW_TO, NULL, NULL,
+	             "10.0.0.8", "lab");
+	policy_rule (policy, FS_RULE_INBOUND_ALLOW_SERVICE, "SSH", "22",
+	             "Anyone", NULL);
+	policy_rule (policy, FS_RULE_OUTBOUND_DENY_TO, NULL, NULL,
+	             "203.0.113.9", NULL);
+	policy_rule (policy, FS_RULE_OUTBOUND_DENY_TO, NULL, NULL,
+	             "2001:db8::5", "second");
+	CHECK (fs_policy_save (policy),
+	       "policy: the sample rules are saved to the scratch folder");
+
+	page = fs_policyview_page (policy);
+	g_object_ref_sink (page);
+	gtk_widget_show_all (page);
+	collect (page, GTK_TYPE_TREE_VIEW, NULL, trees);
+	collect (page, GTK_TYPE_BUTTON, "Details", details);
+
+	CHECK (trees->len == 6 && details->len == 6,
+	       "policy: six groups, each with a Details button (%u, %u)",
+	       trees->len, details->len);
+	if (trees->len != 6 || details->len != 6)
+		goto out;
+
+	for (guint i = 0; i < details->len; i++)
+		idle = idle && !gtk_widget_get_sensitive (details->pdata[i]);
+	CHECK (idle, "policy: Details is off until a rule is selected");
+
+	/* Selecting, by hand or as "Open rule in Policy" does, is not
+	 * opening. */
+	fs_drawer_close ();
+	tree_select (trees->pdata[0], 0);
+	CHECK (gtk_widget_get_sensitive (details->pdata[0]) &&
+	       !gtk_widget_get_sensitive (details->pdata[1]),
+	       "policy: selecting a rule turns on its own group's Details");
+	CHECK (!fs_drawer_is_open (),
+	       "policy: selecting a rule does not open the drawer");
+	CHECK (fs_policyview_select (FS_RULE_INBOUND_ALLOW_SERVICE, 0) &&
+	       !fs_drawer_is_open (),
+	       "policy: neither does fs_policyview_select ()");
+
+	/* Details: the host rule, column by column. */
+	gtk_button_clicked (GTK_BUTTON (details->pdata[0]));
+	CHECK (fs_drawer_is_open (),
+	       "policy: Details opens the drawer for the selected rule");
+	CHECK (g_strcmp0 (drawer_text ("fs-drawer-title"),
+	                  "Allow connections from host") == 0 &&
+	       g_strcmp0 (drawer_text ("fs-drawer-subtitle"), "10.0.0.8") == 0,
+	       "policy: titled with its group, the rule in one line under it "
+	       "(\"%s\", \"%s\")", drawer_text ("fs-drawer-title"),
+	       drawer_text ("fs-drawer-subtitle"));
+	CHECK (g_strcmp0 (drawer_field ("Host"),
+	                  "10.0.0.8") == 0 &&
+	       g_strcmp0 (drawer_field ("Comment"), "lab") == 0,
+	       "policy: one field for each column of the rule");
+	CHECK (g_strcmp0 (drawer_field ("Covers"), "IPv4 only") == 0 &&
+	       drawer_says ("10.0.0.8 is an IPv4 address"),
+	       "policy: what it covers (\"%s\"), with the reason in a "
+	       "sentence", drawer_field ("Covers"));
+	CHECK (drawer_says ("Bi-directional") &&
+	       drawer_says ("Allow connections to host"),
+	       "policy: the twin in the other direction is mentioned");
+	CHECK (drawer_field ("Problem") == NULL,
+	       "policy: a sound rule shows no problem");
+	CHECK (drawer_actions_are ("Remove rule"),
+	       "policy: a host rule offers Remove rule, and no Bind App");
+
+	/* While open it follows the selection, into another group too. */
+	tree_select (trees->pdata[5], 0);
+	CHECK (g_strcmp0 (drawer_text ("fs-drawer-title"),
+	                  "Deny connections to host") == 0 &&
+	       g_strcmp0 (drawer_field ("Host"), "203.0.113.9") == 0,
+	       "policy: selecting a rule in another group refreshes the open "
+	       "drawer (\"%s\")", drawer_text ("fs-drawer-title"));
+
+	/* The SSH rule has been selected in its group all along
+	 * (fs_policyview_select above), so going there changes no
+	 * selection: the keyboard focus arriving in that list is what
+	 * moves the drawer. */
+	{
+		GdkEvent *focus = gdk_event_new (GDK_FOCUS_CHANGE);
+
+		focus->focus_change.in = TRUE;
+		gtk_widget_send_focus_change (trees->pdata[1], focus);
+		gdk_event_free (focus);
+	}
+	CHECK (g_strcmp0 (drawer_text ("fs-drawer-title"),
+	                  "Allow inbound service") == 0 &&
+	       g_strcmp0 (drawer_text ("fs-drawer-subtitle"),
+	                  "SSH \xc2\xb7 22 \xc2\xb7 Anyone") == 0,
+	       "policy: going to a group whose rule is already selected "
+	       "shows that rule (\"%s\", \"%s\")",
+	       drawer_text ("fs-drawer-title"),
+	       drawer_text ("fs-drawer-subtitle"));
+	CHECK (g_strcmp0 (drawer_field ("Allow service"), "SSH") == 0 &&
+	       g_strcmp0 (drawer_field ("Port"), "22") == 0 &&
+	       g_strcmp0 (drawer_field ("For"), "Anyone") == 0 &&
+	       g_strcmp0 (drawer_field ("Comment"), "-") == 0,
+	       "policy: the service rule's four columns, the empty one too");
+	CHECK (g_strcmp0 (drawer_field ("Covers"), "IPv4 + IPv6") == 0,
+	       "policy: Anyone covers both families (\"%s\")",
+	       drawer_field ("Covers"));
+	CHECK (!drawer_says ("Bi-directional"),
+	       "policy: no twin in the policy, no mention of one");
+	CHECK (drawer_actions_are ("Bind App...|Remove rule"),
+	       "policy: a service rule offers Bind App as well");
+
+	/* A reload that keeps the rule keeps the drawer. */
+	fs_policyview_reload (policy);
+	CHECK (fs_drawer_is_open () &&
+	       g_strcmp0 (drawer_field ("Allow service"), "SSH") == 0,
+	       "policy: a reload that still has the rule keeps the drawer");
+
+	/* Remove rule: the button's path.  The second deny rule, so the
+	 * drawer's rule and not the first row is what goes. */
+	tree_select (trees->pdata[5], 1);
+	CHECK (g_strcmp0 (drawer_field ("Host"), "2001:db8::5") == 0 &&
+	       g_strcmp0 (drawer_field ("Covers"), "IPv6 only") == 0,
+	       "policy: the drawer is on the second deny rule");
+	CHECK (drawer_press ("Remove rule") &&
+	       fs_policy_count (policy, FS_RULE_OUTBOUND_DENY_TO) == 1 &&
+	       gtk_tree_model_iter_n_children (
+	       	gtk_tree_view_get_model (trees->pdata[5]), NULL) == 1,
+	       "policy: Remove rule removes that rule (%u left)",
+	       fs_policy_count (policy, FS_RULE_OUTBOUND_DENY_TO));
+	CHECK (!fs_drawer_is_open (),
+	       "policy: the removed rule's drawer closes");
+	{
+		FsPolicy *disk = fs_policy_new ();
+
+		fs_policy_load (disk, NULL);
+		CHECK (fs_policy_count (disk, FS_RULE_OUTBOUND_DENY_TO) == 1,
+		       "policy: and the removal was saved, as Remove saves it");
+		fs_policy_free (disk);
+	}
+	CHECK (!gtk_widget_get_sensitive (details->pdata[5]),
+	       "policy: with nothing selected again, Details is off");
+
+	/* Closed is closed: the next selection does not bring it back. */
+	tree_select (trees->pdata[5], 0);
+	CHECK (!fs_drawer_is_open (),
+	       "policy: after closing, a selection does not reopen it");
+
+	/* A rule that goes away under an open drawer. */
+	gtk_button_clicked (GTK_BUTTON (details->pdata[5]));
+	CHECK (fs_drawer_is_open () &&
+	       g_strcmp0 (drawer_field ("Host"), "203.0.113.9") == 0,
+	       "policy: open on the remaining deny rule");
+	{
+		FsRule *gone = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
+
+		gone->target = g_strdup ("203.0.113.9");
+		CHECK (fs_policy_remove_persist (policy, gone),
+		       "policy: the rule is removed behind the page's back");
+		fs_rule_free (gone);
+	}
+	fs_policyview_reload (policy);
+	CHECK (!fs_drawer_is_open (),
+	       "policy: a reload without the rule closes its drawer");
+
+out:
+	fs_drawer_close ();
+	/* The page and its policy are left standing, and the two folders
+	 * stay set: the Policy page keeps pointers to both for the life of
+	 * the process, and nothing after this may find the account's own
+	 * rules. */
+	g_ptr_array_unref (trees);
+	g_ptr_array_unref (details);
+	g_free (rules);
+	g_free (run);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -2056,6 +2815,8 @@ main (int argc, char **argv)
 
 	check_list_behaviour (page);
 	check_filter_bar (page);
+	check_details (page);
+	check_policy_details (config);
 	check_feed_order (page);
 #ifndef G_OS_WIN32
 	check_history_failure (page);
