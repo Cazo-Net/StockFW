@@ -7,9 +7,11 @@
 
 G_BEGIN_DECLS
 
-/* The Overview page (1.0.7; the Status page before it): the verdict,
- * the firewall's switch, totals, open connections, adapters and the
- * most recent blocks. */
+/* The Overview page (a status board since 2.0.0; the 1.0.7 Overview and
+ * the Status page before it): the verdict in one large word with the
+ * firewall's switch, a live graph of adapter traffic, the busiest
+ * programs and the latest blocks, then totals, open connections and
+ * adapters. */
 GtkWidget     *fs_statusview_page (void);
 
 /* Resample the adapters and open connections immediately. */
@@ -103,13 +105,37 @@ void fs_statusview_event_in      (gboolean serious);
 void fs_statusview_event_out     (gboolean serious);
 void fs_statusview_events_reset  (void);
 
-/* A blocked event, for the Overview's "Recent blocks" card.  The hit
- * is copied; the newest few are kept. */
+/* A blocked event, for the Overview's "Latest blocks" card.  The hit
+ * is copied; the newest few are kept, and a row of the card opens its
+ * event's details (fs_hitview_show_details). */
 void fs_statusview_note_block    (const FsHit *hit);
 
-/* The Recent blocks card's rows, newest first, as "title\ndetail".
+/* The Latest blocks card's rows, newest first, as "title\ndetail".
  * For tests.  Free with g_strfreev. */
 gchar **fs_statusview_recent_blocks (void);
+
+/* The Traffic card's two series: bytes per second received and sent
+ * over the real adapters, oldest point first, one point per network
+ * refresh and at most two minutes of them.  Returns how many points
+ * there are and copies them out (g_free each; either may be NULL).
+ * For tests. */
+guint   fs_statusview_traffic_points (guint64 **received, guint64 **sent);
+
+/* The top of the Traffic graph's scale for those points, in bytes per
+ * second: the smallest of 1, 2, 5, 10, 20, 50, 100, 200 or 500 KiB (or
+ * MiB, GiB) that holds the highest of them, and never under 1 KiB.
+ * For tests. */
+guint64 fs_statusview_traffic_scale (void);
+
+/* The Busiest programs card's rows, busiest first, as "name\tcount"
+ * (count: open connections to other computers).  For tests.  Free
+ * with g_strfreev. */
+gchar **fs_statusview_busiest_programs (void);
+
+/* The clock the page takes its rates from, in monotonic microseconds;
+ * NULL puts g_get_monotonic_time back.  For tests, which need a rate
+ * to be a known number. */
+void    fs_statusview_set_clock (gint64 (*clock) (void));
 
 /* The Threat Intel page read a new blocklist state: the verdict card
  * says it again (fs_intelview_summary). */

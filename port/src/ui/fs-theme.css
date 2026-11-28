@@ -1350,15 +1350,22 @@ button.fs-drawer-close:active {
 	border-top: 1px solid @fs_border;
 }
 
-/* --- Overview: verdict card ---------------------------------------------------- */
+/* --- Overview: the status board ------------------------------------------------ *
+ * One card.  On top the state in one large word, coloured by the
+ * card's level, with the sentences that explain it and the one button
+ * that changes it; along the foot a strip of four facts, divided by
+ * hairlines and not boxed. */
 .hero {
 	border: 1px solid @fs_border;
 	border-radius: 8px;
-	padding: 16px;
+	padding: 0;
 	background-image: none;
 	background-color: @fs_surface;
 	margin-bottom: 12px;
 	box-shadow: none;
+}
+.hero-top {
+	padding: 18px 20px 16px 20px;
 }
 .hero-icon-tile {
 	border-radius: 6px;
@@ -1368,8 +1375,16 @@ button.fs-drawer-close:active {
 .hero-icon {
 	color: @fs_text_weak;
 }
+.state-word {
+	font-size: 30px;
+	font-weight: 600;
+	color: @fs_text_weak;
+}
+.hero.level-ok .state-word   { color: @fs_ok; }
+.hero.level-warn .state-word { color: @fs_warn; }
+.hero.level-bad .state-word  { color: @fs_bad; }
 .hero-title {
-	font-size: 16px;
+	font-size: 14px;
 	font-weight: 600;
 	color: @fs_text_strong;
 }
@@ -1378,12 +1393,25 @@ button.fs-drawer-close:active {
 	color: @fs_text_weak;
 	font-weight: 400;
 }
+button.power-button {
+	padding: 10px 22px;
+	font-size: 14px;
+	font-weight: 600;
+}
+.hero-facts {
+	border-top: 1px solid @fs_border;
+	padding: 12px 20px 14px 20px;
+}
 .hero-tile {
-	background-color: @fs_bg;
-	border: 1px solid @fs_border;
-	border-radius: 6px;
-	padding: 8px 12px;
+	background-color: transparent;
+	border: none;
+	border-radius: 0;
+	padding: 0;
 	box-shadow: none;
+}
+.hero-tile-next {
+	border-left: 1px solid @fs_border;
+	padding-left: 16px;
 }
 .tile-caption {
 	color: @fs_text_weak;
@@ -1409,7 +1437,6 @@ button.fs-drawer-close:active {
 .hero.level-ok .hero-icon      { color: @fs_ok; }
 .hero.level-ok .hero-title     { color: @fs_text_strong; }
 .hero.level-ok .hero-body      { color: @fs_text_weak; }
-.hero.level-ok .hero-tile      { border-color: @fs_border; background-color: @fs_bg; box-shadow: none; }
 
 .hero.level-warn {
 	background-image: none;
@@ -1421,7 +1448,6 @@ button.fs-drawer-close:active {
 .hero.level-warn .hero-icon      { color: @fs_warn; }
 .hero.level-warn .hero-title     { color: @fs_text_strong; }
 .hero.level-warn .hero-body      { color: @fs_text_weak; }
-.hero.level-warn .hero-tile      { border-color: @fs_border; background-color: @fs_bg; box-shadow: none; }
 
 .hero.level-bad {
 	background-image: none;
@@ -1433,7 +1459,6 @@ button.fs-drawer-close:active {
 .hero.level-bad .hero-icon      { color: @fs_bad; }
 .hero.level-bad .hero-title     { color: @fs_text_strong; }
 .hero.level-bad .hero-body      { color: @fs_text_weak; }
-.hero.level-bad .hero-tile      { border-color: @fs_border; background-color: @fs_bg; box-shadow: none; }
 
 /* --- Overview: totals, lists ----------------------------------------------------- */
 .stat-card {
@@ -1489,9 +1514,72 @@ button.fs-drawer-close:active {
 .adapter-ip {
 	color: @fs_text_weak;
 }
-.recent-row {
-	padding: 8px 0;
-	border-bottom: 1px solid @fs_border;
+/* Traffic: the legend beside the heading.  The graph itself is drawn
+ * with cairo from the same named colours (fs-statusview.c). */
+.legend-received { color: @fs_accent; }
+.legend-sent     { color: @fs_text_weak; }
+.legend-name {
+	font-size: 12px;
+	color: @fs_text_weak;
+}
+.legend-value {
+	font-family: "IBM Plex Mono", "JetBrains Mono", "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace;
+	font-size: 12px;
+	font-weight: 500;
+	color: @fs_text_strong;
+}
+/* Busiest programs: name, bar (cairo), count. */
+.busy-name {
+	font-size: 13px;
+	font-weight: 500;
+	color: @fs_text_strong;
+}
+.busy-count {
+	font-family: "IBM Plex Mono", "JetBrains Mono", "Cascadia Code", "Consolas", "DejaVu Sans Mono", monospace;
+	font-size: 12px;
+	font-weight: 500;
+	color: @fs_text_strong;
+}
+/* Latest blocks: each row is a button that opens the event's details.
+ * The card's side padding moves into the rows, so a row's hover face
+ * reaches past the text and the text still lines up with the heading. */
+.recent-card {
+	padding: 14px 8px;
+}
+.recent-card > label,
+.recent-card > box {
+	margin-left: 8px;
+	margin-right: 8px;
+}
+.recent-card > box.recent-list {
+	margin-left: 0;
+	margin-right: 0;
+}
+/* The link's face reaches 12px left of its text; with this its text
+ * starts under the heading's. */
+.recent-card > box.recent-foot {
+	margin-left: 4px;
+}
+button.recent-row {
+	background-image: none;
+	background-color: transparent;
+	border: none;
+	border-radius: 6px;
+	padding: 6px 8px;
+	box-shadow: none;
+}
+button.recent-row:hover,
+button.recent-row:active {
+	background-image: none;
+	background-color: @fs_surface_2;
+	box-shadow: none;
+}
+.recent-more {
+	color: @fs_text_weaker;
+}
+button.recent-row:hover .recent-more,
+button.recent-row:focus .recent-more {
+	color: @fs_text_strong;
 }
 .recent-title {
 	font-size: 13px;

@@ -198,6 +198,13 @@ main (int argc, char **argv)
 		       row->key, why != NULL ? why : "is as the table says");
 		g_free (why);
 
+		/* The status board (2.0.0) sets the word large above the
+		 * title: it must be this word, not a wording of its own. */
+		CHECK (g_strcmp0 (text_of (page, "state-word"), word) == 0,
+		       "golden row %u (%s): the board's large word is the "
+		       "verdict's (\"%s\", got \"%s\")", i, row->key, word,
+		       text_of (page, "state-word"));
+
 		verdict_golden_input (row, &in);
 		in.display_name = current->display_name;
 		core = fs_verdict_compute (&in);

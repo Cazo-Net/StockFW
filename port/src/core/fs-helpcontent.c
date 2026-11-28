@@ -76,20 +76,26 @@ static const FsHelpBlock getting_started[] = {
 /* ------------------------------------------------------------ pages */
 
 static const FsHelpBlock overview[] = {
-	{ FS_HELP_PARA, N_("The Overview is the first page. Its header names "
+	{ FS_HELP_PARA, N_("The Overview is the first page. It answers one "
+	  "question first, whether this computer is protected, and then shows "
+	  "what is happening on the network now. Its header names "
 	  "this computer and its address. The <b>Lock policy</b> switch next "
 	  "to it holds every policy change back: while it is on, applying "
 	  "saves your changes and writes them to the audit log, and the "
 	  "firewall is left as it is.") },
-	{ FS_HELP_HEAD, N_("The status card") },
-	{ FS_HELP_PARA, N_("The coloured card says whether this computer is "
-	  "protected, and why. Green means your policy is in force. Amber "
+	{ FS_HELP_HEAD, N_("The status board") },
+	{ FS_HELP_PARA, N_("The coloured board at the top says the state in "
+	  "one large word: <b>Protected</b>, <b>Not protected</b>, or a word "
+	  "for what is only partly covered, such as <b>IPv6 not "
+	  "protected</b>. The sentences under it say why. Green means your "
+	  "policy is in force. Amber "
 	  "means part of the traffic is not filtered, IPv6 for example. Red "
 	  "means the firewall is stopped, or a network has no firewall on it. "
 	  "Grey means StockFW could not read the state, usually because it "
 	  "is not running with enough rights.") },
-	{ FS_HELP_PARA, N_("The button on the card starts or stops the "
-	  "firewall. Beside it are four facts: whether IPv4 and IPv6 traffic "
+	{ FS_HELP_PARA, N_("The one button on the board starts or stops the "
+	  "firewall. Along the foot of the board are four facts: whether IPv4 "
+	  "and IPv6 traffic "
 	  "is filtered, how many rules your policy has, and which firewall "
 	  "StockFW is driving.") },
 	{ FS_HELP_WARN, N_("On Windows, <b>Stop firewall</b> turns Windows "
@@ -97,7 +103,7 @@ static const FsHelpBlock overview[] = {
 	  "filtered until you start it again. On Linux it removes StockFW's "
 	  "rules and leaves those of other tools, such as ufw or Docker, as "
 	  "they are.") },
-	{ FS_HELP_PARA, N_("While the firewall runs, the card can add a "
+	{ FS_HELP_PARA, N_("While the firewall runs, the board can add a "
 	  "sentence on the <a href=\"help:threat-intel\">threat-intel "
 	  "blocklists</a> when they are in force, not in force and why, not "
 	  "loaded, or changed outside StockFW. Stopping the firewall takes the blocklists out too, and "
@@ -106,25 +112,44 @@ static const FsHelpBlock overview[] = {
 	{ FS_HELP_PARA, N_("Windows applies one of three profiles to each "
 	  "network: Domain, Private or Public. The Overview lists all three "
 	  "with a switch each and marks the ones in force <b>In use</b>. If "
-	  "the profile in use is switched off, the status card turns red: "
+	  "the profile in use is switched off, the status board turns red: "
 	  "the firewall service is running, but nothing on that network is "
 	  "filtered.") },
 	{ FS_HELP_HEAD, N_("What is happening now") },
+	{ FS_HELP_ITEM, N_("<b>Traffic</b>: a graph of the last two minutes, "
+	  "read every two seconds. The filled line is what the network "
+	  "adapters received and the grey line what they sent, in bytes per "
+	  "second, with the two current rates beside the heading and the "
+	  "scale at the top right. Rest the pointer on the graph to read a "
+	  "moment's numbers. It is everything the adapters carried, whether "
+	  "or not the firewall filtered it, so it keeps moving while the "
+	  "firewall is stopped. Virtual adapters are left out.") },
+	{ FS_HELP_ITEM, N_("<b>Busiest programs</b>: the five programs with "
+	  "the most open connections to other computers. It counts open TCP "
+	  "connections, not data volume. Connections whose owner could not "
+	  "be read are counted together as <b>Unknown program</b>.") },
+	{ FS_HELP_ITEM, N_("<b>Latest blocks</b>: the last five events "
+	  "blocked since StockFW opened. Select one to open its details in "
+	  "the panel on the right. <b>All events</b> opens the Events "
+	  "page.") },
+	{ FS_HELP_HEAD, N_("The detail") },
 	{ FS_HELP_ITEM, N_("<b>Totals</b>: inbound and outbound events since "
 	  "StockFW opened and how many were blocked, open connections, and "
 	  "traffic right now.") },
 	{ FS_HELP_ITEM, N_("<b>Open connections</b>: each program's "
 	  "connections to other computers, with a filter box. Connections "
 	  "between two programs on this computer are behind <b>Show "
-	  "them</b>, because no firewall rule sees them.") },
+	  "them</b>, because no firewall rule sees them. Press Enter on a "
+	  "connection, or double-click it, to open its details in the panel "
+	  "on the right: this computer's end of it, its state, and how many "
+	  "connections the same program holds. <b>Show in Events</b> there "
+	  "opens the Events page filtered to the remote address.") },
 	{ FS_HELP_ITEM, N_("<b>Network adapters</b>: the real adapters with "
 	  "their addresses and traffic. Virtual ones, such as Docker bridges "
 	  "or VPN tunnels, are behind <b>Show them</b>.") },
-	{ FS_HELP_ITEM, N_("<b>Recent blocks</b>: the last few blocked "
-	  "events. <b>All events</b> opens the Events page.") },
 	{ FS_HELP_NOTE, N_("Every number here is one the system reported. "
-	  "Where a platform cannot report something, its card is left out "
-	  "rather than shown as zero.") },
+	  "Where a platform cannot report something, its card is left out or "
+	  "says so, rather than showing a zero.") },
 	{ FS_HELP_SEE, "events activity threat-intel windows linux" },
 	{ FS_HELP_END, NULL }
 };
